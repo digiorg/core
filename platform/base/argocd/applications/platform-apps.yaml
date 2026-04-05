@@ -1,0 +1,44 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: platform-apps
+  namespace: argocd
+spec:
+  # Generate one Application per directory found under apps/platform/
+  generators:
+    - git:
+        repoURL: git@github.com:digiorg/core.git
+        revision: HEAD
+        directories:
+          - path: apps/platform/*
+          - path: apps/observability/*
+
+  template:
+    metadata:
+      name: "{{path.basename}}"
+      namespace: argocd
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+      annotations:
+        # Platform components sync in wave 0 (after root-app at -1)
+        argocd.argoproj.io/sync-wave: "0"
+    spec:
+      project: default
+
+      source:
+        repoURL: git@github.com:digiorg/core.git
+        targetRevision: HEAD
+        path: "{{path}}"
+
+      destination:
+        server: https://kubernetes.default.svc
+        # Each application manifest is expected to declare its own namespace
+        namespace: "{{path.basename}}"
+
+      syncPolicy:
+        automated:
+          selfHeal: true
+          prune: true
+        syncOptions:
+          - CreateNamespace=true
+          - ServerSideApply=true

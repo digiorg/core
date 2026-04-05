@@ -1,0 +1,169 @@
+# ArgoCD Helm Values
+# Chart: argo/argo-cd
+# Compatible with local-setup.nu (NodePort overrides applied by that script)
+
+global:
+  image:
+    tag: ""  # defaults to chart appVersion
+
+# -- ArgoCD Secret configuration (OIDC client secret for Keycloak)
+configs:
+  secret:
+    # OIDC client secret - key must match provider name in oidc.config
+    # Format: oidc.<provider-name>.clientSecret where provider-name is lowercase
+    extra:
+      oidc.keycloak.clientSecret: argocd-client-secret
+
+# -- ArgoCD ConfigMap and parameter configuration
+  # argocd-cm ConfigMap
+  cm:
+    # Disable admin user - use Keycloak SSO instead
+    admin.enabled: "false"
+    
+    # Track resources via annotations instead of labels (avoids label conflicts)
+    application.resourceTrackingMethod: annotation
+
+    # Reconciliation timeout
+    timeout.reconciliation: 60s
+
+    # SSO/OIDC via Keycloak (digiorg-core-platform realm)
+    # Using digiorg.local with path-based routing (standard port 80)
+    # Requires /etc/hosts: 127.0.0.1 digiorg.local
+    url: http://digiorg.local/argocd
+    oidc.config: |
+      name: Keycloak
+      issuer: http://digiorg.local/keycloak/realms/digiorg-core-platform
+      clientID: argocd
+      clientSecret: $oidc.keycloak.clientSecret
+      requestedScopes:
+        - openid
+        - profile
+        - email
+        - roles
+
+  # argocd-cmd-params-cm ConfigMap
+  params:
+    # Disable TLS at the ArgoCD server — TLS is terminated at the ingress/load balancer
+    server.insecure: "true"
+
+    # Base path for ArgoCD (path-based routing via Ingress)
+    server.basehref: "/argocd"
+    server.rootpath: "/argocd"
+
+    # ApplicationSet controller log level
+    applicationsetcontroller.log.level: info
+
+  # argocd-rbac-cm ConfigMap (least-privilege defaults)
+  rbac:
+    # Default role for authenticated users without explicit group membership
+    policy.default: role:readonly
+
+    # RBAC policy rules (CSV format)
+    policy.csv: |
+      # Admin role — full access to all resources
+      p, role:admin, applications, *, */*, allow
+      p, role:admin, applicationsets, *, */*, allow
+      p, role:admin, clusters, *, *, allow
+      p, role:admin, repositories, *, *, allow
+      p, role:admin, projects, *, *, allow
+      p, role:admin, accounts, *, *, allow
+      p, role:admin, certificates, *, *, allow
+      p, role:admin, gpgkeys, *, *, allow
+      p, role:admin, logs, get, */*, allow
+      p, role:admin, exec, create, */*, allow
+
+      # Read-only role — view access only
+      p, role:readonly, applications, get, */*, allow
+      p, role:readonly, applications, sync, */*, deny
+      p, role:readonly, clusters, get, *, allow
+      p, role:readonly, repositories, get, *, allow
+      p, role:readonly, projects, get, *, allow
+      p, role:readonly, logs, get, */*, allow
+
+      # Group bindings (adjust group names to match your IdP)
+      g, platform-admins, role:admin
+      g, platform-viewers, role:readonly
+
+    # OIDC scopes to inspect for group membership
+    scopes: "[groups, email]"
+
+# -- ArgoCD server configuration
+server:
+  service:
+    # NodePort for local KinD development
+    # Production: change to ClusterIP and use an Ingress
+    type: NodePort
+    nodePortHttp: 30080
+    nodePortHttps: 30443
+
+  ingress:
+    enabled: false
+    # Production example (enable and configure when not using NodePort):
+    # enabled: true
+    # ingressClassName: nginx
+    # hostname: argocd.example.com
+    # tls: true
+    # annotations:
+    #   cert-manager.io/cluster-issuer: letsencrypt-prod
+
+  # Resource limits for the server
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+# -- Application controller
+controller:
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+
+# -- ApplicationSet controller
+applicationSet:
+  enabled: true
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+# -- Repo server
+repoServer:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+# -- Redis
+redis:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+# -- Notifications controller (optional)
+notifications:
+  enabled: false
+  # To enable: set enabled: true and configure triggers/templates below
+  # resources:
+  #   requests:
+  #     cpu: 50m
+  #     memory: 64Mi
+  #   limits:
+  #     cpu: 200m
+  #     memory: 128Mi

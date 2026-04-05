@@ -1,0 +1,69 @@
+# =============================================================================
+# DigiOrg Core Platform - EditorConfig
+# https://editorconfig.org
+# =============================================================================
+
+root = true
+
+# Default settings for all files
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+# YAML files (Kubernetes, Helm, ArgoCD, Crossplane)
+[*.{yaml,yml}]
+indent_size = 2
+
+# JSON files
+[*.json]
+indent_size = 2
+
+# Markdown files
+[*.md]
+trim_trailing_whitespace = false
+indent_size = 2
+
+# Terraform files
+[*.tf]
+indent_size = 2
+
+[*.tfvars]
+indent_size = 2
+
+# Shell scripts
+[*.sh]
+indent_size = 2
+
+# Nushell scripts
+[*.nu]
+indent_size = 4
+
+# Makefiles (require tabs)
+[Makefile]
+indent_style = tab
+indent_size = 4
+
+[makefile]
+indent_style = tab
+indent_size = 4
+
+# Go files (for custom operators)
+[*.go]
+indent_style = tab
+indent_size = 4
+
+# Python files
+[*.py]
+indent_size = 4
+
+# Dockerfiles
+[Dockerfile*]
+indent_size = 2
+
+# Git config files
+[.git*]
+indent_size = 2

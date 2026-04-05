@@ -1,0 +1,33 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: root-app
+  namespace: argocd
+  # Finalizer ensures child applications are deleted when the root app is deleted
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    # Sync wave -1 ensures root-app is bootstrapped before platform apps
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  project: default
+
+  source:
+    repoURL: git@github.com:digiorg/core.git
+    targetRevision: HEAD
+    # Point to the apps/ directory — ArgoCD will discover all Application manifests here
+    path: apps
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+
+  syncPolicy:
+    automated:
+      # Re-apply resources that drift from the desired state
+      selfHeal: true
+      # Remove resources that are no longer in Git
+      prune: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

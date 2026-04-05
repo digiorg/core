@@ -1,0 +1,118 @@
+# =============================================================================
+# Keycloak Deployment — official image quay.io/keycloak/keycloak:26.0
+# Dev mode: HTTP only, realm import on first start
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak
+  namespace: keycloak
+spec:
+  type: NodePort
+  selector:
+    app: keycloak
+  ports:
+    - port: 8080
+      targetPort: 8080
+      nodePort: 30100
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak
+  namespace: keycloak
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: keycloak
+  template:
+    metadata:
+      labels:
+        app: keycloak
+    spec:
+      containers:
+        - name: keycloak
+          image: quay.io/keycloak/keycloak:26.0
+          args:
+            - start-dev
+            - --import-realm
+          env:
+            # Database
+            - name: KC_DB
+              value: postgres
+            - name: KC_DB_URL
+              value: jdbc:postgresql://postgres:5432/keycloak
+            - name: KC_DB_USERNAME
+              value: keycloak
+            - name: KC_DB_PASSWORD
+              value: keycloak
+            # Admin bootstrap (dev only)
+            - name: KC_BOOTSTRAP_ADMIN_USERNAME
+              value: admin
+            - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+              value: admin
+            # HTTP / hostname configuration
+            # Using standard port 80 (no port needed in URL)
+            # Requires /etc/hosts entry: 127.0.0.1 digiorg.local
+            - name: KC_HOSTNAME_URL
+              value: "http://digiorg.local/keycloak"
+            - name: KC_HOSTNAME_ADMIN_URL
+              value: "http://digiorg.local/keycloak"
+            # KC_HTTP_RELATIVE_PATH tells Keycloak to serve content under /keycloak path
+            # This is required in addition to KC_HOSTNAME_URL for proper routing
+            - name: KC_HTTP_RELATIVE_PATH
+              value: "/keycloak"
+            - name: KC_HOSTNAME_STRICT
+              value: "false"
+            - name: KC_HOSTNAME_STRICT_BACKCHANNEL
+              value: "false"
+            - name: KC_HTTP_ENABLED
+              value: "true"
+            - name: KC_PROXY_HEADERS
+              value: "xforwarded"
+            # Health endpoint for probes (on separate management port 9000)
+            - name: KC_HEALTH_ENABLED
+              value: "true"
+            # Management interface must use root path, not the HTTP relative path
+            - name: KC_HTTP_MANAGEMENT_RELATIVE_PATH
+              value: "/"
+          ports:
+            - containerPort: 8080
+              name: http
+            - containerPort: 9000
+              name: health
+          volumeMounts:
+            - name: realm-import
+              mountPath: /opt/keycloak/data/import
+              readOnly: true
+          resources:
+            requests:
+              cpu: 200m
+              memory: 384Mi
+            limits:
+              cpu: 1000m
+              memory: 768Mi
+          startupProbe:
+            httpGet:
+              path: /health/ready
+              port: 9000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 30  # 30 * 10s = 5 minutes max startup time
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: 9000
+            periodSeconds: 20
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: 9000
+            periodSeconds: 10
+            failureThreshold: 3
+      volumes:
+        - name: realm-import
+          configMap:
+            name: keycloak-realm-import

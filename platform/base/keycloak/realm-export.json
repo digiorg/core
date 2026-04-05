@@ -1,0 +1,175 @@
+{
+  "realm": "digiorg-core-platform",
+  "enabled": true,
+  "displayName": "DigiOrg Core Platform",
+  "displayNameHtml": "<b>DigiOrg Core Platform</b>",
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": false,
+  "editUsernameAllowed": false,
+  "bruteForceProtected": true,
+  "clients": [
+    {
+      "clientId": "argocd",
+      "name": "ArgoCD",
+      "description": "ArgoCD GitOps UI — OIDC login",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "argocd-client-secret",
+      "redirectUris": [
+        "http://digiorg.local/argocd/auth/callback",
+        "http://digiorg.local/argocd/auth/callback"
+      ],
+      "webOrigins": [
+        "http://digiorg.local/argocd",
+        "http://digiorg.local/argocd"
+      ],
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": true,
+      "protocolMappers": [
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "full.path": "false",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "groups",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "grafana",
+      "name": "Grafana",
+      "description": "Grafana Observability UI — OAuth2 login",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "grafana-client-secret",
+      "redirectUris": [
+        "http://digiorg.local/grafana/login/generic_oauth"
+      ],
+      "webOrigins": [
+        "http://digiorg.local/grafana"
+      ],
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": true,
+      "protocolMappers": [
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "full.path": "false",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "groups",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "backstage",
+      "name": "Backstage Developer Portal",
+      "description": "Backstage — OIDC login",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "backstage-client-secret",
+      "redirectUris": [
+        "http://digiorg.local/backstage/api/auth/oidc/handler/frame",
+        "http://digiorg.local/backstage/*"
+      ],
+      "webOrigins": [
+        "http://digiorg.local",
+        "http://digiorg.local/backstage"
+      ],
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": true,
+      "protocolMappers": [
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "full.path": "false",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "groups",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "roles": {
+    "realm": [
+      {
+        "name": "platform-admin",
+        "description": "Full administrative access to the platform"
+      },
+      {
+        "name": "platform-viewer",
+        "description": "Read-only access to the platform"
+      },
+      {
+        "name": "developer",
+        "description": "Standard developer access"
+      }
+    ]
+  },
+  "groups": [
+    {
+      "name": "platform-admins",
+      "realmRoles": ["platform-admin"]
+    },
+    {
+      "name": "platform-viewers",
+      "realmRoles": ["platform-viewer"]
+    },
+    {
+      "name": "developers",
+      "realmRoles": ["developer"]
+    }
+  ],
+  "users": [
+    {
+      "username": "admin",
+      "enabled": true,
+      "email": "admin@example.com",
+      "firstName": "Platform",
+      "lastName": "Admin",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "admin",
+          "temporary": false
+        }
+      ],
+      "realmRoles": ["platform-admin"],
+      "groups": ["platform-admins"]
+    }
+  ]
+}

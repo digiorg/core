@@ -1,0 +1,37 @@
+# Prometheus Stack Helm Values
+# Chart: prometheus-community/kube-prometheus-stack
+# Compatible with local-setup.nu
+
+grafana:
+  # Disable secret leak assertion for local dev (we use hardcoded secrets intentionally)
+  assertNoLeakedSecrets: false
+  
+  service:
+    type: ClusterIP  # Accessed via Ingress, not NodePort
+
+  # Grafana served under /grafana path
+  grafana.ini:
+    server:
+      root_url: "http://digiorg.local/grafana"
+      serve_from_sub_path: true
+
+    auth.generic_oauth:
+      enabled: true
+      name: Keycloak
+      allow_sign_up: true
+      client_id: grafana
+      # For local dev only — in production use envValueFrom with a Secret reference
+      client_secret: grafana-client-secret
+      scopes: openid email profile roles
+      # Using digiorg.local with path-based routing (standard port 80)
+      auth_url: http://digiorg.local/keycloak/realms/digiorg-core-platform/protocol/openid-connect/auth
+      token_url: http://digiorg.local/keycloak/realms/digiorg-core-platform/protocol/openid-connect/token
+      api_url: http://digiorg.local/keycloak/realms/digiorg-core-platform/protocol/openid-connect/userinfo
+      role_attribute_path: "contains(realm_access.roles[*], 'platform-admin') && 'Admin' || 'Viewer'"
+
+prometheus:
+  prometheusSpec:
+    retention: 1d
+
+alertmanager:
+  enabled: false

@@ -1,0 +1,125 @@
+# =============================================================================
+# DigiOrg Unified Ingress — Path-based routing for all platform services
+# =============================================================================
+# All services accessible via: digiorg.local/<service> (standard port 80)
+#
+# Prerequisites:
+# 1. NGINX Ingress Controller installed
+# 2. Add to /etc/hosts: 127.0.0.1 digiorg.local
+# 3. KinD cluster with port 80 mapped to ingress controller
+#
+# Services:
+# - digiorg.local/keycloak   → Keycloak IdP
+# - digiorg.local/argocd     → ArgoCD GitOps
+# - digiorg.local/grafana    → Grafana Monitoring
+# - digiorg.local/backstage  → Backstage Developer Portal
+# =============================================================================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: digiorg-platform
+  namespace: ingress-nginx
+  annotations:
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/proxy-buffer-size: "128k"
+    nginx.ingress.kubernetes.io/proxy-buffers-number: "4"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: digiorg.local
+      http:
+        paths:
+          # Keycloak IdP
+          - path: /keycloak(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: keycloak
+                port:
+                  number: 8080
+          # ArgoCD
+          - path: /argocd(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: argocd-server
+                port:
+                  number: 80
+          # Grafana
+          - path: /grafana(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: prometheus-grafana
+                port:
+                  number: 80
+---
+# Backstage needs URL rewriting because it doesn't natively support subpath deployment
+# /backstage/foo -> /foo on the backend
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: backstage-ingress
+  namespace: ingress-nginx
+  annotations:
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+    nginx.ingress.kubernetes.io/proxy-buffer-size: "128k"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: digiorg.local
+      http:
+        paths:
+          - path: /backstage(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: backstage
+                port:
+                  number: 7007
+---
+# ExternalName services to route cross-namespace
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak
+  namespace: ingress-nginx
+spec:
+  type: ExternalName
+  externalName: keycloak.keycloak.svc.cluster.local
+  ports:
+    - port: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: argocd-server
+  namespace: ingress-nginx
+spec:
+  type: ExternalName
+  externalName: argocd-server.argocd.svc.cluster.local
+  ports:
+    - port: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus-grafana
+  namespace: ingress-nginx
+spec:
+  type: ExternalName
+  externalName: prometheus-grafana.monitoring.svc.cluster.local
+  ports:
+    - port: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backstage
+  namespace: ingress-nginx
+spec:
+  type: ExternalName
+  externalName: backstage.backstage.svc.cluster.local
+  ports:
+    - port: 7007

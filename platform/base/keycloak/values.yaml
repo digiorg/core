@@ -1,0 +1,36 @@
+# =============================================================================
+# Keycloak Configuration Reference
+# Image: quay.io/keycloak/keycloak:26.0 (official)
+#
+# NOTE: This file is for documentation only — Keycloak is deployed via
+# Kustomize (keycloak-deployment.yaml), not Helm.
+# =============================================================================
+#
+# Environment Variables (KC_* prefix):
+#
+# Database:
+#   KC_DB=postgres
+#   KC_DB_URL=jdbc:postgresql://postgres:5432/keycloak
+#   KC_DB_USERNAME=keycloak
+#   KC_DB_PASSWORD=keycloak
+#
+# Admin (dev only — use Secrets in production):
+#   KC_BOOTSTRAP_ADMIN_USERNAME=admin
+#   KC_BOOTSTRAP_ADMIN_PASSWORD=admin
+#
+# HTTP / Hostname (dev mode):
+#   KC_HOSTNAME_STRICT=false
+#   KC_HTTP_ENABLED=true
+#
+# Startup Command:
+#   /opt/keycloak/bin/kc.sh start-dev --import-realm
+#
+# Realm Import:
+#   ConfigMap keycloak-realm-import mounted to /opt/keycloak/data/import/
+#
+# Service:
+#   NodePort 30100 -> 8080 (Keycloak UI)
+#
+# PostgreSQL:
+#   Image: postgres:16
+#   DB: keycloak / User: keycloak / Pass: keycloak
