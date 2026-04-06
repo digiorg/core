@@ -13,7 +13,7 @@ spec:
   project: default
 
   source:
-    repoURL: git@github.com:digiorg/core.git
+    repoURL: https://github.com/digiorg/core.git
     targetRevision: HEAD
     # Point to the apps/ directory — ArgoCD will discover all Application manifests here
     path: apps

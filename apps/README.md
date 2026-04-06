@@ -24,7 +24,6 @@ Applications are deployed in order using ArgoCD sync waves:
 | Wave | Applications | Description |
 |------|--------------|-------------|
 | -1 | root-app | Bootstrap (deployed by setup script) |
-| 0 | platform-apps | ApplicationSet generator |
 | 1 | keycloak, argocd | Core infrastructure (IdP, GitOps) |
 | 2 | backstage, monitoring | Platform services (depend on Keycloak) |
 | 3 | crossplane, kyverno | Extensions (no Keycloak dependency) |
@@ -33,8 +32,8 @@ Applications are deployed in order using ArgoCD sync waves:
 
 1. **Setup Script** bootstraps: KinD cluster, Ingress, CoreDNS, Secrets, ArgoCD (Helm)
 2. **Setup Script** deploys `root-app.yaml`
-3. **Root App** discovers `apps/` directory
-4. **ApplicationSet** generates Applications from `apps/platform/*` and `apps/observability/*`
+3. **Root App** recursively discovers all `*.yaml` files in `apps/` directory
+4. **ArgoCD** applies all Application manifests found
 5. **Sync Waves** ensure correct deployment order
 
 ## Adding a New Application
@@ -54,7 +53,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: git@github.com:digiorg/core.git
+    repoURL: https://github.com/digiorg/core.git
     targetRevision: HEAD
     path: platform/base/my-app
   destination:

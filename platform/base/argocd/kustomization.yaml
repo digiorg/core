@@ -6,4 +6,3 @@ namespace: argocd
 resources:
   - rbac-cm.yaml
   - applications/root-app.yaml
-  - applications/platform-apps.yaml

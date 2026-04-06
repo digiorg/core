@@ -453,7 +453,7 @@ def restart_oidc_dependent_pods [] {
     
     # Grafana
     try {
-        let grafana_exists = (kubectl get deployment prometheus-grafana -n monitoring 2>&1 | complete)
+        let grafana_exists = (do { kubectl get deployment prometheus-grafana -n monitoring } | complete)
         if $grafana_exists.exit_code == 0 {
             kubectl rollout restart deployment prometheus-grafana -n monitoring
             kubectl rollout status deployment prometheus-grafana -n monitoring --timeout=120s
@@ -463,7 +463,7 @@ def restart_oidc_dependent_pods [] {
     
     # Backstage
     try {
-        let backstage_exists = (kubectl get deployment backstage -n backstage 2>&1 | complete)
+        let backstage_exists = (do { kubectl get deployment backstage -n backstage } | complete)
         if $backstage_exists.exit_code == 0 {
             kubectl rollout restart deployment backstage -n backstage
             kubectl rollout status deployment backstage -n backstage --timeout=180s

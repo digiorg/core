@@ -19,7 +19,7 @@ spec:
         releaseName: prometheus
         valueFiles:
           - $values/platform/base/monitoring/values.yaml
-    - repoURL: git@github.com:digiorg/core.git
+    - repoURL: https://github.com/digiorg/core.git
       targetRevision: HEAD
       ref: values
 

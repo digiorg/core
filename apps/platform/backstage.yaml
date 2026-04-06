@@ -12,7 +12,7 @@ spec:
   project: default
 
   source:
-    repoURL: git@github.com:digiorg/core.git
+    repoURL: https://github.com/digiorg/core.git
     targetRevision: HEAD
     path: platform/base/backstage
 
