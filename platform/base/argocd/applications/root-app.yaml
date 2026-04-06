@@ -17,6 +17,9 @@ spec:
     targetRevision: HEAD
     # Point to the apps/ directory — ArgoCD will discover all Application manifests here
     path: apps
+    directory:
+      recurse: true
+      include: '*.yaml'
 
   destination:
     server: https://kubernetes.default.svc

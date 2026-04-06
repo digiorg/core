@@ -4,26 +4,42 @@ This directory contains ArgoCD Application manifests managed by the App-of-Apps 
 
 ## Structure
 
-Applications are organized by purpose:
-
 ```
 apps/
 ├── README.md
-├── platform/          # Platform infrastructure apps
-│   ├── argocd.yaml
-│   ├── crossplane.yaml
-│   ├── kyverno.yaml
-│   └── vault.yaml
-├── observability/     # Monitoring and logging
-│   ├── prometheus.yaml
-│   ├── grafana.yaml
-│   └── loki.yaml
-└── workloads/         # Workload clusters and resources
+├── platform/              # Platform infrastructure apps
+│   ├── argocd.yaml        # Self-managed ArgoCD (Wave 1)
+│   ├── keycloak.yaml      # Identity Provider (Wave 1)
+│   ├── backstage.yaml     # Developer Portal (Wave 2)
+│   ├── crossplane.yaml    # Infrastructure as Code (Wave 3)
+│   └── kyverno.yaml       # Policy Engine (Wave 3)
+└── observability/         # Monitoring and logging
+    └── monitoring.yaml    # Prometheus + Grafana (Wave 2)
 ```
+
+## Sync Waves
+
+Applications are deployed in order using ArgoCD sync waves:
+
+| Wave | Applications | Description |
+|------|--------------|-------------|
+| -1 | root-app | Bootstrap (deployed by setup script) |
+| 0 | platform-apps | ApplicationSet generator |
+| 1 | keycloak, argocd | Core infrastructure (IdP, GitOps) |
+| 2 | backstage, monitoring | Platform services (depend on Keycloak) |
+| 3 | crossplane, kyverno | Extensions (no Keycloak dependency) |
+
+## How It Works
+
+1. **Setup Script** bootstraps: KinD cluster, Ingress, CoreDNS, Secrets, ArgoCD (Helm)
+2. **Setup Script** deploys `root-app.yaml`
+3. **Root App** discovers `apps/` directory
+4. **ApplicationSet** generates Applications from `apps/platform/*` and `apps/observability/*`
+5. **Sync Waves** ensure correct deployment order
 
 ## Adding a New Application
 
-1. Create a new YAML file following this template:
+1. Create a new YAML file in the appropriate directory:
 
 ```yaml
 apiVersion: argoproj.io/v1alpha1
@@ -33,12 +49,14 @@ metadata:
   namespace: argocd
   finalizers:
     - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"  # Adjust based on dependencies
 spec:
   project: default
   source:
-    repoURL: https://charts.example.com
-    chart: my-chart
-    targetRevision: 1.0.0
+    repoURL: git@github.com:digiorg/core.git
+    targetRevision: HEAD
+    path: platform/base/my-app
   destination:
     server: https://kubernetes.default.svc
     namespace: my-namespace
@@ -48,18 +66,35 @@ spec:
       prune: true
     syncOptions:
       - CreateNamespace=true
+      - ServerSideApply=true
 ```
 
-2. Commit and push - ArgoCD will automatically sync the new application.
+2. Create the corresponding manifests in `platform/base/my-app/`
+3. Commit and push — ArgoCD will automatically sync
 
-## Sync Waves
+## Dependencies
 
-Use annotations to control deployment order:
+### Keycloak Dependencies (Wave 2+)
 
-```yaml
-metadata:
-  annotations:
-    argocd.argoproj.io/sync-wave: "-1"  # Deploy before wave 0
-```
+These services require Keycloak for authentication:
+- **ArgoCD** — OIDC login (works after Keycloak is ready)
+- **Grafana** — OAuth login
+- **Backstage** — OIDC login
 
-Lower numbers deploy first.
+### No Dependencies (Wave 3)
+
+These services don't require other platform services:
+- **Crossplane** — Infrastructure provisioning
+- **Kyverno** — Policy enforcement
+
+## Secrets
+
+Secrets are created by the setup script **before** ArgoCD is installed:
+
+| Namespace | Secret | Keys |
+|-----------|--------|------|
+| keycloak | keycloak-secrets | admin-password, postgres-password |
+| backstage | backstage-secrets | POSTGRES_PASSWORD, AUTH_SESSION_SECRET, AUTH_OIDC_CLIENT_SECRET |
+| monitoring | grafana-secrets | oidc-client-secret |
+
+For production, use External Secrets Operator with Azure KeyVault / AWS Secrets Manager.
