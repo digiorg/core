@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: platform-db
+  labels:
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/part-of: digiorg-platform

@@ -1,0 +1,35 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: postgresql
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    # Wave 0: Database layer — must be ready before Keycloak (Wave 1) and Backstage (Wave 2)
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/digiorg/core.git
+    targetRevision: HEAD
+    path: platform/base/postgresql
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: platform-db
+
+  syncPolicy:
+    automated:
+      selfHeal: true
+      prune: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

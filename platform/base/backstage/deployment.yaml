@@ -24,7 +24,7 @@ spec:
             - -c
             - |
               echo "Waiting for PostgreSQL to be ready..."
-              until nc -z backstage-postgres 5432; do
+              until nc -z postgresql.platform-db.svc.cluster.local 5432; do
                 echo "PostgreSQL not ready yet, waiting..."
                 sleep 2
               done
@@ -42,9 +42,9 @@ spec:
             - name: BACKEND_BASE_URL
               value: "http://digiorg.local/backstage"
             
-            # PostgreSQL connection (using Backstage's own PostgreSQL)
+            # PostgreSQL connection (using shared PostgreSQL in platform-db namespace)
             - name: POSTGRES_HOST
-              value: backstage-postgres
+              value: postgresql.platform-db.svc.cluster.local
             - name: POSTGRES_PORT
               value: "5432"
             - name: POSTGRES_USER

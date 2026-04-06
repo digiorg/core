@@ -157,7 +157,7 @@ def wait_for_argocd_apps [] {
     print ""
     
     # Apps to wait for (in wave order)
-    let apps = ["keycloak", "backstage", "monitoring", "crossplane", "kyverno"]
+    let apps = ["postgresql", "keycloak", "backstage", "monitoring", "crossplane", "kyverno"]
     
     mut all_healthy = false
     mut attempts = 0
@@ -249,7 +249,7 @@ def "main status" [] {
         print $"(ansi cyan_bold)Platform Pods(ansi reset)"
         print "============="
         
-        let namespaces = ["argocd", "keycloak", "crossplane-system", "kyverno", "monitoring", "backstage"]
+        let namespaces = ["platform-db", "argocd", "keycloak", "crossplane-system", "kyverno", "monitoring", "backstage"]
         for ns in $namespaces {
             let status = try {
                 let pods = (kubectl get pods -n $ns --no-headers 2>/dev/null | lines | length)
@@ -392,6 +392,15 @@ data:
 }
 
 def create_platform_secrets [] {
+    # Platform-db namespace and PostgreSQL secrets (shared database for Keycloak + Backstage)
+    kubectl create namespace platform-db --dry-run=client -o yaml | kubectl apply -f -
+    (kubectl create secret generic postgresql-secrets -n platform-db
+        --from-literal=POSTGRES_PASSWORD=postgres-admin-password
+        --from-literal=KEYCLOAK_DB_PASSWORD=keycloak
+        --from-literal=BACKSTAGE_DB_PASSWORD=backstage-dev-password
+        --dry-run=client -o yaml | kubectl apply -f -)
+    print $"(ansi green)✓ PostgreSQL secrets created (platform-db)(ansi reset)"
+    
     # Keycloak namespace
     kubectl create namespace keycloak --dry-run=client -o yaml | kubectl apply -f -
     print $"(ansi green)✓ Keycloak namespace created(ansi reset)"
