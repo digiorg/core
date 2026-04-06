@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: platform-db
+
+resources:
+  - namespace.yaml
+  - statefulset.yaml
+  - service.yaml
+
+# Note: postgresql-secrets is created by the setup script before ArgoCD bootstrap.
+# This ensures secrets are not committed to Git while still being available
+# when ArgoCD syncs this application.

@@ -9,6 +9,7 @@ apps/
 ├── README.md
 ├── platform/              # Platform infrastructure apps
 │   ├── argocd.yaml        # Self-managed ArgoCD (Wave 1)
+│   ├── postgresql.yaml    # Shared PostgreSQL database (Wave 0)
 │   ├── keycloak.yaml      # Identity Provider (Wave 1)
 │   ├── backstage.yaml     # Developer Portal (Wave 2)
 │   ├── crossplane.yaml    # Infrastructure as Code (Wave 3)
@@ -24,6 +25,7 @@ Applications are deployed in order using ArgoCD sync waves:
 | Wave | Applications | Description |
 |------|--------------|-------------|
 | -1 | root-app | Bootstrap (deployed by setup script) |
+| 0 | postgresql | Shared database layer (required by Keycloak and Backstage) |
 | 1 | keycloak, argocd | Core infrastructure (IdP, GitOps) |
 | 2 | backstage, monitoring | Platform services (depend on Keycloak) |
 | 3 | crossplane, kyverno | Extensions (no Keycloak dependency) |
@@ -73,6 +75,12 @@ spec:
 
 ## Dependencies
 
+### PostgreSQL Dependencies (Wave 1+)
+
+These services require the shared PostgreSQL instance (Wave 0):
+- **Keycloak** — stores realm, user, and session data in the `keycloak` database
+- **Backstage** — stores catalog and scaffolder data in the `backstage` database
+
 ### Keycloak Dependencies (Wave 2+)
 
 These services require Keycloak for authentication:
@@ -92,7 +100,7 @@ Secrets are created by the setup script **before** ArgoCD is installed:
 
 | Namespace | Secret | Notes |
 |-----------|--------|-------|
-| keycloak | keycloak-db-credentials | Bootstrap database credentials secret created by the setup script |
+| platform-db | postgresql-secrets | Shared PostgreSQL superuser and per-database passwords |
 | backstage | backstage-secrets | Bootstrap application secret created by the setup script |
 
 The setup script does **not** create a bootstrap Grafana secret in the `monitoring` namespace. Refer to the setup script for the exact keys present in each bootstrap secret.

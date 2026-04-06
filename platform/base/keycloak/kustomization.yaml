@@ -4,7 +4,6 @@ kind: Kustomization
 namespace: keycloak
 
 resources:
-  - postgres-deployment.yaml
   - keycloak-deployment.yaml
 
 configMapGenerator:

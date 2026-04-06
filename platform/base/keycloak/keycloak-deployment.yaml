@@ -42,11 +42,14 @@ spec:
             - name: KC_DB
               value: postgres
             - name: KC_DB_URL
-              value: jdbc:postgresql://postgres:5432/keycloak
+              value: jdbc:postgresql://postgresql.platform-db.svc.cluster.local:5432/keycloak
             - name: KC_DB_USERNAME
               value: keycloak
             - name: KC_DB_PASSWORD
-              value: keycloak
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-db-credentials
+                  key: password
             # Admin bootstrap (dev only)
             - name: KC_BOOTSTRAP_ADMIN_USERNAME
               value: admin
