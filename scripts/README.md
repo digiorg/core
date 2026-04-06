@@ -14,10 +14,10 @@ This directory contains automation scripts for the DigiOrg Core Platform.
 
 ### local-setup.nu
 
-Manages the local KinD development cluster.
+Manages the local KinD development cluster using the **App-of-Apps pattern**.
 
 ```bash
-# Start local cluster with all components
+# Bootstrap cluster and deploy ArgoCD root app
 nu scripts/local-setup.nu up
 
 # Destroy local cluster
@@ -26,28 +26,42 @@ nu scripts/local-setup.nu down
 # Reset cluster (down + up)
 nu scripts/local-setup.nu reset
 
-# Show cluster status
+# Show cluster and ArgoCD app status
 nu scripts/local-setup.nu status
 
-# Install specific components only
-nu scripts/local-setup.nu install --components argocd,keycloak
+# Run only Phase 1 bootstrap (no root app)
+nu scripts/local-setup.nu bootstrap
 ```
 
-#### What `up` installs
+## Architecture
+
+The setup follows a two-phase approach:
+
+### Phase 1: Bootstrap (Setup Script)
+
+The script installs only the minimal infrastructure needed to run ArgoCD:
 
 1. **KinD Cluster** (`digiorg-core-dev`)
 2. **Gateway API CRDs**
 3. **NGINX Ingress Controller**
 4. **Platform Ingress** (unified routing via `digiorg.local`)
 5. **CoreDNS Patch** (internal `digiorg.local` resolution)
-6. **Keycloak** (Identity Provider with PostgreSQL)
-7. **ArgoCD** (GitOps with Keycloak SSO)
-8. **Crossplane** (Infrastructure as Code)
-9. **Kyverno** (Policy Engine)
-10. **Prometheus + Grafana** (Monitoring with Keycloak OAuth)
-11. **Backstage** (Developer Portal with Keycloak OIDC)
+6. **Platform Secrets** (keycloak, backstage, monitoring namespaces)
+7. **ArgoCD** (Helm install)
+8. **Root App** (triggers App-of-Apps)
 
-#### Service Access
+### Phase 2: App-of-Apps (ArgoCD)
+
+ArgoCD takes over and deploys all platform components via sync waves:
+
+| Wave | Applications | Description |
+|------|--------------|-------------|
+| -1 | root-app | Bootstrap (deployed by script) |
+| 1 | keycloak, argocd | Core infrastructure |
+| 2 | backstage, monitoring | Platform services |
+| 3 | crossplane, kyverno | Extensions |
+
+## Service Access
 
 After `up` completes, access services via:
 
@@ -87,14 +101,17 @@ kind delete cluster --name digiorg-core-dev
 nu scripts/local-setup.nu up
 ```
 
-### Services not accessible
+### ArgoCD apps not syncing
 
 ```bash
-# Check ingress controller
-kubectl get pods -n ingress-nginx
+# Check ArgoCD UI
+open http://digiorg.local/argocd
 
-# Check /etc/hosts
-cat /etc/hosts | grep digiorg
+# Check app status
+kubectl get applications -n argocd
+
+# Check app logs
+kubectl logs -n argocd -l app.kubernetes.io/name=argocd-application-controller
 ```
 
 ### Component not ready
@@ -105,4 +122,7 @@ kubectl get pods -n <namespace>
 
 # View logs
 kubectl logs -n <namespace> -l app=<app-name>
+
+# Check ArgoCD app details
+kubectl describe application <app-name> -n argocd
 ```
