@@ -11,16 +11,6 @@ metadata:
 spec:
   project: default
 
-  source:
-    repoURL: https://prometheus-community.github.io/helm-charts
-    chart: kube-prometheus-stack
-    targetRevision: 72.6.2
-    helm:
-      releaseName: prometheus
-      valueFiles:
-        # Use values from Git repo
-        - $values/platform/base/monitoring/values.yaml
-
   sources:
     - repoURL: https://prometheus-community.github.io/helm-charts
       chart: kube-prometheus-stack
