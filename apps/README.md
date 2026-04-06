@@ -91,10 +91,10 @@ These services don't require other platform services:
 
 Secrets are created by the setup script **before** ArgoCD is installed:
 
-| Namespace | Secret | Keys |
-|-----------|--------|------|
-| keycloak | keycloak-secrets | admin-password, postgres-password |
-| backstage | backstage-secrets | POSTGRES_PASSWORD, AUTH_SESSION_SECRET, AUTH_OIDC_CLIENT_SECRET |
-| monitoring | grafana-secrets | oidc-client-secret |
+| Namespace | Secret | Notes |
+|-----------|--------|-------|
+| keycloak | keycloak-db-credentials | Bootstrap database credentials secret created by the setup script |
+| backstage | backstage-secrets | Bootstrap application secret created by the setup script |
 
+The setup script does **not** create a bootstrap Grafana secret in the `monitoring` namespace. Refer to the setup script for the exact keys present in each bootstrap secret.
 For production, use External Secrets Operator with Azure KeyVault / AWS Secrets Manager.
