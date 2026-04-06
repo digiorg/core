@@ -392,13 +392,9 @@ data:
 }
 
 def create_platform_secrets [] {
-    # Keycloak secrets
+    # Keycloak namespace
     kubectl create namespace keycloak --dry-run=client -o yaml | kubectl apply -f -
-    (kubectl create secret generic keycloak-db-credentials -n keycloak
-        --from-literal=username=keycloak
-        --from-literal=password=keycloak-db-password
-        --dry-run=client -o yaml | kubectl apply -f -)
-    print $"(ansi green)✓ Keycloak secrets created(ansi reset)"
+    print $"(ansi green)✓ Keycloak namespace created(ansi reset)"
     
     # Backstage secrets
     kubectl create namespace backstage --dry-run=client -o yaml | kubectl apply -f -
