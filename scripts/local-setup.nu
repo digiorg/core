@@ -391,26 +391,41 @@ data:
     print $"(ansi green)✓ CoreDNS configured for digiorg.local [($ingress_ip)](ansi reset)"
 }
 
+# Generate a random password (alphanumeric, 24 chars)
+def generate_password [] {
+    random chars --length 24
+}
+
 def create_platform_secrets [] {
+    # Generate passwords (can be overridden via environment variables)
+    let postgres_password = ($env.POSTGRES_PASSWORD? | default (generate_password))
+    let keycloak_db_password = ($env.KEYCLOAK_DB_PASSWORD? | default (generate_password))
+    let backstage_db_password = ($env.BACKSTAGE_DB_PASSWORD? | default (generate_password))
+    let backstage_session_secret = ($env.AUTH_SESSION_SECRET? | default (generate_password))
+    let backstage_oidc_secret = ($env.AUTH_OIDC_CLIENT_SECRET? | default "backstage-client-secret")
+    
     # Platform-db namespace and PostgreSQL secrets (shared database for Keycloak + Backstage)
     kubectl create namespace platform-db --dry-run=client -o yaml | kubectl apply -f -
     (kubectl create secret generic postgresql-secrets -n platform-db
-        --from-literal=POSTGRES_PASSWORD=postgres-admin-password
-        --from-literal=KEYCLOAK_DB_PASSWORD=keycloak
-        --from-literal=BACKSTAGE_DB_PASSWORD=backstage-dev-password
+        --from-literal=POSTGRES_PASSWORD=$postgres_password
+        --from-literal=KEYCLOAK_DB_PASSWORD=$keycloak_db_password
+        --from-literal=BACKSTAGE_DB_PASSWORD=$backstage_db_password
         --dry-run=client -o yaml | kubectl apply -f -)
     print $"(ansi green)✓ PostgreSQL secrets created (platform-db)(ansi reset)"
     
-    # Keycloak namespace
+    # Keycloak namespace and DB credentials secret
     kubectl create namespace keycloak --dry-run=client -o yaml | kubectl apply -f -
-    print $"(ansi green)✓ Keycloak namespace created(ansi reset)"
+    (kubectl create secret generic keycloak-db-credentials -n keycloak
+        --from-literal=password=$keycloak_db_password
+        --dry-run=client -o yaml | kubectl apply -f -)
+    print $"(ansi green)✓ Keycloak namespace and secrets created(ansi reset)"
     
-    # Backstage secrets
+    # Backstage secrets (use same password as PostgreSQL backstage user)
     kubectl create namespace backstage --dry-run=client -o yaml | kubectl apply -f -
     (kubectl create secret generic backstage-secrets -n backstage
-        --from-literal=POSTGRES_PASSWORD=backstage-dev-password
-        --from-literal=AUTH_SESSION_SECRET=backstage-session-secret-change-in-prod
-        --from-literal=AUTH_OIDC_CLIENT_SECRET=backstage-client-secret
+        --from-literal=POSTGRES_PASSWORD=$backstage_db_password
+        --from-literal=AUTH_SESSION_SECRET=$backstage_session_secret
+        --from-literal=AUTH_OIDC_CLIENT_SECRET=$backstage_oidc_secret
         --from-literal=GITHUB_TOKEN=""
         --dry-run=client -o yaml | kubectl apply -f -)
     print $"(ansi green)✓ Backstage secrets created(ansi reset)"

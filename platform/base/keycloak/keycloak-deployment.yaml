@@ -46,7 +46,10 @@ spec:
             - name: KC_DB_USERNAME
               value: keycloak
             - name: KC_DB_PASSWORD
-              value: keycloak
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-db-credentials
+                  key: password
             # Admin bootstrap (dev only)
             - name: KC_BOOTSTRAP_ADMIN_USERNAME
               value: admin

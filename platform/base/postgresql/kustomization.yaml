@@ -5,6 +5,9 @@ namespace: platform-db
 
 resources:
   - namespace.yaml
-  - secrets.yaml
   - statefulset.yaml
   - service.yaml
+
+# Note: postgresql-secrets is created by the setup script before ArgoCD bootstrap.
+# This ensures secrets are not committed to Git while still being available
+# when ArgoCD syncs this application.

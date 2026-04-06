@@ -46,6 +46,11 @@ spec:
       labels:
         app: postgresql
     spec:
+      # Run as postgres user (UID 70 in alpine image) to avoid permission issues
+      securityContext:
+        fsGroup: 70
+        runAsUser: 70
+        runAsGroup: 70
       containers:
         - name: postgresql
           image: postgres:16-alpine
@@ -67,10 +72,12 @@ spec:
                 secretKeyRef:
                   name: postgresql-secrets
                   key: BACKSTAGE_DB_PASSWORD
+            # Set PGDATA to a subdirectory to avoid "lost+found" issues
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
           volumeMounts:
             - name: postgres-data
               mountPath: /var/lib/postgresql/data
-              subPath: data
             - name: init-scripts
               mountPath: /docker-entrypoint-initdb.d
               readOnly: true
