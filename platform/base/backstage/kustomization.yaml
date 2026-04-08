@@ -5,6 +5,8 @@ namespace: backstage
 
 resources:
   - namespace.yaml
-  - secret.yaml
   - deployment.yaml
   - service.yaml
+
+# Note: backstage-secrets is created by scripts/local-setup.nu before ArgoCD sync.
+# Do NOT add secrets here — ArgoCD would overwrite the generated passwords.

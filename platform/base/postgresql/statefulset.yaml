@@ -17,7 +17,7 @@ data:
         CREATE DATABASE keycloak OWNER keycloak;
         GRANT ALL PRIVILEGES ON DATABASE keycloak TO keycloak;
 
-        CREATE USER backstage WITH PASSWORD '${BACKSTAGE_DB_PASSWORD}';
+        CREATE USER backstage WITH PASSWORD '${BACKSTAGE_DB_PASSWORD}' CREATEDB;
         CREATE DATABASE backstage OWNER backstage;
         GRANT ALL PRIVILEGES ON DATABASE backstage TO backstage;
     EOSQL
