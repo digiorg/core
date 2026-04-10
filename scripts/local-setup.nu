@@ -407,25 +407,25 @@ def create_platform_secrets [] {
     # Platform-db namespace and PostgreSQL secrets (shared database for Keycloak + Backstage)
     kubectl create namespace platform-db --dry-run=client -o yaml | kubectl apply -f -
     (kubectl create secret generic postgresql-secrets -n platform-db
-        --from-literal=POSTGRES_PASSWORD=$postgres_password
-        --from-literal=KEYCLOAK_DB_PASSWORD=$keycloak_db_password
-        --from-literal=BACKSTAGE_DB_PASSWORD=$backstage_db_password
+        --from-literal=POSTGRES_PASSWORD=($postgres_password)
+        --from-literal=KEYCLOAK_DB_PASSWORD=($keycloak_db_password)
+        --from-literal=BACKSTAGE_DB_PASSWORD=($backstage_db_password)
         --dry-run=client -o yaml | kubectl apply -f -)
-    print $"(ansi green)✓ PostgreSQL secrets created (platform-db)(ansi reset)"
+    print $"(ansi green)✓ PostgreSQL secrets created [platform-db](ansi reset)"
     
     # Keycloak namespace and DB credentials secret
     kubectl create namespace keycloak --dry-run=client -o yaml | kubectl apply -f -
     (kubectl create secret generic keycloak-db-credentials -n keycloak
-        --from-literal=password=$keycloak_db_password
+        --from-literal=password=($keycloak_db_password)
         --dry-run=client -o yaml | kubectl apply -f -)
     print $"(ansi green)✓ Keycloak namespace and secrets created(ansi reset)"
     
     # Backstage secrets (use same password as PostgreSQL backstage user)
     kubectl create namespace backstage --dry-run=client -o yaml | kubectl apply -f -
     (kubectl create secret generic backstage-secrets -n backstage
-        --from-literal=POSTGRES_PASSWORD=$backstage_db_password
-        --from-literal=AUTH_SESSION_SECRET=$backstage_session_secret
-        --from-literal=AUTH_OIDC_CLIENT_SECRET=$backstage_oidc_secret
+        --from-literal=POSTGRES_PASSWORD=($backstage_db_password)
+        --from-literal=AUTH_SESSION_SECRET=($backstage_session_secret)
+        --from-literal=AUTH_OIDC_CLIENT_SECRET=($backstage_oidc_secret)
         --from-literal=GITHUB_TOKEN=""
         --dry-run=client -o yaml | kubectl apply -f -)
     print $"(ansi green)✓ Backstage secrets created(ansi reset)"
@@ -457,7 +457,7 @@ def install_argocd [] {
         --set 'configs.params.server\.insecure=true'
         --wait --timeout 10m)
 
-    print $"(ansi green)✓ ArgoCD installed (Helm)(ansi reset)"
+    print $"(ansi green)✓ ArgoCD installed [Helm](ansi reset)"
 }
 
 # Restart pods that depend on OIDC/Keycloak
