@@ -62,12 +62,19 @@ The local development environment (`digiorg-core-dev` cluster) includes:
 │  │ Keycloak │ │  ArgoCD  │ │ Grafana  │ │Backstage │                  │
 │  │   IdP    │◀─┤   SSO   ◀─┤  OAuth  ◀─┤  OIDC   ◀─┬ Keycloak SSO    │
 │  └──────────┘ └──────────┘ └──────────┘ └──────────┘                  │
-│       │                                                                │
-│       ▼                                                                │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐                  │
-│  │PostgreSQL│ │Crossplane│ │Prometheus│ │PostgreSQL│                  │
-│  │(Keycloak)│ │          │ │          │ │(Backstage│                  │
-│  └──────────┘ └──────────┘ └──────────┘ └──────────┘                  │
+│       │            │                 │                              │
+│       └────────────┴─────────────────┴──────────────────────────────┐│
+│                                                                      ▼│
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │             Shared PostgreSQL (platform-db namespace)              │  │
+│  │  ┌──────────────────┐  ┌────────────────────┐  ┌────────────────┐  │  │
+│  │  │  keycloak DB     │  │  backstage DB          │  │  (extensible)  │  │  │
+│  │  └──────────────────┘  └────────────────────┘  └────────────────┘  │  │
+│  └──────────────────────────────────────────────────────────────────┘  │
+│                                                                        │
+│  ┌──────────┐ ┌──────────┐                                              │
+│  │Crossplane│ │Prometheus│                                              │
+│  └──────────┘ └──────────┘                                              │
 │                                                                        │
 │  ┌────────────────────────────────────────────────────────────────┐   │
 │  │                        Kyverno                                  │   │
@@ -124,31 +131,53 @@ All services authenticate via Keycloak OIDC:
 │                       Kubernetes Namespaces                             │
 └─────────────────────────────────────────────────────────────────────────┘
 
- Platform Services                    Infrastructure
+ Data Layer                           Infrastructure
  ─────────────────                    ──────────────
  ┌──────────────┐                     ┌──────────────┐
- │   keycloak   │                     │ ingress-nginx│
- │  • keycloak  │                     │  • controller│
- │  • postgres  │                     └──────────────┘
+ │  platform-db │                     │ ingress-nginx│
+ │  • postgresql│◀───────────────────┤  • controller│
+ │    (shared) │  keycloak DB        └──────────────┘
+ └───────┬──────┘  backstage DB
+        │                            ┌──────────────┐
+        │                            │  crossplane- │
+        │                            │    system    │
+        │                            │  • providers │
+        │                            └──────────────┘
+        │
+        │                            ┌──────────────┐
+        │                            │   kyverno    │
+        │                            │  • admission │
+        │                            │  • background│
+        │                            └──────────────┘
+        │
+        │                            ┌──────────────┐
+        │                            │  kube-system │
+        │                            │  • coredns   │
+        │                            └──────────────┘
+        │
+ Platform Services
+ ─────────────────
+ ┌──────────────┐
+ │   keycloak   │
+ │  • keycloak  │◀─── uses keycloak DB
  └──────────────┘
-                                      ┌──────────────┐
- ┌──────────────┐                     │  crossplane- │
- │    argocd    │                     │    system    │
- │  • server    │                     │  • providers │
- │  • repo-srv  │                     └──────────────┘
+
+ ┌──────────────┐
+ │    argocd    │
+ │  • server    │
+ │  • repo-srv  │
  │  • redis     │
- └──────────────┘                     ┌──────────────┐
-                                      │   kyverno    │
- ┌──────────────┐                     │  • admission │
- │  monitoring  │                     │  • background│
- │  • prometheus│                     └──────────────┘
+ └──────────────┘
+
+ ┌──────────────┐
+ │  monitoring  │
+ │  • prometheus│
  │  • grafana   │
- └──────────────┘                     ┌──────────────┐
-                                      │  kube-system │
- ┌──────────────┐                     │  • coredns   │
- │  backstage   │                     └──────────────┘
- │  • backstage │
- │  • postgres  │
+ └──────────────┘
+
+ ┌──────────────┐
+ │  backstage   │
+ │  • backstage │◀─── uses backstage DB
  └──────────────┘
 ```
 

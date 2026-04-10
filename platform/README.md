@@ -13,9 +13,10 @@ platform/
     ├── backstage/       # Backstage Developer Portal
     ├── crossplane/      # Crossplane setup
     ├── ingress/         # NGINX Ingress + unified routing
-    ├── keycloak/        # Keycloak IdP + PostgreSQL
+    ├── keycloak/        # Keycloak IdP (uses shared PostgreSQL)
     ├── kyverno/         # Policy Engine
-    └── monitoring/      # Prometheus + Grafana
+    ├── monitoring/      # Prometheus + Grafana
+    └── postgresql/      # Shared PostgreSQL (Keycloak + Backstage)
 ```
 
 ## Components
@@ -39,6 +40,9 @@ Kustomize bases for all platform components:
 | keycloak | Identity Provider | Built-in |
 | kyverno | Policy Engine | - |
 | monitoring | Prometheus + Grafana | Keycloak OAuth |
+| postgresql | Shared PostgreSQL database | - |
+
+**Note:** PostgreSQL runs as a shared StatefulSet in the `platform-db` namespace, serving both Keycloak and Backstage databases.
 
 ## Service Access
 

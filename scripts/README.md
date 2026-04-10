@@ -46,7 +46,7 @@ The script installs only the minimal infrastructure needed to run ArgoCD:
 3. **NGINX Ingress Controller**
 4. **Platform Ingress** (unified routing via `digiorg.local`)
 5. **CoreDNS Patch** (internal `digiorg.local` resolution)
-6. **Platform Secrets** (keycloak, backstage, monitoring namespaces)
+6. **Platform Secrets** (shared PostgreSQL credentials + per-service secrets)
 7. **ArgoCD** (Helm install)
 8. **Root App** (triggers App-of-Apps)
 
@@ -57,8 +57,9 @@ ArgoCD takes over and deploys all platform components via sync waves:
 | Wave | Applications | Description |
 |------|--------------|-------------|
 | -1 | root-app | Bootstrap (deployed by script) |
-| 1 | keycloak, argocd | Core infrastructure |
-| 2 | backstage, monitoring | Platform services |
+| 0 | postgresql | Shared database (namespace: `platform-db`) |
+| 1 | keycloak, argocd | Core infrastructure (depend on PostgreSQL) |
+| 2 | backstage, monitoring | Platform services (depend on PostgreSQL + Keycloak) |
 | 3 | crossplane, kyverno | Extensions |
 
 ## Service Access

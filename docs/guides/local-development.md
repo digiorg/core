@@ -52,12 +52,13 @@ This runs in two phases:
 2. Install Gateway API CRDs
 3. Install NGINX Ingress Controller
 4. Configure CoreDNS for `digiorg.local`
-5. Create platform secrets
+5. Create platform secrets (including shared PostgreSQL credentials)
 6. Install ArgoCD (Helm)
 7. Deploy root-app
 
 **Phase 2 (App-of-Apps):**
 ArgoCD syncs all platform components via sync waves:
+- Wave 0: PostgreSQL (shared database in `platform-db` namespace)
 - Wave 1: Keycloak, ArgoCD (self-managed)
 - Wave 2: Backstage, Monitoring
 - Wave 3: Crossplane, Kyverno
@@ -129,8 +130,9 @@ nu scripts/local-setup.nu reset
 | Wave | Applications | Dependencies |
 |------|--------------|--------------|
 | -1 | root-app | Bootstrap (deployed by script) |
-| 1 | keycloak, argocd | Ingress, Secrets |
-| 2 | backstage, monitoring | Keycloak (OIDC) |
+| 0 | postgresql | Ingress, Secrets (shared DB for platform services) |
+| 1 | keycloak, argocd | PostgreSQL, Ingress |
+| 2 | backstage, monitoring | PostgreSQL, Keycloak (OIDC) |
 | 3 | crossplane, kyverno | None |
 
 ## Development Workflow
@@ -259,11 +261,12 @@ The local cluster uses approximately:
 | Component | CPU | Memory |
 |-----------|-----|--------|
 | KinD Node | 2 cores | 4 GB |
-| Keycloak + PostgreSQL | 0.5 cores | 1 GB |
+| Shared PostgreSQL | 0.3 cores | 512 MB |
+| Keycloak | 0.4 cores | 768 MB |
 | ArgoCD | 0.5 cores | 512 MB |
 | Crossplane | 0.2 cores | 256 MB |
 | Kyverno | 0.2 cores | 256 MB |
 | Prometheus + Grafana | 0.5 cores | 1 GB |
-| Backstage + PostgreSQL | 0.5 cores | 1 GB |
+| Backstage | 0.4 cores | 768 MB |
 
 **Recommended:** At least 8 GB RAM allocated to Docker.
