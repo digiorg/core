@@ -7,10 +7,11 @@ Keycloak is the Identity Provider (IdP) for the platform, providing SSO for all 
 | File | Description |
 |------|-------------|
 | `namespace.yaml` | Keycloak namespace |
-| `postgres-deployment.yaml` | PostgreSQL database for Keycloak |
 | `keycloak-deployment.yaml` | Keycloak server deployment |
 | `realm-configmap.yaml` | Pre-configured realm (`digiorg-core-platform`) |
 | `kustomization.yaml` | Kustomize entrypoint |
+
+**Note:** Keycloak uses the shared PostgreSQL instance in the `platform-db` namespace. Database credentials are provided via the `keycloak-db-credentials` Secret.
 
 ## Access
 
@@ -55,25 +56,27 @@ The `digiorg-core-platform` realm is automatically imported on startup with:
 │  │  └── platform-viewer                        │    │
 │  └─────────────────────────────────────────────┘    │
 │                       │                             │
-│                       ▼                             │
-│              ┌─────────────┐                        │
-│              │ PostgreSQL  │                        │
-│              └─────────────┘                        │
+└───────────────────────┬─────────────────────────────┘
+                        │
+                        ▼
+┌─────────────────────────────────────────────────────┐
+│         Shared PostgreSQL (platform-db)             │
+│                                                     │
+│  ┌─────────────────────┐  ┌─────────────────────┐    │
+│  │   keycloak DB       │  │   backstage DB      │    │
+│  └─────────────────────┘  └─────────────────────┘    │
 └─────────────────────────────────────────────────────┘
 ```
 
 ## Local Development
 
-Keycloak is installed by `scripts/local-setup.nu`:
+Keycloak is deployed via ArgoCD after the shared PostgreSQL is ready:
 
 ```bash
-# Apply manifests
-kubectl apply -k platform/base/keycloak/
+# Wait for PostgreSQL (deployed in Wave 0)
+kubectl rollout status statefulset/postgresql -n platform-db
 
-# Wait for PostgreSQL
-kubectl rollout status deployment/postgres -n keycloak
-
-# Wait for Keycloak
+# Wait for Keycloak (deployed in Wave 1)
 kubectl rollout status deployment/keycloak -n keycloak
 ```
 
@@ -94,13 +97,16 @@ Or use the Keycloak Admin Console:
 ### Keycloak not starting
 
 ```bash
-# Check PostgreSQL
-kubectl get pods -n keycloak -l app=postgres
-kubectl logs -n keycloak -l app=postgres
+# Check shared PostgreSQL
+kubectl get pods -n platform-db
+kubectl logs -n platform-db -l app=postgresql
 
 # Check Keycloak
 kubectl get pods -n keycloak -l app=keycloak
 kubectl logs -n keycloak -l app=keycloak
+
+# Verify database connection
+kubectl exec -n platform-db postgresql-0 -- psql -U postgres -c "\l" | grep keycloak
 ```
 
 ### Realm not loading

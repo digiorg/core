@@ -48,6 +48,9 @@ Die DigiOrg Core Platform ermöglicht es Unternehmen, ihre DevSecOps-Prozesse du
 - **Backstage** — Internal Developer Portal mit Service Catalog
 - **Keycloak SSO** — Zentrale Authentifizierung für alle Komponenten
 
+#### 🗄️ Data Layer
+- **Shared PostgreSQL** — Zentrale Datenbank für Keycloak und Backstage (Namespace: `platform-db`)
+
 #### 🔐 Security Stack
 - **Kyverno** — Policy-as-Code Engine
 - **Keycloak** — Identity & Access Management mit OIDC/SSO
@@ -108,7 +111,8 @@ core/
 │       ├── ingress/         # NGINX Ingress + Routing
 │       ├── keycloak/        # Keycloak IdP
 │       ├── kyverno/         # Policy Engine
-│       └── monitoring/      # Prometheus + Grafana
+│       ├── monitoring/      # Prometheus + Grafana
+│       └── postgresql/      # Shared PostgreSQL (Keycloak + Backstage)
 ├── apps/                    # ArgoCD Application Manifeste
 ├── policies/                # Kyverno Policies
 ├── crossplane/              # Crossplane XRDs & Compositions
@@ -173,6 +177,9 @@ The DigiOrg Core Platform enables organizations to automate their DevSecOps proc
 - **Backstage** — Internal Developer Portal with Service Catalog
 - **Keycloak SSO** — Centralized authentication for all components
 
+#### 🗄️ Data Layer
+- **Shared PostgreSQL** — Central database for Keycloak and Backstage (Namespace: `platform-db`)
+
 #### 🔐 Security Stack
 - **Kyverno** — Policy-as-Code engine
 - **Keycloak** — Identity & Access Management with OIDC/SSO
@@ -233,7 +240,8 @@ core/
 │       ├── ingress/         # NGINX Ingress + routing
 │       ├── keycloak/        # Keycloak IdP
 │       ├── kyverno/         # Policy engine
-│       └── monitoring/      # Prometheus + Grafana
+│       ├── monitoring/      # Prometheus + Grafana
+│       └── postgresql/      # Shared PostgreSQL (Keycloak + Backstage)
 ├── apps/                    # ArgoCD Application manifests
 ├── policies/                # Kyverno policies
 ├── crossplane/              # Crossplane XRDs & Compositions

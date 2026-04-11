@@ -143,9 +143,9 @@ def deploy_root_app [] {
     print ""
     print "ArgoCD Sync Waves:"
     print "  Wave -1: root-app (just deployed)"
-    print "  Wave  0: root-app recursively discovers apps/"
-    print "  Wave  1: keycloak, argocd (self-managed)"
-    print "  Wave  2: backstage, monitoring"
+    print "  Wave  0: postgresql (shared database)"
+    print "  Wave  1: keycloak (depends on PostgreSQL), argocd (self-managed in Wave 1)"
+    print "  Wave  2: backstage, monitoring (depend on PostgreSQL + Keycloak)"
     print "  Wave  3: crossplane, kyverno"
 }
 
