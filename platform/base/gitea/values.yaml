@@ -137,17 +137,11 @@ readinessProbe:
   timeoutSeconds: 5
   failureThreshold: 3
 
-# Init container to wait for PostgreSQL
-initContainers:
-  - name: wait-for-postgres
-    image: busybox:1.36
-    command:
-      - sh
-      - -c
-      - |
-        echo "Waiting for PostgreSQL to be ready..."
-        until nc -z postgresql.platform-db.svc.cluster.local 5432; do
-          echo "PostgreSQL not ready yet, waiting..."
-          sleep 2
-        done
-        echo "PostgreSQL is ready!"
+# Note: Custom initContainers removed.
+# The Gitea Helm chart has built-in init containers (init-directories, init-app-ini, configure-gitea)
+# that handle initialization. PostgreSQL readiness is ensured by ArgoCD sync waves:
+# - Wave 0: PostgreSQL (deployed first)
+# - Wave 2: Gitea (deployed after PostgreSQL is healthy)
+#
+# The Gitea chart's initContainers key expects a map for configuring built-in
+# init containers (resources, securityContext), not an array of custom containers.
