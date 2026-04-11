@@ -52,10 +52,10 @@ Instead of running separate PostgreSQL instances for each service, the platform 
 
 ## Secrets
 
-Secrets are created by `scripts/local-setup.nu` **before** ArgoCD syncs:
+PostgreSQL-related secret keys are created by `scripts/local-setup.nu` **before** ArgoCD syncs:
 
-| Namespace | Secret | Keys |
-|-----------|--------|------|
+| Namespace | Secret | PostgreSQL-related keys |
+|-----------|--------|------------------------|
 | `platform-db` | `postgresql-secrets` | `POSTGRES_PASSWORD`, `KEYCLOAK_DB_PASSWORD`, `BACKSTAGE_DB_PASSWORD` |
 | `keycloak` | `keycloak-db-credentials` | `password` (same as `KEYCLOAK_DB_PASSWORD`) |
 | `backstage` | `backstage-secrets` | `POSTGRES_PASSWORD` (same as `BACKSTAGE_DB_PASSWORD`) |
