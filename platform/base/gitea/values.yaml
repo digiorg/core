@@ -1,0 +1,153 @@
+# =============================================================================
+# Gitea Helm Chart Values
+# Chart: https://gitea.com/gitea/helm-chart
+# =============================================================================
+
+replicaCount: 1
+
+image:
+  repository: gitea/gitea
+  tag: ""  # Use chart default (latest stable)
+  pullPolicy: IfNotPresent
+
+# Disable built-in PostgreSQL — use shared platform-db instance
+postgresql:
+  enabled: false
+
+# Disable built-in PostgreSQL HA
+postgresql-ha:
+  enabled: false
+
+# Disable Redis cluster — use in-memory cache for local dev
+redis-cluster:
+  enabled: false
+
+# Persistence for Git repositories
+persistence:
+  enabled: true
+  size: 10Gi
+  accessModes:
+    - ReadWriteOnce
+
+# Gitea configuration (app.ini)
+gitea:
+  admin:
+    # Admin user created on first startup
+    # Password from secret, username here for reference
+    username: gitea_admin
+    existingSecret: gitea-admin-secret
+  
+  config:
+    APP_NAME: "DigiOrg Git"
+    
+    server:
+      DOMAIN: digiorg.local
+      ROOT_URL: "http://digiorg.local/gitea/"
+      SSH_DOMAIN: digiorg.local
+      SSH_PORT: 22
+      # Run behind reverse proxy with subpath
+      PROTOCOL: http
+      HTTP_PORT: 3000
+      # Required for subpath deployment behind ingress
+      SERVE_FROM_SUB_PATH: true
+    
+    database:
+      DB_TYPE: postgres
+      HOST: postgresql.platform-db.svc.cluster.local:5432
+      NAME: gitea
+      USER: gitea
+      # Password injected via environment variable from secret
+      PASSWD: ""
+    
+    security:
+      INSTALL_LOCK: true
+      SECRET_KEY: ""  # Auto-generated if empty
+    
+    service:
+      # Disable local registration — users are created via Keycloak OIDC
+      DISABLE_REGISTRATION: true
+      ALLOW_ONLY_EXTERNAL_REGISTRATION: true
+      SHOW_REGISTRATION_BUTTON: false
+      ENABLE_NOTIFY_MAIL: false
+    
+    # Session configuration
+    session:
+      PROVIDER: memory
+    
+    # Cache configuration (use memory for local dev)
+    cache:
+      ADAPTER: memory
+    
+    # Queue configuration
+    queue:
+      TYPE: level
+    
+    # OAuth2 auto-registration
+    oauth2_client:
+      ENABLE_AUTO_REGISTRATION: true
+      ACCOUNT_LINKING: login
+      USERNAME: nickname
+    
+    # Enable Gitea Actions
+    actions:
+      ENABLED: true
+
+# Additional environment variables from secrets
+extraEnvVars:
+  - name: GITEA__database__PASSWD
+    valueFrom:
+      secretKeyRef:
+        name: gitea-secrets
+        key: POSTGRES_PASSWORD
+
+# Ingress disabled — using platform-wide ingress
+ingress:
+  enabled: false
+
+# Service configuration
+service:
+  http:
+    type: ClusterIP
+    port: 3000
+  ssh:
+    type: ClusterIP
+    port: 22
+
+# Resource limits
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# Probes
+livenessProbe:
+  enabled: true
+  initialDelaySeconds: 200
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 10
+
+readinessProbe:
+  enabled: true
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+# Init container to wait for PostgreSQL
+initContainers:
+  - name: wait-for-postgres
+    image: busybox:1.36
+    command:
+      - sh
+      - -c
+      - |
+        echo "Waiting for PostgreSQL to be ready..."
+        until nc -z postgresql.platform-db.svc.cluster.local 5432; do
+          echo "PostgreSQL not ready yet, waiting..."
+          sleep 2
+        done
+        echo "PostgreSQL is ready!"

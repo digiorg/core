@@ -1,5 +1,5 @@
 # =============================================================================
-# Shared PostgreSQL — hosts keycloak and backstage databases
+# Shared PostgreSQL — hosts keycloak, backstage, and gitea databases
 # Init script creates databases and users on first startup
 # =============================================================================
 apiVersion: v1
@@ -20,6 +20,10 @@ data:
         CREATE USER backstage WITH PASSWORD '${BACKSTAGE_DB_PASSWORD}' CREATEDB;
         CREATE DATABASE backstage OWNER backstage;
         GRANT ALL PRIVILEGES ON DATABASE backstage TO backstage;
+
+        CREATE USER gitea WITH PASSWORD '${GITEA_DB_PASSWORD}';
+        CREATE DATABASE gitea OWNER gitea;
+        GRANT ALL PRIVILEGES ON DATABASE gitea TO gitea;
     EOSQL
 
     psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname keycloak <<-EOSQL
@@ -28,6 +32,10 @@ data:
 
     psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname backstage <<-EOSQL
         GRANT ALL ON SCHEMA public TO backstage;
+    EOSQL
+
+    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname gitea <<-EOSQL
+        GRANT ALL ON SCHEMA public TO gitea;
     EOSQL
 ---
 apiVersion: apps/v1
@@ -72,6 +80,11 @@ spec:
                 secretKeyRef:
                   name: postgresql-secrets
                   key: BACKSTAGE_DB_PASSWORD
+            - name: GITEA_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgresql-secrets
+                  key: GITEA_DB_PASSWORD
             # Set PGDATA to a subdirectory to avoid "lost+found" issues
             - name: PGDATA
               value: /var/lib/postgresql/data/pgdata

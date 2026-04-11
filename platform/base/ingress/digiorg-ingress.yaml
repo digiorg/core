@@ -13,6 +13,7 @@
 # - digiorg.local/argocd     → ArgoCD GitOps
 # - digiorg.local/grafana    → Grafana Monitoring
 # - digiorg.local/backstage  → Backstage Developer Portal
+# - digiorg.local/gitea      → Gitea Git Service
 # =============================================================================
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -53,6 +54,14 @@ spec:
                 name: prometheus-grafana
                 port:
                   number: 80
+          # Gitea
+          - path: /gitea(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: gitea-http
+                port:
+                  number: 3000
 ---
 # Backstage needs URL rewriting because it doesn't natively support subpath deployment
 # /backstage/foo -> /foo on the backend
@@ -123,3 +132,14 @@ spec:
   externalName: backstage.backstage.svc.cluster.local
   ports:
     - port: 7007
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gitea-http
+  namespace: ingress-nginx
+spec:
+  type: ExternalName
+  externalName: gitea-http.gitea.svc.cluster.local
+  ports:
+    - port: 3000
