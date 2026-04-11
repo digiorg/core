@@ -1,0 +1,15 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: gitea
+
+resources:
+  - namespace.yaml
+  - admin-secret.yaml
+
+# Note: The main Gitea deployment is handled via Helm chart
+# referenced in the ArgoCD Application (apps/platform/gitea.yaml).
+# This Kustomization provides supporting resources.
+#
+# Secrets are created by scripts/local-setup.nu before ArgoCD sync:
+# - gitea-secrets (POSTGRES_PASSWORD, AUTH_OIDC_CLIENT_SECRET)

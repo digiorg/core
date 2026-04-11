@@ -48,8 +48,11 @@ Die DigiOrg Core Platform ermöglicht es Unternehmen, ihre DevSecOps-Prozesse du
 - **Backstage** — Internal Developer Portal mit Service Catalog
 - **Keycloak SSO** — Zentrale Authentifizierung für alle Komponenten
 
+#### 💻 Source Control
+- **Gitea** — Self-hosted Git Service mit Code Review, Issue Tracking und CI/CD
+
 #### 🗄️ Data Layer
-- **Shared PostgreSQL** — Zentrale Datenbank für Keycloak und Backstage (Namespace: `platform-db`)
+- **Shared PostgreSQL** — Zentrale Datenbank für Keycloak, Backstage und Gitea (Namespace: `platform-db`)
 
 #### 🔐 Security Stack
 - **Kyverno** — Policy-as-Code Engine
@@ -82,6 +85,7 @@ nu scripts/local-setup.nu up
 #    - ArgoCD:    http://digiorg.local/argocd     (Login via Keycloak)
 #    - Grafana:   http://digiorg.local/grafana    (Login via Keycloak)
 #    - Backstage: http://digiorg.local/backstage  (Login via Keycloak)
+#    - Gitea:     http://digiorg.local/gitea      (Login via Keycloak)
 ```
 
 ### Cloud Provider Support
@@ -109,10 +113,11 @@ core/
 │       ├── backstage/       # Backstage Developer Portal
 │       ├── crossplane/      # Crossplane Setup
 │       ├── ingress/         # NGINX Ingress + Routing
+│       ├── gitea/           # Gitea Git Service
 │       ├── keycloak/        # Keycloak IdP
 │       ├── kyverno/         # Policy Engine
 │       ├── monitoring/      # Prometheus + Grafana
-│       └── postgresql/      # Shared PostgreSQL (Keycloak + Backstage)
+│       └── postgresql/      # Shared PostgreSQL (Keycloak + Backstage + Gitea)
 ├── apps/                    # ArgoCD Application Manifeste
 ├── policies/                # Kyverno Policies
 ├── crossplane/              # Crossplane XRDs & Compositions
@@ -177,8 +182,11 @@ The DigiOrg Core Platform enables organizations to automate their DevSecOps proc
 - **Backstage** — Internal Developer Portal with Service Catalog
 - **Keycloak SSO** — Centralized authentication for all components
 
+#### 💻 Source Control
+- **Gitea** — Self-hosted Git service with code review, issue tracking, and CI/CD
+
 #### 🗄️ Data Layer
-- **Shared PostgreSQL** — Central database for Keycloak and Backstage (Namespace: `platform-db`)
+- **Shared PostgreSQL** — Central database for Keycloak, Backstage, and Gitea (Namespace: `platform-db`)
 
 #### 🔐 Security Stack
 - **Kyverno** — Policy-as-Code engine
@@ -211,6 +219,7 @@ nu scripts/local-setup.nu up
 #    - ArgoCD:    http://digiorg.local/argocd     (Login via Keycloak)
 #    - Grafana:   http://digiorg.local/grafana    (Login via Keycloak)
 #    - Backstage: http://digiorg.local/backstage  (Login via Keycloak)
+#    - Gitea:     http://digiorg.local/gitea      (Login via Keycloak)
 ```
 
 ### Cloud Provider Support
@@ -238,10 +247,11 @@ core/
 │       ├── backstage/       # Backstage Developer Portal
 │       ├── crossplane/      # Crossplane setup
 │       ├── ingress/         # NGINX Ingress + routing
+│       ├── gitea/           # Gitea Git Service
 │       ├── keycloak/        # Keycloak IdP
 │       ├── kyverno/         # Policy engine
 │       ├── monitoring/      # Prometheus + Grafana
-│       └── postgresql/      # Shared PostgreSQL (Keycloak + Backstage)
+│       └── postgresql/      # Shared PostgreSQL (Keycloak + Backstage + Gitea)
 ├── apps/                    # ArgoCD Application manifests
 ├── policies/                # Kyverno policies
 ├── crossplane/              # Crossplane XRDs & Compositions

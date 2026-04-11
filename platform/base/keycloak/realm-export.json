@@ -122,6 +122,44 @@
           }
         }
       ]
+    },
+    {
+      "clientId": "gitea",
+      "name": "Gitea",
+      "description": "Gitea Git Service — OIDC login",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "gitea-client-secret",
+      "redirectUris": [
+        "http://digiorg.local/gitea/user/oauth2/Keycloak/callback",
+        "http://digiorg.local/gitea/*"
+      ],
+      "webOrigins": [
+        "http://digiorg.local",
+        "http://digiorg.local/gitea"
+      ],
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": true,
+      "protocolMappers": [
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "full.path": "false",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "groups",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
     }
   ],
   "roles": {

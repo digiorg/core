@@ -11,6 +11,7 @@ apps/
 │   ├── argocd.yaml        # Self-managed ArgoCD (Wave 1)
 │   ├── postgresql.yaml    # Shared PostgreSQL database (Wave 0)
 │   ├── keycloak.yaml      # Identity Provider (Wave 1)
+│   ├── gitea.yaml         # Git Service (Wave 2)
 │   ├── backstage.yaml     # Developer Portal (Wave 2)
 │   ├── crossplane.yaml    # Infrastructure as Code (Wave 3)
 │   └── kyverno.yaml       # Policy Engine (Wave 3)
@@ -25,9 +26,9 @@ Applications are deployed in order using ArgoCD sync waves:
 | Wave | Applications | Description |
 |------|--------------|-------------|
 | -1 | root-app | Bootstrap (deployed by setup script) |
-| 0 | postgresql | Shared database layer (required by Keycloak and Backstage) |
+| 0 | postgresql | Shared database layer (required by Keycloak, Backstage, Gitea) |
 | 1 | keycloak, argocd | Core infrastructure (IdP, GitOps) |
-| 2 | backstage, monitoring | Platform services (depend on Keycloak) |
+| 2 | gitea, backstage, monitoring | Platform services (depend on PostgreSQL + Keycloak) |
 | 3 | crossplane, kyverno | Extensions (no Keycloak dependency) |
 
 ## How It Works
@@ -80,6 +81,7 @@ spec:
 These services require the shared PostgreSQL instance (Wave 0):
 - **Keycloak** — stores realm, user, and session data in the `keycloak` database
 - **Backstage** — stores catalog and scaffolder data in the `backstage` database
+- **Gitea** — stores repository metadata, users, and issues in the `gitea` database
 
 ### Keycloak Dependencies (Wave 2+)
 
@@ -87,6 +89,7 @@ These services require Keycloak for authentication:
 - **ArgoCD** — OIDC login (works after Keycloak is ready)
 - **Grafana** — OAuth login
 - **Backstage** — OIDC login
+- **Gitea** — OIDC login (configured via Admin UI post-deployment)
 
 ### No Dependencies (Wave 3)
 
@@ -102,6 +105,7 @@ Secrets are created by the setup script **before** ArgoCD is installed:
 |-----------|--------|-------|
 | platform-db | postgresql-secrets | Shared PostgreSQL superuser and per-database passwords |
 | backstage | backstage-secrets | Bootstrap application secret created by the setup script |
+| gitea | gitea-secrets | PostgreSQL password and OIDC client secret |
 
 The setup script does **not** create a bootstrap Grafana secret in the `monitoring` namespace. Refer to the setup script for the exact keys present in each bootstrap secret.
 For production, use External Secrets Operator with Azure KeyVault / AWS Secrets Manager.

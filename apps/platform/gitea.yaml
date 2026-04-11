@@ -1,0 +1,49 @@
+# =============================================================================
+# Gitea ArgoCD Application
+# Deploys Gitea via official Helm chart with custom values
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: gitea
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    # Wave 2: Depends on PostgreSQL (Wave 0) and Keycloak (Wave 1)
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: default
+  
+  sources:
+    # Source 1: Gitea Helm chart
+    - repoURL: https://dl.gitea.com/charts/
+      chart: gitea
+      targetRevision: "10.*"
+      helm:
+        releaseName: gitea
+        valueFiles:
+          - $values/platform/base/gitea/values.yaml
+    
+    # Source 2: Values from Git repository
+    - repoURL: https://github.com/digiorg/core.git
+      targetRevision: HEAD
+      ref: values
+  
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: gitea
+  
+  syncPolicy:
+    automated:
+      selfHeal: true
+      prune: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

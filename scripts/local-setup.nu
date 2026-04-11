@@ -79,6 +79,7 @@ def "main up" [] {
     print "  ArgoCD:     http://digiorg.local/argocd     (Login via Keycloak)"
     print "  Grafana:    http://digiorg.local/grafana    (Login via Keycloak)"
     print "  Backstage:  http://digiorg.local/backstage  (Login via Keycloak)"
+    print "  Gitea:      http://digiorg.local/gitea      (Login via Keycloak)"
     print ""
     print $"(ansi yellow)Prerequisite: Add to /etc/hosts: 127.0.0.1 digiorg.local(ansi reset)"
 }
@@ -157,7 +158,7 @@ def wait_for_argocd_apps [] {
     print ""
     
     # Apps to wait for (in wave order)
-    let apps = ["postgresql", "keycloak", "backstage", "monitoring", "crossplane", "kyverno"]
+    let apps = ["postgresql", "keycloak", "gitea", "backstage", "monitoring", "crossplane", "kyverno"]
     
     mut all_healthy = false
     mut attempts = 0
@@ -249,7 +250,7 @@ def "main status" [] {
         print $"(ansi cyan_bold)Platform Pods(ansi reset)"
         print "============="
         
-        let namespaces = ["platform-db", "argocd", "keycloak", "crossplane-system", "kyverno", "monitoring", "backstage"]
+        let namespaces = ["platform-db", "argocd", "keycloak", "crossplane-system", "kyverno", "monitoring", "backstage", "gitea"]
         for ns in $namespaces {
             let status = try {
                 let pods = (kubectl get pods -n $ns --no-headers 2>/dev/null | lines | length)
@@ -403,13 +404,16 @@ def create_platform_secrets [] {
     let backstage_db_password = ($env.BACKSTAGE_DB_PASSWORD? | default (generate_password))
     let backstage_session_secret = ($env.AUTH_SESSION_SECRET? | default (generate_password))
     let backstage_oidc_secret = ($env.AUTH_OIDC_CLIENT_SECRET? | default "backstage-client-secret")
+    let gitea_db_password = ($env.GITEA_DB_PASSWORD? | default (generate_password))
+    let gitea_oidc_secret = ($env.GITEA_OIDC_CLIENT_SECRET? | default "gitea-client-secret")
     
-    # Platform-db namespace and PostgreSQL secrets (shared database for Keycloak + Backstage)
+    # Platform-db namespace and PostgreSQL secrets (shared database for Keycloak + Backstage + Gitea)
     kubectl create namespace platform-db --dry-run=client -o yaml | kubectl apply -f -
     (kubectl create secret generic postgresql-secrets -n platform-db
         --from-literal=POSTGRES_PASSWORD=($postgres_password)
         --from-literal=KEYCLOAK_DB_PASSWORD=($keycloak_db_password)
         --from-literal=BACKSTAGE_DB_PASSWORD=($backstage_db_password)
+        --from-literal=GITEA_DB_PASSWORD=($gitea_db_password)
         --dry-run=client -o yaml | kubectl apply -f -)
     print $"(ansi green)✓ PostgreSQL secrets created [platform-db](ansi reset)"
     
@@ -441,6 +445,14 @@ def create_platform_secrets [] {
     # Kyverno namespace
     kubectl create namespace kyverno --dry-run=client -o yaml | kubectl apply -f -
     print $"(ansi green)✓ Kyverno namespace created(ansi reset)"
+    
+    # Gitea namespace and secrets
+    kubectl create namespace gitea --dry-run=client -o yaml | kubectl apply -f -
+    (kubectl create secret generic gitea-secrets -n gitea
+        --from-literal=POSTGRES_PASSWORD=($gitea_db_password)
+        --from-literal=AUTH_OIDC_CLIENT_SECRET=($gitea_oidc_secret)
+        --dry-run=client -o yaml | kubectl apply -f -)
+    print $"(ansi green)✓ Gitea namespace and secrets created(ansi reset)"
 }
 
 def install_argocd [] {
