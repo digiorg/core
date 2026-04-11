@@ -59,8 +59,8 @@ This runs in two phases:
 **Phase 2 (App-of-Apps):**
 ArgoCD syncs all platform components via sync waves:
 - Wave 0: PostgreSQL (shared database in `platform-db` namespace)
-- Wave 1: Keycloak, ArgoCD (self-managed)
-- Wave 2: Backstage, Monitoring
+- Wave 1: Keycloak, ArgoCD (self-managed) — depends on PostgreSQL
+- Wave 2: Backstage, Monitoring — depends on Keycloak and PostgreSQL
 - Wave 3: Crossplane, Kyverno
 
 ### Access Services
