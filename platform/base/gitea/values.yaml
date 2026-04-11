@@ -37,6 +37,16 @@ gitea:
     username: gitea_admin
     existingSecret: gitea-admin-secret
   
+  # Environment variables injected into ALL containers (including init containers)
+  # This is required for database password to be available during configure-gitea init
+  # See: https://gitea.com/gitea/helm-gitea#user-defined-environment-variables-in-appini
+  additionalConfigFromEnvs:
+    - name: GITEA__database__PASSWD
+      valueFrom:
+        secretKeyRef:
+          name: gitea-secrets
+          key: POSTGRES_PASSWORD
+  
   config:
     APP_NAME: "DigiOrg Git"
     
@@ -56,8 +66,8 @@ gitea:
       HOST: postgresql.platform-db.svc.cluster.local:5432
       NAME: gitea
       USER: gitea
-      # Password injected via environment variable from secret
-      PASSWD: ""
+      # Password injected via gitea.additionalConfigFromEnvs (GITEA__database__PASSWD)
+      # This ensures the password is available in init containers for migrations
     
     security:
       INSTALL_LOCK: true
@@ -92,13 +102,9 @@ gitea:
     actions:
       ENABLED: true
 
-# Additional environment variables from secrets
-extraEnvVars:
-  - name: GITEA__database__PASSWD
-    valueFrom:
-      secretKeyRef:
-        name: gitea-secrets
-        key: POSTGRES_PASSWORD
+# Note: Database password is injected via gitea.additionalConfigFromEnvs above,
+# NOT via extraEnvVars. extraEnvVars only applies to the main container,
+# but the configure-gitea init container needs the password for migrations.
 
 # Ingress disabled — using platform-wide ingress
 ingress:
