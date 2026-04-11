@@ -58,7 +58,7 @@ ArgoCD takes over and deploys all platform components via sync waves:
 |------|--------------|-------------|
 | -1 | root-app | Bootstrap (deployed by script) |
 | 0 | postgresql | Shared database (namespace: `platform-db`) |
-| 1 | keycloak, argocd | Core infrastructure (depend on PostgreSQL) |
+| 1 | keycloak, argocd | Core infrastructure (Keycloak depends on PostgreSQL; ArgoCD is also synced in this wave) |
 | 2 | backstage, monitoring | Platform services (depend on PostgreSQL + Keycloak) |
 | 3 | crossplane, kyverno | Extensions |
 
