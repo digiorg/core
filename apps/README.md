@@ -106,6 +106,7 @@ Secrets are created by the setup script **before** ArgoCD is installed:
 | platform-db | postgresql-secrets | Shared PostgreSQL superuser and per-database passwords |
 | backstage | backstage-secrets | Bootstrap application secret created by the setup script |
 | gitea | gitea-secrets | PostgreSQL password and OIDC client secret |
+| gitea | gitea-admin-secret | Admin username and password (generated, not in Git) |
 
 The setup script does **not** create a bootstrap Grafana secret in the `monitoring` namespace. Refer to the setup script for the exact keys present in each bootstrap secret.
 For production, use External Secrets Operator with Azure KeyVault / AWS Secrets Manager.

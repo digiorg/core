@@ -101,9 +101,15 @@ OIDC is configured via Gitea Admin UI after first deployment:
 |-----------|--------|------|-------------|
 | `platform-db` | `postgresql-secrets` | `GITEA_DB_PASSWORD` | Database password |
 | `gitea` | `gitea-secrets` | `POSTGRES_PASSWORD`, `AUTH_OIDC_CLIENT_SECRET` | Application secrets |
-| `gitea` | `gitea-admin-secret` | `username`, `password` | Admin user (placeholder) |
+| `gitea` | `gitea-admin-secret` | `username`, `password` | Admin user (generated) |
 
 Secrets are created by `scripts/local-setup.nu` before ArgoCD sync.
+
+**Note:** The admin password is randomly generated and not stored in Git. To retrieve it after deployment:
+
+```bash
+kubectl get secret gitea-admin-secret -n gitea -o jsonpath='{.data.password}' | base64 -d && echo
+```
 
 ## Deployment
 

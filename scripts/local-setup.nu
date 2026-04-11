@@ -447,10 +447,16 @@ def create_platform_secrets [] {
     print $"(ansi green)✓ Kyverno namespace created(ansi reset)"
     
     # Gitea namespace and secrets
+    let gitea_admin_password = (generate_password)
     kubectl create namespace gitea --dry-run=client -o yaml | kubectl apply -f -
     (kubectl create secret generic gitea-secrets -n gitea
         --from-literal=POSTGRES_PASSWORD=($gitea_db_password)
         --from-literal=AUTH_OIDC_CLIENT_SECRET=($gitea_oidc_secret)
+        --dry-run=client -o yaml | kubectl apply -f -)
+    # Admin secret generated here, not tracked in Git (security best practice)
+    (kubectl create secret generic gitea-admin-secret -n gitea
+        --from-literal=username=gitea_admin
+        --from-literal=password=($gitea_admin_password)
         --dry-run=client -o yaml | kubectl apply -f -)
     print $"(ansi green)✓ Gitea namespace and secrets created(ansi reset)"
 }

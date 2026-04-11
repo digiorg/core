@@ -19,7 +19,7 @@ spec:
     # Source 1: Gitea Helm chart
     - repoURL: https://dl.gitea.com/charts/
       chart: gitea
-      targetRevision: "10.*"
+      targetRevision: "10.6.0"
       helm:
         releaseName: gitea
         valueFiles:

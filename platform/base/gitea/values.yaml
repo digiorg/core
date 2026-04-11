@@ -45,9 +45,11 @@ gitea:
       ROOT_URL: "http://digiorg.local/gitea/"
       SSH_DOMAIN: digiorg.local
       SSH_PORT: 22
-      # Run behind reverse proxy
+      # Run behind reverse proxy with subpath
       PROTOCOL: http
       HTTP_PORT: 3000
+      # Required for subpath deployment behind ingress
+      SERVE_FROM_SUB_PATH: true
     
     database:
       DB_TYPE: postgres
@@ -62,7 +64,8 @@ gitea:
       SECRET_KEY: ""  # Auto-generated if empty
     
     service:
-      DISABLE_REGISTRATION: false
+      # Disable local registration — users are created via Keycloak OIDC
+      DISABLE_REGISTRATION: true
       ALLOW_ONLY_EXTERNAL_REGISTRATION: true
       SHOW_REGISTRATION_BUTTON: false
       ENABLE_NOTIFY_MAIL: false
