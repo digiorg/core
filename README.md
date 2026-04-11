@@ -85,7 +85,7 @@ nu scripts/local-setup.nu up
 #    - ArgoCD:    http://digiorg.local/argocd     (Login via Keycloak)
 #    - Grafana:   http://digiorg.local/grafana    (Login via Keycloak)
 #    - Backstage: http://digiorg.local/backstage  (Login via Keycloak)
-#    - Gitea:     http://digiorg.local/gitea      (Login via Keycloak)
+#    - Gitea:     http://digiorg.local/gitea      (admin login; Keycloak in Admin UI konfigurieren)
 ```
 
 ### Cloud Provider Support
@@ -219,7 +219,7 @@ nu scripts/local-setup.nu up
 #    - ArgoCD:    http://digiorg.local/argocd     (Login via Keycloak)
 #    - Grafana:   http://digiorg.local/grafana    (Login via Keycloak)
 #    - Backstage: http://digiorg.local/backstage  (Login via Keycloak)
-#    - Gitea:     http://digiorg.local/gitea      (Login via Keycloak)
+#    - Gitea:     http://digiorg.local/gitea      (admin login; configure Keycloak in Admin UI)
 ```
 
 ### Cloud Provider Support

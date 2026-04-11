@@ -79,7 +79,7 @@ def "main up" [] {
     print "  ArgoCD:     http://digiorg.local/argocd     (Login via Keycloak)"
     print "  Grafana:    http://digiorg.local/grafana    (Login via Keycloak)"
     print "  Backstage:  http://digiorg.local/backstage  (Login via Keycloak)"
-    print "  Gitea:      http://digiorg.local/gitea      (Login via Keycloak)"
+    print "  Gitea:      http://digiorg.local/gitea      (admin login; configure OIDC in Admin UI)"
     print ""
     print $"(ansi yellow)Prerequisite: Add to /etc/hosts: 127.0.0.1 digiorg.local(ansi reset)"
 }
@@ -447,18 +447,25 @@ def create_platform_secrets [] {
     print $"(ansi green)✓ Kyverno namespace created(ansi reset)"
     
     # Gitea namespace and secrets
-    let gitea_admin_password = (generate_password)
+    let gitea_admin_password_override = ($env.GITEA_ADMIN_PASSWORD? | default "")
     kubectl create namespace gitea --dry-run=client -o yaml | kubectl apply -f -
     (kubectl create secret generic gitea-secrets -n gitea
         --from-literal=POSTGRES_PASSWORD=($gitea_db_password)
         --from-literal=AUTH_OIDC_CLIENT_SECRET=($gitea_oidc_secret)
         --dry-run=client -o yaml | kubectl apply -f -)
-    # Admin secret generated here, not tracked in Git (security best practice)
-    (kubectl create secret generic gitea-admin-secret -n gitea
-        --from-literal=username=gitea_admin
-        --from-literal=password=($gitea_admin_password)
-        --dry-run=client -o yaml | kubectl apply -f -)
-    print $"(ansi green)✓ Gitea namespace and secrets created(ansi reset)"
+    # Admin secret is bootstrap-only for Gitea; preserve on re-runs unless explicitly overridden
+    let gitea_admin_secret_exists = ((do -i { kubectl get secret gitea-admin-secret -n gitea } | complete).exit_code == 0)
+    if (not $gitea_admin_secret_exists) or ($gitea_admin_password_override != "") {
+        let gitea_admin_password = (if $gitea_admin_password_override != "" { $gitea_admin_password_override } else { generate_password })
+        (kubectl create secret generic gitea-admin-secret -n gitea
+            --from-literal=username=gitea_admin
+            --from-literal=password=($gitea_admin_password)
+            --dry-run=client -o yaml | kubectl apply -f -)
+        print $"(ansi green)✓ Gitea namespace and secrets created(ansi reset)"
+    } else {
+        print $"(ansi green)✓ Gitea namespace and secrets created(ansi reset)"
+        print $"(ansi yellow)  ! Existing gitea-admin-secret preserved; set GITEA_ADMIN_PASSWORD to rotate(ansi reset)"
+    }
 }
 
 def install_argocd [] {
