@@ -54,14 +54,6 @@ spec:
                 name: prometheus-grafana
                 port:
                   number: 80
-          # Gitea
-          - path: /gitea(/|$)(.*)
-            pathType: ImplementationSpecific
-            backend:
-              service:
-                name: gitea-http
-                port:
-                  number: 3000
 ---
 # Backstage needs URL rewriting because it doesn't natively support subpath deployment
 # /backstage/foo -> /foo on the backend
@@ -87,6 +79,33 @@ spec:
                 name: backstage
                 port:
                   number: 7007
+---
+# Gitea needs URL rewriting for subpath deployment
+# /gitea/foo -> /foo on the backend
+# See: https://docs.gitea.com/administration/reverse-proxies#use-a-sub-path
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: gitea-ingress
+  namespace: ingress-nginx
+  annotations:
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+    nginx.ingress.kubernetes.io/proxy-buffer-size: "128k"
+    nginx.ingress.kubernetes.io/proxy-body-size: "512m"  # Large Git pushes
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: digiorg.local
+      http:
+        paths:
+          - path: /gitea(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: gitea-http
+                port:
+                  number: 3000
 ---
 # ExternalName services to route cross-namespace
 apiVersion: v1
