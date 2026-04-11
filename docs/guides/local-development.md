@@ -131,8 +131,8 @@ nu scripts/local-setup.nu reset
 |------|--------------|--------------|
 | -1 | root-app | Bootstrap (deployed by script) |
 | 0 | postgresql | Ingress, Secrets (shared DB for platform services) |
-| 1 | keycloak, argocd | PostgreSQL, Ingress |
-| 2 | backstage, monitoring | PostgreSQL, Keycloak (OIDC) |
+| 1 | keycloak, argocd | keycloak: PostgreSQL, Ingress; argocd: Ingress (self-managed after Helm install) |
+| 2 | backstage, monitoring | backstage: PostgreSQL, Keycloak (OIDC); monitoring: None |
 | 3 | crossplane, kyverno | None |
 
 ## Development Workflow
