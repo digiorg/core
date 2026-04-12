@@ -49,6 +49,7 @@ The script installs only the minimal infrastructure needed to run ArgoCD:
 6. **Platform Secrets** (shared PostgreSQL credentials + per-service secrets)
    - `platform-db/postgresql-secrets`: Shared PostgreSQL superuser and per-database passwords
    - `backstage/backstage-secrets`: Bootstrap application secret
+   - `keycloak/keycloak-db-credentials`: Keycloak PostgreSQL database credentials
    - `gitea/gitea-secrets`: PostgreSQL password, OIDC client secret
    - `gitea/gitea-admin-secret`: Admin username and randomly generated password
 7. **ArgoCD** (Helm install)
