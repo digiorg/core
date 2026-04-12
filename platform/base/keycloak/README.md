@@ -25,11 +25,12 @@ The `digiorg-core-platform` realm is automatically imported on startup with:
 
 ### OIDC Clients
 
-| Client ID | Service | Redirect URIs |
-|-----------|---------|---------------|
-| `argocd` | ArgoCD | `http://digiorg.local/argocd/auth/callback` |
-| `grafana` | Grafana | `http://digiorg.local/grafana/login/generic_oauth` |
-| `backstage` | Backstage | `http://digiorg.local/backstage/api/auth/oidc/handler/frame` |
+| Client ID | Service | Redirect URIs | Notes |
+|-----------|---------|---------------|-------|
+| `argocd` | ArgoCD | `http://digiorg.local/argocd/auth/callback` | Auto-configured |
+| `grafana` | Grafana | `http://digiorg.local/grafana/login/generic_oauth` | Auto-configured |
+| `backstage` | Backstage | `http://digiorg.local/backstage/api/auth/oidc/handler/frame` | Auto-configured |
+| `gitea` | Gitea | `http://digiorg.local/gitea/user/oauth2/Keycloak/callback` | **Manual config in Gitea Admin UI** |
 
 ### Default Users
 
@@ -49,7 +50,10 @@ The `digiorg-core-platform` realm is automatically imported on startup with:
 │  │  Clients:                                   │    │
 │  │  ├── argocd (OIDC)                          │    │
 │  │  ├── grafana (OIDC)                         │    │
-│  │  └── backstage (OIDC)                       │    │
+│  │  ├── backstage (OIDC)                       │    │
+│  │  └── gitea (OIDC)*                          │    │
+│  │                                             │    │
+│  │  * Gitea OIDC configured in Admin UI        │    │
 │  │                                             │    │
 │  │  Roles:                                     │    │
 │  │  ├── platform-admin                         │    │
@@ -59,13 +63,13 @@ The `digiorg-core-platform` realm is automatically imported on startup with:
 └───────────────────────┬─────────────────────────────┘
                         │
                         ▼
-┌─────────────────────────────────────────────────────┐
-│         Shared PostgreSQL (platform-db)             │
-│                                                     │
-│  ┌─────────────────────┐  ┌─────────────────────┐    │
-│  │   keycloak DB       │  │   backstage DB      │    │
-│  └─────────────────────┘  └─────────────────────┘    │
-└─────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│         Shared PostgreSQL (platform-db)                          │
+│                                                                  │
+│  ┌────────────────┐  ┌────────────────┐  ┌────────────────┐      │
+│  │  keycloak DB   │  │  backstage DB  │  │    gitea DB    │      │
+│  └────────────────┘  └────────────────┘  └────────────────┘      │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
 ## Local Development

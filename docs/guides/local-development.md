@@ -60,7 +60,7 @@ This runs in two phases:
 ArgoCD syncs all platform components via sync waves:
 - Wave 0: PostgreSQL (shared database in `platform-db` namespace)
 - Wave 1: Keycloak, ArgoCD (self-managed) — depends on PostgreSQL
-- Wave 2: Backstage, Monitoring — depends on Keycloak and PostgreSQL
+- Wave 2: Gitea, Backstage, Monitoring — depends on Keycloak and PostgreSQL
 - Wave 3: Crossplane, Kyverno
 
 ### Access Services
@@ -73,6 +73,14 @@ All services are accessible via `http://digiorg.local/<service>`:
 | ArgoCD | http://digiorg.local/argocd | Login via Keycloak |
 | Grafana | http://digiorg.local/grafana | Login via Keycloak |
 | Backstage | http://digiorg.local/backstage | Login via Keycloak or Guest |
+| Gitea | http://digiorg.local/gitea | `gitea_admin` (see note below) |
+
+**Gitea Admin Password:**
+```bash
+kubectl get secret gitea-admin-secret -n gitea -o jsonpath='{.data.password}' | base64 -d && echo
+```
+
+> **Note:** Gitea OIDC via Keycloak requires manual configuration in the Gitea Admin UI after first login. See [Gitea README](../../platform/base/gitea/README.md) for details.
 
 ### Set Kubeconfig
 
@@ -117,6 +125,7 @@ nu scripts/local-setup.nu reset
 │      │                                                                  │
 │      ├── apps/platform/keycloak.yaml    → Wave 1                       │
 │      ├── apps/platform/argocd.yaml      → Wave 1 (self-managed)        │
+│      ├── apps/platform/gitea.yaml       → Wave 2                       │
 │      ├── apps/platform/backstage.yaml   → Wave 2                       │
 │      ├── apps/observability/monitoring.yaml → Wave 2                   │
 │      ├── apps/platform/crossplane.yaml  → Wave 3                       │
@@ -132,7 +141,7 @@ nu scripts/local-setup.nu reset
 | -1 | root-app | Bootstrap (deployed by script) |
 | 0 | postgresql | Ingress, Secrets (shared DB for platform services) |
 | 1 | keycloak, argocd | keycloak: PostgreSQL, Ingress; argocd: Ingress (self-managed after Helm install) |
-| 2 | backstage, monitoring | backstage: PostgreSQL, Keycloak (OIDC); monitoring: None |
+| 2 | gitea, backstage, monitoring | gitea: PostgreSQL; backstage: PostgreSQL, Keycloak (OIDC); monitoring: None |
 | 3 | crossplane, kyverno | None |
 
 ## Development Workflow
