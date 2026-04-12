@@ -12,11 +12,12 @@ platform/
     ├── argocd/          # ArgoCD with Keycloak SSO
     ├── backstage/       # Backstage Developer Portal
     ├── crossplane/      # Crossplane setup
+    ├── gitea/           # Gitea Git Service
     ├── ingress/         # NGINX Ingress + unified routing
     ├── keycloak/        # Keycloak IdP (uses shared PostgreSQL)
     ├── kyverno/         # Policy Engine
     ├── monitoring/      # Prometheus + Grafana
-    └── postgresql/      # Shared PostgreSQL (Keycloak + Backstage)
+    └── postgresql/      # Shared PostgreSQL (Keycloak + Backstage + Gitea)
 ```
 
 ## Components
@@ -36,13 +37,14 @@ Kustomize bases for all platform components:
 | argocd | GitOps Continuous Delivery | Keycloak OIDC |
 | backstage | Internal Developer Portal | Keycloak OIDC / Guest |
 | crossplane | Infrastructure as Code | - |
+| gitea | Self-hosted Git Service | Local admin; Keycloak OIDC (manual config) |
 | ingress | NGINX Ingress + routing rules | - |
 | keycloak | Identity Provider | Built-in |
 | kyverno | Policy Engine | - |
 | monitoring | Prometheus + Grafana | Keycloak OAuth |
 | postgresql | Shared PostgreSQL database | - |
 
-**Note:** PostgreSQL runs as a shared StatefulSet in the `platform-db` namespace, serving both Keycloak and Backstage databases.
+**Note:** PostgreSQL runs as a shared StatefulSet in the `platform-db` namespace, serving Keycloak, Backstage, and Gitea databases.
 
 ## Service Access
 
@@ -54,6 +56,7 @@ All services are accessible via unified ingress at `http://digiorg.local`:
 | `/argocd` | ArgoCD | argocd |
 | `/grafana` | Grafana | monitoring |
 | `/backstage` | Backstage | backstage |
+| `/gitea` | Gitea | gitea |
 
 ## Usage
 

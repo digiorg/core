@@ -47,6 +47,10 @@ The script installs only the minimal infrastructure needed to run ArgoCD:
 4. **Platform Ingress** (unified routing via `digiorg.local`)
 5. **CoreDNS Patch** (internal `digiorg.local` resolution)
 6. **Platform Secrets** (shared PostgreSQL credentials + per-service secrets)
+   - `platform-db/postgresql-secrets`: Shared PostgreSQL superuser and per-database passwords
+   - `backstage/backstage-secrets`: Bootstrap application secret
+   - `gitea/gitea-secrets`: PostgreSQL password, OIDC client secret
+   - `gitea/gitea-admin-secret`: Admin username and randomly generated password
 7. **ArgoCD** (Helm install)
 8. **Root App** (triggers App-of-Apps)
 
@@ -59,7 +63,7 @@ ArgoCD takes over and deploys all platform components via sync waves:
 | -1 | root-app | Bootstrap (deployed by script) |
 | 0 | postgresql | Shared database (namespace: `platform-db`) |
 | 1 | keycloak, argocd | Core infrastructure (Keycloak depends on PostgreSQL; ArgoCD is also synced in this wave) |
-| 2 | backstage, monitoring | Platform services (depend on PostgreSQL + Keycloak) |
+| 2 | gitea, backstage, monitoring | Platform services (depend on PostgreSQL + Keycloak) |
 | 3 | crossplane, kyverno | Extensions |
 
 ## Service Access
@@ -72,6 +76,7 @@ After `up` completes, access services via:
 | ArgoCD | http://digiorg.local/argocd | Login via Keycloak |
 | Grafana | http://digiorg.local/grafana | Login via Keycloak |
 | Backstage | http://digiorg.local/backstage | Login via Keycloak or Guest |
+| Gitea | http://digiorg.local/gitea | `gitea_admin` (password from secret) |
 
 **Note:** Requires `/etc/hosts` entry: `127.0.0.1 digiorg.local`
 
