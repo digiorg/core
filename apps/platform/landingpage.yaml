@@ -10,7 +10,7 @@ metadata:
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
-  project: platform
+  project: default
   source:
     repoURL: https://github.com/digiorg/core.git
     targetRevision: HEAD
