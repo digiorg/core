@@ -9,6 +9,7 @@
 # 3. KinD cluster with port 80 mapped to ingress controller
 #
 # Services:
+# - digiorg.local/           → Landing Page (entry point)
 # - digiorg.local/keycloak   → Keycloak IdP
 # - digiorg.local/argocd     → ArgoCD GitOps
 # - digiorg.local/grafana    → Grafana Monitoring
@@ -54,6 +55,14 @@ spec:
                 name: prometheus-grafana
                 port:
                   number: 80
+          # Landing Page (root path - must be last due to catch-all)
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: landingpage
+                port:
+                  number: 8080
 ---
 # Backstage needs URL rewriting because it doesn't natively support subpath deployment
 # /backstage/foo -> /foo on the backend
@@ -162,3 +171,14 @@ spec:
   externalName: gitea-http.gitea.svc.cluster.local
   ports:
     - port: 3000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: landingpage
+  namespace: ingress-nginx
+spec:
+  type: ExternalName
+  externalName: landingpage.platform-apps.svc.cluster.local
+  ports:
+    - port: 8080

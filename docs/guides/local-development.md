@@ -60,7 +60,7 @@ This runs in two phases:
 ArgoCD syncs all platform components via sync waves:
 - Wave 0: PostgreSQL (shared database in `platform-db` namespace)
 - Wave 1: Keycloak, ArgoCD (self-managed) — depends on PostgreSQL
-- Wave 2: Gitea, Backstage, Monitoring — depends on Keycloak and PostgreSQL
+- Wave 2: Landing Page, Gitea, Backstage, Monitoring — depends on Keycloak and PostgreSQL
 - Wave 3: Crossplane, Kyverno
 
 ### Access Services
@@ -69,6 +69,7 @@ All services are accessible via `http://digiorg.local/<service>`:
 
 | Service | URL | Credentials |
 |---------|-----|-------------|
+| **Landing Page** | http://digiorg.local/ | Login via Keycloak |
 | Keycloak | http://digiorg.local/keycloak | admin / admin |
 | ArgoCD | http://digiorg.local/argocd | Login via Keycloak |
 | Grafana | http://digiorg.local/grafana | Login via Keycloak |
