@@ -11,6 +11,7 @@ apps/
 │   ├── argocd.yaml        # Self-managed ArgoCD (Wave 1)
 │   ├── postgresql.yaml    # Shared PostgreSQL database (Wave 0)
 │   ├── keycloak.yaml      # Identity Provider (Wave 1)
+│   ├── landingpage.yaml   # Platform Entry Point (Wave 2)
 │   ├── gitea.yaml         # Git Service (Wave 2)
 │   ├── backstage.yaml     # Developer Portal (Wave 2)
 │   ├── crossplane.yaml    # Infrastructure as Code (Wave 3)
@@ -28,7 +29,7 @@ Applications are deployed in order using ArgoCD sync waves:
 | -1 | root-app | Bootstrap (deployed by setup script) |
 | 0 | postgresql | Shared database layer (required by Keycloak, Backstage, Gitea) |
 | 1 | keycloak, argocd | Core infrastructure (IdP, GitOps) |
-| 2 | gitea, backstage, monitoring | Platform services (depend on PostgreSQL + Keycloak) |
+| 2 | landingpage, gitea, backstage, monitoring | Platform services (depend on PostgreSQL + Keycloak) |
 | 3 | crossplane, kyverno | Extensions (no Keycloak dependency) |
 
 ## How It Works
@@ -86,6 +87,7 @@ These services require the shared PostgreSQL instance (Wave 0):
 ### Keycloak Dependencies (Wave 2+)
 
 These services require Keycloak for authentication:
+- **Landing Page** — OIDC login (public client)
 - **ArgoCD** — OIDC login (works after Keycloak is ready)
 - **Grafana** — OAuth login
 - **Backstage** — OIDC login

@@ -160,6 +160,46 @@
           }
         }
       ]
+    },
+    {
+      "clientId": "landingpage",
+      "name": "Landing Page",
+      "description": "DigiOrg Platform Landing Page — Public OIDC client",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "redirectUris": [
+        "http://digiorg.local/*",
+        "https://digiorg.local/*"
+      ],
+      "webOrigins": [
+        "http://digiorg.local",
+        "https://digiorg.local"
+      ],
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": true,
+      "attributes": {
+        "pkce.code.challenge.method": "S256"
+      },
+      "protocolMappers": [
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "full.path": "false",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "groups",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
     }
   ],
   "roles": {

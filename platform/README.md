@@ -16,6 +16,7 @@ platform/
     ├── ingress/         # NGINX Ingress + unified routing
     ├── keycloak/        # Keycloak IdP (uses shared PostgreSQL)
     ├── kyverno/         # Policy Engine
+    ├── landingpage/     # Platform Landing Page with SSO
     ├── monitoring/      # Prometheus + Grafana
     └── postgresql/      # Shared PostgreSQL (Keycloak + Backstage + Gitea)
 ```
@@ -41,6 +42,7 @@ Kustomize bases for all platform components:
 | ingress | NGINX Ingress + routing rules | - |
 | keycloak | Identity Provider | Built-in |
 | kyverno | Policy Engine | - |
+| landingpage | Platform Entry Point | Keycloak OIDC (public client) |
 | monitoring | Prometheus + Grafana | Keycloak OAuth |
 | postgresql | Shared PostgreSQL database | - |
 
@@ -52,6 +54,7 @@ All services are accessible via unified ingress at `http://digiorg.local`:
 
 | Path | Service | Namespace |
 |------|---------|-----------|
+| `/` | Landing Page | platform-apps |
 | `/keycloak` | Keycloak | keycloak |
 | `/argocd` | ArgoCD | argocd |
 | `/grafana` | Grafana | monitoring |

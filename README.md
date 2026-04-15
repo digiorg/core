@@ -81,6 +81,7 @@ echo "127.0.0.1 digiorg.local" | sudo tee -a /etc/hosts
 nu scripts/local-setup.nu up
 
 # 4. Services aufrufen (alle via digiorg.local)
+#    - Landing:   http://digiorg.local/           (Startseite mit Keycloak SSO)
 #    - Keycloak:  http://digiorg.local/keycloak   (admin / admin)
 #    - ArgoCD:    http://digiorg.local/argocd     (Login via Keycloak)
 #    - Grafana:   http://digiorg.local/grafana    (Login via Keycloak)
@@ -215,6 +216,7 @@ echo "127.0.0.1 digiorg.local" | sudo tee -a /etc/hosts
 nu scripts/local-setup.nu up
 
 # 4. Access services (all via digiorg.local)
+#    - Landing:   http://digiorg.local/           (Homepage with Keycloak SSO)
 #    - Keycloak:  http://digiorg.local/keycloak   (admin / admin)
 #    - ArgoCD:    http://digiorg.local/argocd     (Login via Keycloak)
 #    - Grafana:   http://digiorg.local/grafana    (Login via Keycloak)
