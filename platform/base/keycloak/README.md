@@ -27,7 +27,7 @@ The `digiorg-core-platform` realm is automatically imported on startup with:
 
 | Client ID | Service | Redirect URIs | Notes |
 |-----------|---------|---------------|-------|
-| `landingpage` | Landing Page | `http://digiorg.local/*` | Public client (no secret) |
+| `landingpage` | Landing Page | `http://digiorg.local/*`, `https://digiorg.local/*` | Public client (no secret) |
 | `argocd` | ArgoCD | `http://digiorg.local/argocd/auth/callback` | Auto-configured |
 | `grafana` | Grafana | `http://digiorg.local/grafana/login/generic_oauth` | Auto-configured |
 | `backstage` | Backstage | `http://digiorg.local/backstage/api/auth/oidc/handler/frame` | Auto-configured |
