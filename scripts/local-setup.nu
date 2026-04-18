@@ -158,7 +158,7 @@ def wait_for_argocd_apps [] {
     print ""
     
     # Apps to wait for (in wave order)
-    let apps = ["postgresql", "keycloak", "gitea", "backstage", "monitoring", "crossplane", "kyverno"]
+    let apps = ["cert-manager", "postgresql", "keycloak", "gitea", "landingpage", "backstage", "monitoring", "crossplane", "kyverno"]
     
     mut all_healthy = false
     mut attempts = 0
@@ -201,6 +201,9 @@ def wait_for_argocd_apps [] {
     print ""
     print "ArgoCD Application Status:"
     kubectl get applications -n argocd -o wide
+
+    # Patch ArgoCD OIDC config with self-signed CA cert
+    patch_argocd_oidc_ca
 }
 
 # Destroy local cluster
@@ -489,7 +492,7 @@ def install_argocd [] {
 def restart_oidc_dependent_pods [] {
     $env.KUBECONFIG = $KUBECONFIG_PATH
     
-    print "Restarting OIDC-dependent pods to refresh DNS cache..."
+    print "Restarting OIDC-dependent pods to refresh DNS/config..."
     
     # ArgoCD Server
     try {
@@ -519,8 +522,108 @@ def restart_oidc_dependent_pods [] {
             print $"  (ansi green)✓ Backstage restarted(ansi reset)"
         }
     } catch { }
+
+    # Landing Page
+    try {
+        let lp_exists = (do { kubectl get deployment landingpage -n platform-apps } | complete)
+        if $lp_exists.exit_code == 0 {
+            kubectl rollout restart deployment landingpage -n platform-apps
+            print $"  (ansi green)✓ Landing Page restarted(ansi reset)"
+        }
+    } catch { }
     
     print $"(ansi green)✓ OIDC-dependent pods restarted(ansi reset)"
+}
+
+# Patch ArgoCD argocd-cm with the self-signed CA cert for OIDC TLS verification
+# ArgoCD uses the rootCA field in oidc.config to trust the CA for OIDC requests.
+def patch_argocd_oidc_ca [] {
+    $env.KUBECONFIG = $KUBECONFIG_PATH
+
+    print "Patching ArgoCD OIDC config with self-signed CA cert..."
+
+    # Wait for cert-manager to issue the CA cert
+    mut attempts = 0
+    loop {
+        $attempts = $attempts + 1
+        if $attempts > 30 {
+            print $"(ansi yellow)Warning: CA cert not available yet, skipping ArgoCD OIDC patch(ansi reset)"
+            return
+        }
+        let secret_result = (do {
+            kubectl get secret digiorg-local-ca-secret -n cert-manager --ignore-not-found -o name
+        } | complete)
+        if $secret_result.exit_code == 0 and ($secret_result.stdout | str trim | is-not-empty) {
+            break
+        }
+        print $"  Waiting for CA cert... (attempt ($attempts)/30)"
+        sleep 10sec
+    }
+
+    # Extract CA cert (PEM)
+    let ca_cert_result = (do {
+        kubectl get secret digiorg-local-ca-secret -n cert-manager -o jsonpath='{.data.ca\.crt}'
+    } | complete)
+    if $ca_cert_result.exit_code != 0 {
+        print $"(ansi yellow)Warning: Could not extract CA cert, skipping ArgoCD OIDC patch(ansi reset)"
+        return
+    }
+
+    let ca_cert = ($ca_cert_result.stdout | str trim | ^base64 -d)
+
+    # Save CA cert to file for user reference
+    $ca_cert | save -f digiorg-local-ca.crt
+
+    # Get current oidc.config from argocd-cm
+    let current_oidc_result = (do {
+        kubectl get configmap argocd-cm -n argocd -o jsonpath='{.data.oidc\.config}'
+    } | complete)
+    if $current_oidc_result.exit_code != 0 or ($current_oidc_result.stdout | str trim | is-empty) {
+        print $"(ansi yellow)Warning: Could not read argocd-cm oidc.config, skipping OIDC patch(ansi reset)"
+        return
+    }
+
+    let current_oidc = ($current_oidc_result.stdout | str trim)
+
+    # Only patch if rootCA not already present
+    if not ($current_oidc | str contains "rootCA") {
+        # Indent cert lines for YAML block scalar (6 spaces)
+        let indented_cert = ($ca_cert | lines | each { |line| $"      ($line)" } | str join "\n")
+        let new_oidc = $"($current_oidc)\n      rootCA: |\n($indented_cert)\n"
+
+        # Write patched config to temp file and apply
+        $new_oidc | save -f /tmp/argocd-oidc-config.txt
+        let patch_json = ({data: {"oidc.config": $new_oidc}} | to json)
+        $patch_json | kubectl patch configmap argocd-cm -n argocd --type merge --patch-file /dev/stdin
+
+        # Restart ArgoCD server to pick up new config
+        kubectl rollout restart deployment argocd-server -n argocd
+        kubectl rollout status deployment argocd-server -n argocd --timeout=120s
+        print $"(ansi green)✓ ArgoCD OIDC config patched with CA cert(ansi reset)"
+    } else {
+        print $"(ansi green)✓ ArgoCD OIDC config already contains rootCA(ansi reset)"
+    }
+
+    # Print CA trust instructions
+    print ""
+    print $"(ansi cyan_bold)╔════════════════════════════════════════════════════════════════╗(ansi reset)"
+    print $"(ansi cyan_bold)║  Trust the Self-Signed CA Certificate                          ║(ansi reset)"
+    print $"(ansi cyan_bold)╚════════════════════════════════════════════════════════════════╝(ansi reset)"
+    print ""
+    print "  CA cert saved to: ./digiorg-local-ca.crt"
+    print ""
+    print "  macOS:"
+    print "    sudo security add-trusted-cert -d -r trustRoot \\"
+    print "      -k /Library/Keychains/System.keychain digiorg-local-ca.crt"
+    print ""
+    print "  Linux (Ubuntu/Debian):"
+    print "    sudo cp digiorg-local-ca.crt /usr/local/share/ca-certificates/"
+    print "    sudo update-ca-certificates"
+    print ""
+    print "  Windows:"
+    print "    certutil -addstore -f ROOT digiorg-local-ca.crt"
+    print ""
+    print $"(ansi yellow)Restart your browser after importing the CA certificate.(ansi reset)"
 }
 
 # -----------------------------------------------------------------------------

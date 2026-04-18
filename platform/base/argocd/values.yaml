@@ -40,9 +40,9 @@ configs:
         - profile
         - email
         - roles
-      # Skip TLS verification for self-signed cert in local dev
-      # Remove in production (use proper CA trust instead)
-      insecureSkipVerify: true
+      # rootCA: injected by local-setup.nu after cert-manager provisions the CA
+      # The setup script patches this ConfigMap with the actual CA cert.
+      # In production (Let's Encrypt), remove rootCA entirely.
 
   # argocd-cmd-params-cm ConfigMap
   params:
