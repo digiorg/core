@@ -182,9 +182,7 @@
       "directAccessGrantsEnabled": false,
       "serviceAccountsEnabled": false,
       "fullScopeAllowed": true,
-      "attributes": {
-        "pkce.code.challenge.method": "S256"
-      },
+      "attributes": {},
       "protocolMappers": [
         {
           "name": "groups",
