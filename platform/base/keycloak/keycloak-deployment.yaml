@@ -59,9 +59,9 @@ spec:
             # Using standard port 80 (no port needed in URL)
             # Requires /etc/hosts entry: 127.0.0.1 digiorg.local
             - name: KC_HOSTNAME_URL
-              value: "http://digiorg.local/keycloak"
+              value: "https://digiorg.local/keycloak"
             - name: KC_HOSTNAME_ADMIN_URL
-              value: "http://digiorg.local/keycloak"
+              value: "https://digiorg.local/keycloak"
             # KC_HTTP_RELATIVE_PATH tells Keycloak to serve content under /keycloak path
             # This is required in addition to KC_HOSTNAME_URL for proper routing
             - name: KC_HTTP_RELATIVE_PATH

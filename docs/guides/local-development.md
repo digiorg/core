@@ -58,23 +58,48 @@ This runs in two phases:
 
 **Phase 2 (App-of-Apps):**
 ArgoCD syncs all platform components via sync waves:
-- Wave 0: PostgreSQL (shared database in `platform-db` namespace)
+- Wave 0: cert-manager + ClusterIssuers, PostgreSQL
 - Wave 1: Keycloak, ArgoCD (self-managed) — depends on PostgreSQL
 - Wave 2: Landing Page, Gitea, Backstage, Monitoring — depends on Keycloak and PostgreSQL
 - Wave 3: Crossplane, Kyverno
 
+### Trust the Self-Signed CA Certificate
+
+The platform uses a self-signed CA certificate for `digiorg.local`. To avoid browser warnings,
+import the CA cert into your OS trust store:
+
+```bash
+# Extract CA cert from cluster
+kubectl get secret digiorg-local-ca-secret -n cert-manager \
+  -o jsonpath='{.data.ca\.crt}' | base64 -d > digiorg-local-ca.crt
+
+# macOS
+sudo security add-trusted-cert -d -r trustRoot \
+  -k /Library/Keychains/System.keychain digiorg-local-ca.crt
+
+# Linux (Ubuntu/Debian)
+sudo cp digiorg-local-ca.crt /usr/local/share/ca-certificates/
+sudo update-ca-certificates
+
+# Windows
+certutil -addstore -f "ROOT" digiorg-local-ca.crt
+```
+
+> **Note:** Restart your browser after importing the CA certificate.
+
 ### Access Services
 
-All services are accessible via `http://digiorg.local/<service>`:
+All services are accessible via `https://digiorg.local/<service>`.
+HTTP (`http://`) automatically redirects to HTTPS.
 
 | Service | URL | Credentials |
 |---------|-----|-------------|
-| **Landing Page** | http://digiorg.local/ | Login via Keycloak |
-| Keycloak | http://digiorg.local/keycloak | admin / admin |
-| ArgoCD | http://digiorg.local/argocd | Login via Keycloak |
-| Grafana | http://digiorg.local/grafana | Login via Keycloak |
-| Backstage | http://digiorg.local/backstage | Login via Keycloak or Guest |
-| Gitea | http://digiorg.local/gitea | `gitea_admin` (see note below) |
+| **Landing Page** | https://digiorg.local/ | Login via Keycloak |
+| Keycloak | https://digiorg.local/keycloak | admin / admin |
+| ArgoCD | https://digiorg.local/argocd | Login via Keycloak |
+| Grafana | https://digiorg.local/grafana | Login via Keycloak |
+| Backstage | https://digiorg.local/backstage | Login via Keycloak or Guest |
+| Gitea | https://digiorg.local/gitea | `gitea_admin` (see note below) |
 
 **Gitea Admin Password:**
 ```bash

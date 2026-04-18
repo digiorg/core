@@ -19,12 +19,12 @@
       "clientAuthenticatorType": "client-secret",
       "secret": "argocd-client-secret",
       "redirectUris": [
-        "http://digiorg.local/argocd/auth/callback",
-        "http://digiorg.local/argocd/auth/callback"
+        "https://digiorg.local/argocd/auth/callback",
+        "https://digiorg.local/argocd/auth/callback"
       ],
       "webOrigins": [
-        "http://digiorg.local/argocd",
-        "http://digiorg.local/argocd"
+        "https://digiorg.local/argocd",
+        "https://digiorg.local/argocd"
       ],
       "protocol": "openid-connect",
       "publicClient": false,
@@ -57,10 +57,10 @@
       "clientAuthenticatorType": "client-secret",
       "secret": "grafana-client-secret",
       "redirectUris": [
-        "http://digiorg.local/grafana/login/generic_oauth"
+        "https://digiorg.local/grafana/login/generic_oauth"
       ],
       "webOrigins": [
-        "http://digiorg.local/grafana"
+        "https://digiorg.local/grafana"
       ],
       "protocol": "openid-connect",
       "publicClient": false,
@@ -93,12 +93,12 @@
       "clientAuthenticatorType": "client-secret",
       "secret": "backstage-client-secret",
       "redirectUris": [
-        "http://digiorg.local/backstage/api/auth/oidc/handler/frame",
-        "http://digiorg.local/backstage/*"
+        "https://digiorg.local/backstage/api/auth/oidc/handler/frame",
+        "https://digiorg.local/backstage/*"
       ],
       "webOrigins": [
-        "http://digiorg.local",
-        "http://digiorg.local/backstage"
+        "https://digiorg.local",
+        "https://digiorg.local/backstage"
       ],
       "protocol": "openid-connect",
       "publicClient": false,
@@ -131,12 +131,12 @@
       "clientAuthenticatorType": "client-secret",
       "secret": "gitea-client-secret",
       "redirectUris": [
-        "http://digiorg.local/gitea/user/oauth2/Keycloak/callback",
-        "http://digiorg.local/gitea/*"
+        "https://digiorg.local/gitea/user/oauth2/Keycloak/callback",
+        "https://digiorg.local/gitea/*"
       ],
       "webOrigins": [
-        "http://digiorg.local",
-        "http://digiorg.local/gitea"
+        "https://digiorg.local",
+        "https://digiorg.local/gitea"
       ],
       "protocol": "openid-connect",
       "publicClient": false,
@@ -168,11 +168,11 @@
       "enabled": true,
       "clientAuthenticatorType": "client-secret",
       "redirectUris": [
-        "http://digiorg.local/*",
+        "https://digiorg.local/*",
         "https://digiorg.local/*"
       ],
       "webOrigins": [
-        "http://digiorg.local",
+        "https://digiorg.local",
         "https://digiorg.local"
       ],
       "protocol": "openid-connect",
@@ -182,7 +182,9 @@
       "directAccessGrantsEnabled": false,
       "serviceAccountsEnabled": false,
       "fullScopeAllowed": true,
-      "attributes": {},
+      "attributes": {
+        "pkce.code.challenge.method": "S256"
+      },
       "protocolMappers": [
         {
           "name": "groups",

@@ -1,0 +1,69 @@
+# =============================================================================
+# Self-signed CA Certificate for local development (digiorg.local)
+# =============================================================================
+# This creates a local CA that signs the TLS certificate for digiorg.local.
+# Developers need to import digiorg-local-ca-secret into their OS trust store
+# to avoid browser warnings.
+#
+# Extract CA cert:
+#   kubectl get secret digiorg-local-ca-secret -n cert-manager \
+#     -o jsonpath='{.data.ca\.crt}' | base64 -d > digiorg-local-ca.crt
+#
+# Trust on macOS:
+#   sudo security add-trusted-cert -d -r trustRoot \
+#     -k /Library/Keychains/System.keychain digiorg-local-ca.crt
+#
+# Trust on Linux (Ubuntu/Debian):
+#   sudo cp digiorg-local-ca.crt /usr/local/share/ca-certificates/
+#   sudo update-ca-certificates
+# =============================================================================
+
+# Step 1: Create the CA certificate (self-signed root)
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: digiorg-local-ca
+  namespace: cert-manager
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  isCA: true
+  commonName: DigiOrg Local CA
+  subject:
+    organizations:
+      - DigiOrg
+  secretName: digiorg-local-ca-secret
+  duration: 87600h   # 10 years
+  renewBefore: 720h  # Renew 30 days before expiry
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: selfsigned-bootstrap
+    kind: ClusterIssuer
+    group: cert-manager.io
+
+---
+# Step 2: Create the TLS certificate for digiorg.local (signed by our CA)
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: digiorg-local-tls
+  namespace: ingress-nginx
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  secretName: digiorg-local-tls
+  commonName: digiorg.local
+  dnsNames:
+    - digiorg.local
+    - "*.digiorg.local"
+  duration: 8760h    # 1 year
+  renewBefore: 720h  # Renew 30 days before expiry
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: digiorg-local-ca-issuer
+    kind: ClusterIssuer
+    group: cert-manager.io

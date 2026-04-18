@@ -81,12 +81,12 @@ echo "127.0.0.1 digiorg.local" | sudo tee -a /etc/hosts
 nu scripts/local-setup.nu up
 
 # 4. Services aufrufen (alle via digiorg.local)
-#    - Landing:   http://digiorg.local/           (Startseite mit Keycloak SSO)
-#    - Keycloak:  http://digiorg.local/keycloak   (admin / admin)
-#    - ArgoCD:    http://digiorg.local/argocd     (Login via Keycloak)
-#    - Grafana:   http://digiorg.local/grafana    (Login via Keycloak)
-#    - Backstage: http://digiorg.local/backstage  (Login via Keycloak)
-#    - Gitea:     http://digiorg.local/gitea      (admin login; Keycloak in Admin UI konfigurieren)
+#    - Landing:   https://digiorg.local/           (Startseite mit Keycloak SSO)
+#    - Keycloak:  https://digiorg.local/keycloak   (admin / admin)
+#    - ArgoCD:    https://digiorg.local/argocd     (Login via Keycloak)
+#    - Grafana:   https://digiorg.local/grafana    (Login via Keycloak)
+#    - Backstage: https://digiorg.local/backstage  (Login via Keycloak)
+#    - Gitea:     https://digiorg.local/gitea      (admin login; Keycloak in Admin UI konfigurieren)
 ```
 
 ### Cloud Provider Support
@@ -216,12 +216,12 @@ echo "127.0.0.1 digiorg.local" | sudo tee -a /etc/hosts
 nu scripts/local-setup.nu up
 
 # 4. Access services (all via digiorg.local)
-#    - Landing:   http://digiorg.local/           (Homepage with Keycloak SSO)
-#    - Keycloak:  http://digiorg.local/keycloak   (admin / admin)
-#    - ArgoCD:    http://digiorg.local/argocd     (Login via Keycloak)
-#    - Grafana:   http://digiorg.local/grafana    (Login via Keycloak)
-#    - Backstage: http://digiorg.local/backstage  (Login via Keycloak)
-#    - Gitea:     http://digiorg.local/gitea      (admin login; configure Keycloak in Admin UI)
+#    - Landing:   https://digiorg.local/           (Homepage with Keycloak SSO)
+#    - Keycloak:  https://digiorg.local/keycloak   (admin / admin)
+#    - ArgoCD:    https://digiorg.local/argocd     (Login via Keycloak)
+#    - Grafana:   https://digiorg.local/grafana    (Login via Keycloak)
+#    - Backstage: https://digiorg.local/backstage  (Login via Keycloak)
+#    - Gitea:     https://digiorg.local/gitea      (admin login; configure Keycloak in Admin UI)
 ```
 
 ### Cloud Provider Support
