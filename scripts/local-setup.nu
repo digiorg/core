@@ -144,9 +144,9 @@ def deploy_root_app [] {
     print ""
     print "ArgoCD Sync Waves:"
     print "  Wave -1: root-app (just deployed)"
-    print "  Wave  0: postgresql (shared database)"
-    print "  Wave  1: keycloak (depends on PostgreSQL), argocd (self-managed in Wave 1)"
-    print "  Wave  2: backstage, monitoring (depend on PostgreSQL + Keycloak)"
+    print "  Wave  0: cert-manager (TLS), postgresql (shared database)"
+    print "  Wave  1: keycloak (IdP), argocd (self-managed GitOps)"
+    print "  Wave  2: landingpage, backstage, gitea, monitoring"
     print "  Wave  3: crossplane, kyverno"
 }
 
@@ -535,12 +535,14 @@ def restart_oidc_dependent_pods [] {
     print $"(ansi green)✓ OIDC-dependent pods restarted(ansi reset)"
 }
 
-# Patch ArgoCD argocd-cm with the self-signed CA cert for OIDC TLS verification
-# ArgoCD uses the rootCA field in oidc.config to trust the CA for OIDC requests.
+# Patch ArgoCD OIDC config with the self-signed CA cert via Helm upgrade.
+# Uses helm upgrade --reuse-values so ArgoCD self-sync does not overwrite it.
+# kubectl patch is NOT used because ArgoCD self-manages its own Helm release
+# and would overwrite any direct ConfigMap patch on the next sync.
 def patch_argocd_oidc_ca [] {
     $env.KUBECONFIG = $KUBECONFIG_PATH
 
-    print "Patching ArgoCD OIDC config with self-signed CA cert..."
+    print "Patching ArgoCD OIDC config with self-signed CA cert (via Helm)..."
 
     # Wait for cert-manager to issue the CA cert
     mut attempts = 0
@@ -560,49 +562,57 @@ def patch_argocd_oidc_ca [] {
         sleep 10sec
     }
 
-    # Extract CA cert (PEM)
-    let ca_cert_result = (do {
+    # Extract CA cert (base64-encoded)
+    let ca_cert_b64_result = (do {
         kubectl get secret digiorg-local-ca-secret -n cert-manager -o jsonpath='{.data.ca\.crt}'
     } | complete)
-    if $ca_cert_result.exit_code != 0 {
+    if $ca_cert_b64_result.exit_code != 0 or ($ca_cert_b64_result.stdout | str trim | is-empty) {
         print $"(ansi yellow)Warning: Could not extract CA cert, skipping ArgoCD OIDC patch(ansi reset)"
         return
     }
 
-    let ca_cert = ($ca_cert_result.stdout | str trim | ^base64 -d)
+    # Decode using Nushell native decode (portable across macOS and Linux)
+    let ca_cert = ($ca_cert_b64_result.stdout | str trim | decode base64 | decode)
 
     # Save CA cert to file for user reference
     $ca_cert | save -f digiorg-local-ca.crt
 
-    # Get current oidc.config from argocd-cm
-    let current_oidc_result = (do {
-        kubectl get configmap argocd-cm -n argocd -o jsonpath='{.data.oidc\.config}'
-    } | complete)
-    if $current_oidc_result.exit_code != 0 or ($current_oidc_result.stdout | str trim | is-empty) {
-        print $"(ansi yellow)Warning: Could not read argocd-cm oidc.config, skipping OIDC patch(ansi reset)"
-        return
-    }
+    # Build oidc.config YAML with rootCA embedded
+    # Indent cert lines with 2 spaces for rootCA block scalar
+    let indented_cert = ($ca_cert | str trim | lines | each { |line| $"  ($line)" } | str join "\n")
+    let oidc_config = $"name: Keycloak
+issuer: https://digiorg.local/keycloak/realms/digiorg-core-platform
+clientID: argocd
+clientSecret: $oidc.keycloak.clientSecret
+requestedScopes:
+  - openid
+  - profile
+  - email
+  - roles
+rootCA: |\n($indented_cert)
+"
 
-    let current_oidc = ($current_oidc_result.stdout | str trim)
+    # Write Helm values override with oidc.config containing rootCA
+    let helm_override = {configs: {cm: {"oidc.config": $oidc_config}}}
+    $helm_override | to yaml | save -f /tmp/argocd-oidc-override.yaml
 
-    # Only patch if rootCA not already present
-    if not ($current_oidc | str contains "rootCA") {
-        # Indent cert lines for YAML block scalar (6 spaces)
-        let indented_cert = ($ca_cert | lines | each { |line| $"      ($line)" } | str join "\n")
-        let new_oidc = $"($current_oidc)\n      rootCA: |\n($indented_cert)\n"
+    # Re-run helm upgrade with the override — embeds CA cert in the Helm release
+    # so ArgoCD self-sync will not overwrite it
+    print "  Running helm upgrade to embed CA cert in ArgoCD release..."
+    (helm upgrade argocd argo/argo-cd
+        --namespace argocd
+        --reuse-values
+        --values platform/base/argocd/values.yaml
+        --values /tmp/argocd-oidc-override.yaml
+        --wait --timeout 5m)
 
-        # Write patched config to temp file and apply
-        $new_oidc | save -f /tmp/argocd-oidc-config.txt
-        let patch_json = ({data: {"oidc.config": $new_oidc}} | to json)
-        $patch_json | kubectl patch configmap argocd-cm -n argocd --type merge --patch-file /dev/stdin
+    print $"(ansi green)✓ ArgoCD OIDC config updated with CA cert via Helm(ansi reset)"
 
-        # Restart ArgoCD server to pick up new config
-        kubectl rollout restart deployment argocd-server -n argocd
-        kubectl rollout status deployment argocd-server -n argocd --timeout=120s
-        print $"(ansi green)✓ ArgoCD OIDC config patched with CA cert(ansi reset)"
-    } else {
-        print $"(ansi green)✓ ArgoCD OIDC config already contains rootCA(ansi reset)"
-    }
+    # Restart ArgoCD server to pick up new config immediately
+    kubectl rollout restart deployment argocd-server -n argocd
+    kubectl rollout status deployment argocd-server -n argocd --timeout=120s
+    print $"(ansi green)✓ ArgoCD server restarted(ansi reset)"
+}
 
     # Print CA trust instructions
     print ""
