@@ -604,6 +604,7 @@ rootCA: |\n($indented_cert)
         --reuse-values
         --values platform/base/argocd/values.yaml
         --values ./argocd-oidc-override.yaml
+        --force-conflicts
         --wait --timeout 5m)
 
     print $"(ansi green)✓ ArgoCD OIDC config updated with CA cert via Helm(ansi reset)"
