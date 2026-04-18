@@ -12,7 +12,7 @@ grafana:
   # Grafana served under /grafana path
   grafana.ini:
     server:
-      root_url: "http://digiorg.local/grafana"
+      root_url: "https://digiorg.local/grafana"
       serve_from_sub_path: true
 
     auth.generic_oauth:
@@ -23,11 +23,13 @@ grafana:
       # For local dev only — in production use envValueFrom with a Secret reference
       client_secret: grafana-client-secret
       scopes: openid email profile roles
-      # Using digiorg.local with path-based routing (standard port 80)
-      auth_url: http://digiorg.local/keycloak/realms/digiorg-core-platform/protocol/openid-connect/auth
-      token_url: http://digiorg.local/keycloak/realms/digiorg-core-platform/protocol/openid-connect/token
-      api_url: http://digiorg.local/keycloak/realms/digiorg-core-platform/protocol/openid-connect/userinfo
+      auth_url: https://digiorg.local/keycloak/realms/digiorg-core-platform/protocol/openid-connect/auth
+      token_url: https://digiorg.local/keycloak/realms/digiorg-core-platform/protocol/openid-connect/token
+      api_url: https://digiorg.local/keycloak/realms/digiorg-core-platform/protocol/openid-connect/userinfo
       role_attribute_path: "contains(realm_access.roles[*], 'platform-admin') && 'Admin' || 'Viewer'"
+      # Skip TLS verification for self-signed cert in local dev
+      # Remove in production (use proper CA trust instead)
+      tls_skip_verify_insecure: true
 
 prometheus:
   prometheusSpec:

@@ -29,10 +29,10 @@ configs:
     # SSO/OIDC via Keycloak (digiorg-core-platform realm)
     # Using digiorg.local with path-based routing (standard port 80)
     # Requires /etc/hosts: 127.0.0.1 digiorg.local
-    url: http://digiorg.local/argocd
+    url: https://digiorg.local/argocd
     oidc.config: |
       name: Keycloak
-      issuer: http://digiorg.local/keycloak/realms/digiorg-core-platform
+      issuer: https://digiorg.local/keycloak/realms/digiorg-core-platform
       clientID: argocd
       clientSecret: $oidc.keycloak.clientSecret
       requestedScopes:
@@ -40,6 +40,9 @@ configs:
         - profile
         - email
         - roles
+      # Skip TLS verification for self-signed cert in local dev
+      # Remove in production (use proper CA trust instead)
+      insecureSkipVerify: true
 
   # argocd-cmd-params-cm ConfigMap
   params:
