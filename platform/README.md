@@ -50,7 +50,7 @@ Kustomize bases for all platform components:
 
 ## Service Access
 
-All services are accessible via unified ingress at `http://digiorg.local`:
+All services are accessible via unified ingress at `https://digiorg.local`:
 
 | Path | Service | Namespace |
 |------|---------|-----------|

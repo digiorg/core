@@ -1,0 +1,77 @@
+# =============================================================================
+# cert-manager ClusterIssuers
+# =============================================================================
+# dev:  Self-signed CA for digiorg.local (local KinD environment)
+# prod: Let's Encrypt ACME for real domains (staging/production)
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Bootstrap: raw self-signed issuer (used to create the local CA certificate)
+# -----------------------------------------------------------------------------
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: selfsigned-bootstrap
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  selfSigned: {}
+
+---
+# -----------------------------------------------------------------------------
+# Local Dev CA Issuer — signs certificates for digiorg.local
+# References the CA cert created in certificate-dev.yaml
+# -----------------------------------------------------------------------------
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: digiorg-local-ca-issuer
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  ca:
+    secretName: digiorg-local-ca-secret
+
+---
+# -----------------------------------------------------------------------------
+# Let's Encrypt — Staging (for testing ACME flow without rate limits)
+# Replace email with a real address before use
+# -----------------------------------------------------------------------------
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    email: admin@digiorg.io
+    privateKeySecretRef:
+      name: letsencrypt-staging-key
+    solvers:
+      - http01:
+          ingress:
+            ingressClassName: nginx
+
+---
+# -----------------------------------------------------------------------------
+# Let's Encrypt — Production
+# Replace email with a real address before use
+# -----------------------------------------------------------------------------
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: admin@digiorg.io
+    privateKeySecretRef:
+      name: letsencrypt-prod-key
+    solvers:
+      - http01:
+          ingress:
+            ingressClassName: nginx

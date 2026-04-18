@@ -1,20 +1,22 @@
 # =============================================================================
 # DigiOrg Unified Ingress — Path-based routing for all platform services
 # =============================================================================
-# All services accessible via: digiorg.local/<service> (standard port 80)
+# All services accessible via: https://digiorg.local/<service>
 #
 # Prerequisites:
 # 1. NGINX Ingress Controller installed
-# 2. Add to /etc/hosts: 127.0.0.1 digiorg.local
-# 3. KinD cluster with port 80 mapped to ingress controller
+# 2. cert-manager installed with digiorg-local-ca-issuer configured
+# 3. Add to /etc/hosts: 127.0.0.1 digiorg.local
+# 4. Import CA cert into OS trust store (see platform/base/cert-manager/README.md)
+# 5. KinD cluster with ports 80+443 mapped to ingress controller
 #
 # Services:
-# - digiorg.local/           → Landing Page (entry point)
-# - digiorg.local/keycloak   → Keycloak IdP
-# - digiorg.local/argocd     → ArgoCD GitOps
-# - digiorg.local/grafana    → Grafana Monitoring
-# - digiorg.local/backstage  → Backstage Developer Portal
-# - digiorg.local/gitea      → Gitea Git Service
+# - https://digiorg.local/           → Landing Page (entry point)
+# - https://digiorg.local/keycloak   → Keycloak IdP
+# - https://digiorg.local/argocd     → ArgoCD GitOps
+# - https://digiorg.local/grafana    → Grafana Monitoring
+# - https://digiorg.local/backstage  → Backstage Developer Portal
+# - https://digiorg.local/gitea      → Gitea Git Service
 # =============================================================================
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -25,8 +27,18 @@ metadata:
     nginx.ingress.kubernetes.io/use-regex: "true"
     nginx.ingress.kubernetes.io/proxy-buffer-size: "128k"
     nginx.ingress.kubernetes.io/proxy-buffers-number: "4"
+    # TLS: cert-manager provisions and renews the certificate automatically
+    # Switch issuer for staging/prod: letsencrypt-staging or letsencrypt-prod
+    cert-manager.io/cluster-issuer: "digiorg-local-ca-issuer"
+    # Redirect all HTTP traffic to HTTPS
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
 spec:
   ingressClassName: nginx
+  tls:
+    - hosts:
+        - digiorg.local
+      secretName: digiorg-local-tls
   rules:
     - host: digiorg.local
       http:
@@ -75,8 +87,15 @@ metadata:
     nginx.ingress.kubernetes.io/use-regex: "true"
     nginx.ingress.kubernetes.io/rewrite-target: /$2
     nginx.ingress.kubernetes.io/proxy-buffer-size: "128k"
+    cert-manager.io/cluster-issuer: "digiorg-local-ca-issuer"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
 spec:
   ingressClassName: nginx
+  tls:
+    - hosts:
+        - digiorg.local
+      secretName: digiorg-local-tls
   rules:
     - host: digiorg.local
       http:
@@ -102,8 +121,15 @@ metadata:
     nginx.ingress.kubernetes.io/rewrite-target: /$2
     nginx.ingress.kubernetes.io/proxy-buffer-size: "128k"
     nginx.ingress.kubernetes.io/proxy-body-size: "512m"  # Large Git pushes
+    cert-manager.io/cluster-issuer: "digiorg-local-ca-issuer"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
 spec:
   ingressClassName: nginx
+  tls:
+    - hosts:
+        - digiorg.local
+      secretName: digiorg-local-tls
   rules:
     - host: digiorg.local
       http:

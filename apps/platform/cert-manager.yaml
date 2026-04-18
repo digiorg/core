@@ -1,0 +1,35 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cert-manager
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    # Wave 0: Must deploy before all other services (Ingress TLS depends on it)
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/digiorg/core.git
+    targetRevision: HEAD
+    path: platform/base/cert-manager
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cert-manager
+
+  syncPolicy:
+    automated:
+      selfHeal: true
+      prune: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 10
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 5m
