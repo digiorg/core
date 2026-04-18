@@ -163,6 +163,12 @@ All services authenticate via Keycloak OIDC:
  Platform Services
  ─────────────────
  ┌──────────────┐
+ │ cert-manager │
+ │  • controller│  ← Wave 0: provisions TLS certs for digiorg.local
+ │  • webhook   │  ← self-signed CA + Let's Encrypt support
+ └──────────────┘
+
+ ┌──────────────┐
  │   keycloak   │
  │  • keycloak  │◀─── uses keycloak DB
  └──────────────┘
@@ -189,7 +195,34 @@ All services authenticate via Keycloak OIDC:
  │    gitea     │
  │  • gitea     │◀─── uses gitea DB
  └──────────────┘
+
+ ┌──────────────┐
+ │  platform-   │
+ │    apps      │
+ │  • landingpg │  ← Platform entry point with Keycloak SSO
+ └──────────────┘
 ```
+
+## TLS Architecture
+
+All traffic is served over HTTPS. TLS terminates at the NGINX Ingress:
+
+```
+Browser ──HTTPS:443──▶ NGINX Ingress ──HTTP──▶ Services (internal)
+                          │
+                          │ TLS cert managed by cert-manager
+                          ▼
+                  digiorg-local-tls (Secret)
+                          ▲
+                          │ issues
+                   cert-manager
+                  ┌────────────────┐
+                  │  Local Dev:    │  Self-signed CA (digiorg-local-ca-issuer)
+                  │  Staging/Prod: │  Let's Encrypt ACME (letsencrypt-prod)
+                  └────────────────┘
+```
+
+HTTP (`:80`) automatically redirects to HTTPS (`:443`).
 
 ## GitOps Flow
 

@@ -11,9 +11,10 @@ platform/
 └── base/                # Base Kustomize configurations
     ├── argocd/          # ArgoCD with Keycloak SSO
     ├── backstage/       # Backstage Developer Portal
+    ├── cert-manager/    # TLS certificate management (self-signed + Let's Encrypt)
     ├── crossplane/      # Crossplane setup
     ├── gitea/           # Gitea Git Service
-    ├── ingress/         # NGINX Ingress + unified routing
+    ├── ingress/         # NGINX Ingress + unified routing + TLS termination
     ├── keycloak/        # Keycloak IdP (uses shared PostgreSQL)
     ├── kyverno/         # Policy Engine
     ├── landingpage/     # Platform Landing Page with SSO
@@ -33,18 +34,21 @@ Contains the KinD cluster configuration for local development:
 
 Kustomize bases for all platform components:
 
-| Component | Description | Authentication |
-|-----------|-------------|----------------|
-| argocd | GitOps Continuous Delivery | Keycloak OIDC |
-| backstage | Internal Developer Portal | Keycloak OIDC / Guest |
-| crossplane | Infrastructure as Code | - |
-| gitea | Self-hosted Git Service | Local admin; Keycloak OIDC (manual config) |
-| ingress | NGINX Ingress + routing rules | - |
-| keycloak | Identity Provider | Built-in |
-| kyverno | Policy Engine | - |
-| landingpage | Platform Entry Point | Keycloak OIDC (public client) |
-| monitoring | Prometheus + Grafana | Keycloak OAuth |
-| postgresql | Shared PostgreSQL database | - |
+| Component | Description | Authentication | Wave |
+|-----------|-------------|----------------|------|
+| cert-manager | TLS certificate issuance + renewal | - | 0 |
+| postgresql | Shared PostgreSQL database | - | 0 |
+| argocd | GitOps Continuous Delivery | Keycloak OIDC | 1 |
+| keycloak | Identity Provider | Built-in | 1 |
+| landingpage | Platform Entry Point | Keycloak OIDC (public client) | 2 |
+| backstage | Internal Developer Portal | Keycloak OIDC / Guest | 2 |
+| gitea | Self-hosted Git Service | Local admin; Keycloak OIDC (manual config) | 2 |
+| monitoring | Prometheus + Grafana | Keycloak OAuth | 2 |
+| crossplane | Infrastructure as Code | - | 3 |
+| ingress | NGINX Ingress + TLS termination | - | - |
+| kyverno | Policy Engine | - | 3 |
+
+**Note:** cert-manager provisions a self-signed CA for `digiorg.local` (local dev) and supports Let's Encrypt for staging/production. See `platform/base/cert-manager/README.md`.
 
 **Note:** PostgreSQL runs as a shared StatefulSet in the `platform-db` namespace, serving Keycloak, Backstage, and Gitea databases.
 

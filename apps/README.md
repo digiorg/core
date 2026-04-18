@@ -8,8 +8,9 @@ This directory contains ArgoCD Application manifests managed by the App-of-Apps 
 apps/
 ├── README.md
 ├── platform/              # Platform infrastructure apps
-│   ├── argocd.yaml        # Self-managed ArgoCD (Wave 1)
+│   ├── cert-manager.yaml  # TLS Certificate Management (Wave 0)
 │   ├── postgresql.yaml    # Shared PostgreSQL database (Wave 0)
+│   ├── argocd.yaml        # Self-managed ArgoCD (Wave 1)
 │   ├── keycloak.yaml      # Identity Provider (Wave 1)
 │   ├── landingpage.yaml   # Platform Entry Point (Wave 2)
 │   ├── gitea.yaml         # Git Service (Wave 2)
@@ -27,7 +28,7 @@ Applications are deployed in order using ArgoCD sync waves:
 | Wave | Applications | Description |
 |------|--------------|-------------|
 | -1 | root-app | Bootstrap (deployed by setup script) |
-| 0 | postgresql | Shared database layer (required by Keycloak, Backstage, Gitea) |
+| 0 | cert-manager, postgresql | TLS certificates + shared database layer |
 | 1 | keycloak, argocd | Core infrastructure (IdP, GitOps) |
 | 2 | landingpage, gitea, backstage, monitoring | Platform services (depend on PostgreSQL + Keycloak) |
 | 3 | crossplane, kyverno | Extensions (no Keycloak dependency) |
