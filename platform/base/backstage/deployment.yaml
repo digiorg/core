@@ -38,9 +38,9 @@ spec:
           env:
             # Application URLs
             - name: APP_BASE_URL
-              value: "http://digiorg.local/backstage"
+              value: "https://digiorg.local/backstage"
             - name: BACKEND_BASE_URL
-              value: "http://digiorg.local/backstage"
+              value: "https://digiorg.local/backstage"
             
             # PostgreSQL connection (using shared PostgreSQL in platform-db namespace)
             - name: POSTGRES_HOST
@@ -64,7 +64,11 @@ spec:
             
             # Keycloak OIDC configuration
             - name: AUTH_OIDC_METADATA_URL
-              value: "http://digiorg.local/keycloak/realms/digiorg-core-platform/.well-known/openid-configuration"
+              value: "https://digiorg.local/keycloak/realms/digiorg-core-platform/.well-known/openid-configuration"
+            # Skip TLS verification for self-signed cert in local dev
+            # Remove NODE_TLS_REJECT_UNAUTHORIZED in production (use proper CA trust instead)
+            - name: NODE_TLS_REJECT_UNAUTHORIZED
+              value: "0"
             - name: AUTH_OIDC_CLIENT_ID
               value: backstage
             - name: AUTH_OIDC_CLIENT_SECRET
