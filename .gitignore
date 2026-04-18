@@ -109,3 +109,5 @@ temp/
 *.bak
 *.backup
 kubeconfig-local.yaml
+argocd-oidc-override.yaml
+digiorg-local-ca.crt

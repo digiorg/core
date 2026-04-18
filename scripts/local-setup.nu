@@ -594,7 +594,7 @@ rootCA: |\n($indented_cert)
 
     # Write Helm values override with oidc.config containing rootCA
     let helm_override = {configs: {cm: {"oidc.config": $oidc_config}}}
-    $helm_override | to yaml | save -f /tmp/argocd-oidc-override.yaml
+    $helm_override | to yaml | save -f ./argocd-oidc-override.yaml
 
     # Re-run helm upgrade with the override — embeds CA cert in the Helm release
     # so ArgoCD self-sync will not overwrite it
@@ -603,7 +603,7 @@ rootCA: |\n($indented_cert)
         --namespace argocd
         --reuse-values
         --values platform/base/argocd/values.yaml
-        --values /tmp/argocd-oidc-override.yaml
+        --values ./argocd-oidc-override.yaml
         --wait --timeout 5m)
 
     print $"(ansi green)✓ ArgoCD OIDC config updated with CA cert via Helm(ansi reset)"
@@ -612,7 +612,6 @@ rootCA: |\n($indented_cert)
     kubectl rollout restart deployment argocd-server -n argocd
     kubectl rollout status deployment argocd-server -n argocd --timeout=120s
     print $"(ansi green)✓ ArgoCD server restarted(ansi reset)"
-}
 
     # Print CA trust instructions
     print ""
