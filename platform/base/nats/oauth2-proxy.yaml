@@ -47,6 +47,8 @@ spec:
             # Remove in production with trusted CA
             - --ssl-insecure-skip-verify=true
             - --oidc-extra-audience=nats-surveyor
+            # Allow unverified emails for local dev (Keycloak test users)
+            - --insecure-oidc-allow-unverified-email=true
           env:
             - name: OAUTH2_PROXY_CLIENT_SECRET
               valueFrom:
