@@ -85,7 +85,7 @@ def "main up" [] {
     print ""
     print $"(ansi yellow)Prerequisites:(ansi reset)"
     print $"  1. Add to /etc/hosts: 127.0.0.1 digiorg.local"
-    print $"  2. Import CA cert into your OS trust store (see above)"
+    print $"  2. Import CA cert into your OS trust store [see above]"
 }
 
 # Run only Phase 1 bootstrap (no root app)
