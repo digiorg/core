@@ -32,12 +32,11 @@ spec:
             - --redirect-url=https://digiorg.local/nats/oauth2/callback
             - --upstream=http://nats-surveyor.messaging.svc.cluster.local:7777
             - --http-address=0.0.0.0:4180
-            # Sub-path prefix — oauth2-proxy runs at /nats, not /
-            # Prevents redirect loop: callback path must be within proxy-prefix
-            - --proxy-prefix=/nats/oauth2
+            # After Ingress rewrite-target /$2, oauth2-proxy sees paths without /nats prefix.
+            # Default proxy-prefix /oauth2 matches the rewritten /oauth2/callback path.
+            # Do NOT set --proxy-prefix=/nats/oauth2 (that was the pre-rewrite path).
             - --cookie-secure=true
             - --cookie-samesite=lax
-            - --cookie-path=/nats
             - --email-domain=*
             - --skip-provider-button=true
             - --pass-access-token=false
