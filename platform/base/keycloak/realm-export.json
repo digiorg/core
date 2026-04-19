@@ -200,6 +200,28 @@
           }
         }
       ]
+    },
+    {
+      "clientId": "nats-surveyor",
+      "name": "NATS Surveyor",
+      "description": "NATS Surveyor Observability UI — SSO via oauth2-proxy",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "nats-surveyor-client-secret",
+      "redirectUris": [
+        "https://digiorg.local/nats/*",
+        "https://digiorg.local/nats/oauth2/callback"
+      ],
+      "webOrigins": [
+        "https://digiorg.local"
+      ],
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": true
     }
   ],
   "roles": {

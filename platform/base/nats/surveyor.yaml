@@ -1,0 +1,75 @@
+# =============================================================================
+# NATS Surveyor UI — Read-only observability dashboard
+# Protected by oauth2-proxy (Keycloak SSO)
+# Accessible internally only — external access via oauth2-proxy at /nats
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nats-surveyor
+  namespace: messaging
+  labels:
+    app.kubernetes.io/name: nats-surveyor
+    app.kubernetes.io/component: observability
+    app.kubernetes.io/part-of: digiorg-core-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nats-surveyor
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nats-surveyor
+        app.kubernetes.io/component: observability
+    spec:
+      containers:
+        - name: nats-surveyor
+          image: natsio/nats-surveyor:latest
+          args:
+            - --servers
+            - nats://nats.messaging.svc.cluster.local:4222
+            - --port
+            - "7777"
+            - --count
+            - "1"
+          ports:
+            - name: http
+              containerPort: 7777
+              protocol: TCP
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nats-surveyor
+  namespace: messaging
+  labels:
+    app.kubernetes.io/name: nats-surveyor
+    app.kubernetes.io/component: observability
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: nats-surveyor
+  ports:
+    - name: http
+      port: 7777
+      targetPort: http

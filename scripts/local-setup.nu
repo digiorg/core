@@ -74,14 +74,18 @@ def "main up" [] {
     print $"Export kubeconfig:"
     print $"  export KUBECONFIG=($KUBECONFIG_PATH)"
     print ""
-    print "Access services (all via digiorg.local):"
-    print "  Keycloak:   http://digiorg.local/keycloak   (admin / admin)"
-    print "  ArgoCD:     http://digiorg.local/argocd     (Login via Keycloak)"
-    print "  Grafana:    http://digiorg.local/grafana    (Login via Keycloak)"
-    print "  Backstage:  http://digiorg.local/backstage  (Login via Keycloak)"
-    print "  Gitea:      http://digiorg.local/gitea      (admin login; configure OIDC in Admin UI)"
+    print "Access services (all via https://digiorg.local):"
+    print "  Landing Page: https://digiorg.local/          (Login via Keycloak)"
+    print "  Keycloak:     https://digiorg.local/keycloak  (admin / admin)"
+    print "  ArgoCD:       https://digiorg.local/argocd    (Login via Keycloak)"
+    print "  Grafana:      https://digiorg.local/grafana   (Login via Keycloak)"
+    print "  Backstage:    https://digiorg.local/backstage (Login via Keycloak)"
+    print "  Gitea:        https://digiorg.local/gitea     (admin login; configure OIDC in Admin UI)"
+    print "  NATS:         https://digiorg.local/nats      (Login via Keycloak)"
     print ""
-    print $"(ansi yellow)Prerequisite: Add to /etc/hosts: 127.0.0.1 digiorg.local(ansi reset)"
+    print $"(ansi yellow)Prerequisites:(ansi reset)"
+    print $"  1. Add to /etc/hosts: 127.0.0.1 digiorg.local"
+    print $"  2. Import CA cert into your OS trust store (see above)"
 }
 
 # Run only Phase 1 bootstrap (no root app)
@@ -253,7 +257,7 @@ def "main status" [] {
         print $"(ansi cyan_bold)Platform Pods(ansi reset)"
         print "============="
         
-        let namespaces = ["platform-db", "argocd", "keycloak", "crossplane-system", "kyverno", "monitoring", "backstage", "gitea"]
+        let namespaces = ["platform-db", "argocd", "keycloak", "messaging", "crossplane-system", "kyverno", "monitoring", "backstage", "gitea", "platform-apps"]
         for ns in $namespaces {
             let status = try {
                 let pods = (kubectl get pods -n $ns --no-headers 2>/dev/null | lines | length)
@@ -469,6 +473,16 @@ def create_platform_secrets [] {
         print $"(ansi green)✓ Gitea namespace and secrets created(ansi reset)"
         print $"(ansi yellow)  ! Existing gitea-admin-secret preserved; set GITEA_ADMIN_PASSWORD to rotate(ansi reset)"
     }
+
+    # NATS oauth2-proxy secrets (messaging namespace)
+    let nats_client_secret = ($env.NATS_SURVEYOR_CLIENT_SECRET? | default "nats-surveyor-client-secret")
+    let nats_cookie_secret = ($env.NATS_COOKIE_SECRET? | default (openssl rand -base64 32 | str trim))
+    kubectl create namespace messaging --dry-run=client -o yaml | kubectl apply -f -
+    (kubectl create secret generic nats-oauth2-proxy-secret -n messaging
+        --from-literal=client-secret=($nats_client_secret)
+        --from-literal=cookie-secret=($nats_cookie_secret)
+        --dry-run=client -o yaml | kubectl apply -f -)
+    print $"(ansi green)✓ NATS oauth2-proxy secrets created [messaging](ansi reset)"
 }
 
 def install_argocd [] {

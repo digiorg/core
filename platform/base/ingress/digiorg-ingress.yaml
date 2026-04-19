@@ -67,6 +67,14 @@ spec:
                 name: prometheus-grafana
                 port:
                   number: 80
+          # NATS Surveyor UI (via oauth2-proxy for SSO)
+          - path: /nats(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: nats-oauth2-proxy
+                port:
+                  number: 4180
           # Landing Page (root path - must be last due to catch-all)
           - path: /
             pathType: Prefix
@@ -208,3 +216,14 @@ spec:
   externalName: landingpage.platform-apps.svc.cluster.local
   ports:
     - port: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nats-oauth2-proxy
+  namespace: ingress-nginx
+spec:
+  type: ExternalName
+  externalName: nats-oauth2-proxy.messaging.svc.cluster.local
+  ports:
+    - port: 4180
