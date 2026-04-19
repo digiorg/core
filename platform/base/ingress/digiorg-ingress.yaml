@@ -67,14 +67,6 @@ spec:
                 name: prometheus-grafana
                 port:
                   number: 80
-          # NATS Surveyor UI (via oauth2-proxy for SSO)
-          - path: /nats(/|$)(.*)
-            pathType: ImplementationSpecific
-            backend:
-              service:
-                name: nats-oauth2-proxy
-                port:
-                  number: 4180
           # Landing Page (root path - must be last due to catch-all)
           - path: /
             pathType: Prefix
@@ -149,6 +141,38 @@ spec:
                 name: gitea-http
                 port:
                   number: 3000
+---
+# NATS Surveyor UI needs URL rewriting (via oauth2-proxy for SSO)
+# /nats/foo -> /foo on oauth2-proxy -> /foo on Surveyor upstream
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: nats-ingress
+  namespace: ingress-nginx
+  annotations:
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+    nginx.ingress.kubernetes.io/proxy-buffer-size: "128k"
+    cert-manager.io/cluster-issuer: "digiorg-local-ca-issuer"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - digiorg.local
+      secretName: digiorg-local-tls
+  rules:
+    - host: digiorg.local
+      http:
+        paths:
+          - path: /nats(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: nats-oauth2-proxy
+                port:
+                  number: 4180
 ---
 # ExternalName services to route cross-namespace
 apiVersion: v1
