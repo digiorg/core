@@ -258,6 +258,7 @@
     {
       "username": "admin",
       "enabled": true,
+      "emailVerified": true,
       "email": "admin@example.com",
       "firstName": "Platform",
       "lastName": "Admin",
