@@ -30,7 +30,7 @@ spec:
             - sh
             - -c
             - |
-              until wget -q -O /dev/null http://nats:8222/healthz 2>/dev/null; do
+              until wget -q -O /dev/null http://nats-headless:8222/healthz 2>/dev/null; do
                 echo "Waiting for NATS monitoring endpoint..."; sleep 2
               done
               echo "NATS is ready"
