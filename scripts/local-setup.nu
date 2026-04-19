@@ -476,7 +476,9 @@ def create_platform_secrets [] {
 
     # NATS oauth2-proxy secrets (messaging namespace)
     let nats_client_secret = ($env.NATS_SURVEYOR_CLIENT_SECRET? | default "nats-surveyor-client-secret")
-    let nats_cookie_secret = ($env.NATS_COOKIE_SECRET? | default (openssl rand -base64 32 | str trim))
+    # openssl rand -hex 16 produces a 32-char hex string = exactly 16 bytes (AES-128)
+    # base64 32 would produce 44 chars which oauth2-proxy rejects (must be 16/24/32 bytes)
+    let nats_cookie_secret = ($env.NATS_COOKIE_SECRET? | default (openssl rand -hex 16 | str trim))
     kubectl create namespace messaging --dry-run=client -o yaml | kubectl apply -f -
     (kubectl create secret generic nats-oauth2-proxy-secret -n messaging
         --from-literal=client-secret=($nats_client_secret)

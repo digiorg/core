@@ -23,6 +23,17 @@ spec:
         app.kubernetes.io/name: nats-surveyor
         app.kubernetes.io/component: observability
     spec:
+      initContainers:
+        - name: wait-for-nats
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z nats.messaging.svc.cluster.local 4222; do
+                echo "Waiting for NATS on port 4222..."; sleep 2
+              done
+              echo "NATS is ready"
       containers:
         - name: nats-surveyor
           image: natsio/nats-surveyor:latest
