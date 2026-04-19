@@ -1,0 +1,56 @@
+# NATS Helm Values
+# Chart: nats/nats
+# https://github.com/nats-io/k8s/tree/main/helm/charts/nats
+
+config:
+  # Enable JetStream for persistent messaging
+  jetstream:
+    enabled: true
+    fileStorage:
+      enabled: true
+      size: 1Gi
+      storageDirectory: /data
+
+  # Single-node for local dev (no clustering needed)
+  cluster:
+    enabled: false
+
+  # NATS monitoring endpoint (used by Surveyor)
+  monitor:
+    port: 8222
+
+# Disable nats-box utility container (not needed)
+natsBox:
+  enabled: false
+
+# Container image
+container:
+  image:
+    repository: nats
+    tag: "2.10-alpine"
+
+# Resource limits for local dev
+podTemplate:
+  merge:
+    spec:
+      containers:
+        - name: nats
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+
+# Service configuration
+service:
+  ports:
+    client:
+      port: 4222
+    monitor:
+      port: 8222
+    leafnode:
+      enabled: false
+    websocket:
+      enabled: false

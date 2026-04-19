@@ -1,0 +1,51 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: nats
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    # Wave 0: Deploy alongside cert-manager and postgresql
+    # No Keycloak dependency — NATS must be ready before Wave 1
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: default
+
+  sources:
+    # NATS Server via Helm chart
+    - repoURL: https://nats-io.github.io/k8s/helm/charts
+      chart: nats
+      targetRevision: "1.2.x"
+      helm:
+        releaseName: nats
+        valueFiles:
+          - $values/platform/base/nats/values.yaml
+
+    # Reference to values file in Git repo
+    - repoURL: https://github.com/digiorg/core.git
+      targetRevision: HEAD
+      ref: values
+
+    # Surveyor, oauth2-proxy, namespace via Kustomize
+    - repoURL: https://github.com/digiorg/core.git
+      targetRevision: HEAD
+      path: platform/base/nats
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: messaging
+
+  syncPolicy:
+    automated:
+      selfHeal: true
+      prune: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m
