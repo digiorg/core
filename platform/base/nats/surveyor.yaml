@@ -1,7 +1,9 @@
 # =============================================================================
-# NATS Surveyor UI — Read-only observability dashboard
+# NATS Surveyor — Prometheus metrics exporter for NATS
 # Protected by oauth2-proxy (Keycloak SSO)
-# Accessible internally only — external access via oauth2-proxy at /nats
+# Accessible externally via oauth2-proxy at /nats
+#
+# Requires NATS system account ($SYS) to be configured — see values.yaml
 # =============================================================================
 apiVersion: apps/v1
 kind: Deployment
@@ -23,23 +25,18 @@ spec:
         app.kubernetes.io/name: nats-surveyor
         app.kubernetes.io/component: observability
     spec:
-      initContainers:
-        - name: wait-for-nats
-          image: busybox:1.36
-          command:
-            - sh
-            - -c
-            - |
-              until wget -q -O /dev/null http://nats-headless:8222/healthz 2>/dev/null; do
-                echo "Waiting for NATS monitoring endpoint..."; sleep 2
-              done
-              echo "NATS is ready"
+      # No initContainer — Kubernetes restart handles the NATS startup race.
+      # Previous initContainers using nc/wget had DNS, TCP, and headless service issues.
       containers:
         - name: nats-surveyor
           image: natsio/nats-surveyor:latest
           args:
             - --servers
             - nats://nats.messaging.svc.cluster.local:4222
+            - --user
+            - sys
+            - --password
+            - sys_password
             - --port
             - "7777"
             - --count
@@ -55,19 +52,22 @@ spec:
             limits:
               cpu: 200m
               memory: 128Mi
+          # Surveyor exposes only /metrics (Prometheus exporter)
           livenessProbe:
             httpGet:
               path: /metrics
               port: http
-            initialDelaySeconds: 15
-            periodSeconds: 20
-            failureThreshold: 3
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
           readinessProbe:
             httpGet:
               path: /metrics
               port: http
-            initialDelaySeconds: 10
-            periodSeconds: 10
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            timeoutSeconds: 5
             failureThreshold: 3
 ---
 apiVersion: v1
