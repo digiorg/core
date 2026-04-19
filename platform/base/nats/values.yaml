@@ -23,25 +23,18 @@ config:
 natsBox:
   enabled: false
 
-# Container image
+# Resource limits for the NATS container
+# Use container.merge (not podTemplate.merge.spec.containers) to avoid
+# generating a container entry without an image field (causes StatefulSet validation failure)
 container:
-  image:
-    repository: nats
-    tag: "2.10-alpine"
-
-# Resource limits for local dev
-podTemplate:
   merge:
-    spec:
-      containers:
-        - name: nats
-          resources:
-            requests:
-              cpu: 50m
-              memory: 64Mi
-            limits:
-              cpu: 500m
-              memory: 256Mi
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
 
 # Service configuration
 service:
