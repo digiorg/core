@@ -30,13 +30,12 @@ spec:
             - --oidc-issuer-url=https://digiorg.local/keycloak/realms/digiorg-core-platform
             - --client-id=nats-surveyor
             - --redirect-url=https://digiorg.local/nats/oauth2/callback
-            - --upstream=http://nats-surveyor.messaging.svc.cluster.local:7777
+            # Trailing / tells oauth2-proxy to strip the matched prefix when forwarding
+            - --upstream=http://nats-surveyor.messaging.svc.cluster.local:7777/
             - --http-address=0.0.0.0:4180
-            # After Ingress rewrite-target /$2, oauth2-proxy sees paths without /nats prefix.
-            # Default proxy-prefix /oauth2 matches the rewritten /oauth2/callback path.
-            # --reverse-proxy ensures oauth2-proxy uses X-Forwarded-* headers for redirect
-            # calculation, so it redirects to the original /nats path, not the rewritten /
-            - --reverse-proxy=true
+            # No Ingress rewrite — oauth2-proxy receives full /nats/... paths.
+            # proxy-prefix identifies the oauth2 callback path within the /nats sub-path.
+            - --proxy-prefix=/nats/oauth2
             - --cookie-secure=true
             - --cookie-samesite=lax
             - --cookie-path=/nats
