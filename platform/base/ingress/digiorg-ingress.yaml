@@ -156,10 +156,8 @@ metadata:
     cert-manager.io/cluster-issuer: "digiorg-local-ca-issuer"
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
     nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
-    # Pass the original pre-rewrite URI so oauth2-proxy can redirect back correctly
-    nginx.ingress.kubernetes.io/configuration-snippet: |
-      proxy_set_header X-Original-URI $request_uri;
-      proxy_set_header X-Forwarded-Uri $request_uri;
+    # Pass original path prefix so oauth2-proxy (--reverse-proxy) redirects to /nats after login
+    nginx.ingress.kubernetes.io/x-forwarded-prefix: "/nats"
 spec:
   ingressClassName: nginx
   tls:
