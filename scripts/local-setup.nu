@@ -81,7 +81,7 @@ def "main up" [] {
     print "  Grafana:      https://digiorg.local/grafana   (Login via Keycloak)"
     print "  Backstage:    https://digiorg.local/backstage (Login via Keycloak)"
     print "  Gitea:        https://digiorg.local/gitea     (admin login; configure OIDC in Admin UI)"
-    print "  NATS:         https://digiorg.local/nats      (Login via Keycloak)"
+    # NATS metrics available via Grafana dashboards (no separate UI)
     print ""
     print $"(ansi yellow)Prerequisites:(ansi reset)"
     print $"  1. Add to /etc/hosts: 127.0.0.1 digiorg.local"
@@ -474,17 +474,9 @@ def create_platform_secrets [] {
         print $"(ansi yellow)  ! Existing gitea-admin-secret preserved; set GITEA_ADMIN_PASSWORD to rotate(ansi reset)"
     }
 
-    # NATS oauth2-proxy secrets (messaging namespace)
-    let nats_client_secret = ($env.NATS_SURVEYOR_CLIENT_SECRET? | default "nats-surveyor-client-secret")
-    # openssl rand -hex 16 produces a 32-char hex string = exactly 16 bytes (AES-128)
-    # base64 32 would produce 44 chars which oauth2-proxy rejects (must be 16/24/32 bytes)
-    let nats_cookie_secret = ($env.NATS_COOKIE_SECRET? | default (openssl rand -hex 16 | str trim))
+    # Messaging namespace (for NATS server + Surveyor)
     kubectl create namespace messaging --dry-run=client -o yaml | kubectl apply -f -
-    (kubectl create secret generic nats-oauth2-proxy-secret -n messaging
-        --from-literal=client-secret=($nats_client_secret)
-        --from-literal=cookie-secret=($nats_cookie_secret)
-        --dry-run=client -o yaml | kubectl apply -f -)
-    print $"(ansi green)✓ NATS oauth2-proxy secrets created [messaging](ansi reset)"
+    print $"(ansi green)✓ Messaging namespace created(ansi reset)"
 }
 
 def install_argocd [] {

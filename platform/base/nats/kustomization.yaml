@@ -6,7 +6,7 @@ namespace: messaging
 resources:
   - namespace.yaml
   - surveyor.yaml
-  - oauth2-proxy.yaml
+  - servicemonitor.yaml
+  - grafana-dashboards.yaml
 
 # Note: NATS server itself is deployed via Helm by the ArgoCD Application (apps/platform/nats.yaml)
-# The secrets (nats-oauth2-proxy-secret) are created by scripts/local-setup.nu before ArgoCD sync

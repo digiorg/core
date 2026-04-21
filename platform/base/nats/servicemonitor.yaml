@@ -1,0 +1,24 @@
+# =============================================================================
+# ServiceMonitor for NATS Surveyor — Prometheus Operator scrape config
+# Prometheus discovers this via label selector (release: prometheus)
+# =============================================================================
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: nats-surveyor
+  namespace: messaging
+  labels:
+    app.kubernetes.io/name: nats-surveyor
+    app.kubernetes.io/part-of: digiorg-core-platform
+    # Required: Prometheus Operator discovers ServiceMonitors with this label
+    # Must match the Helm release name of kube-prometheus-stack
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nats-surveyor
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+      scrapeTimeout: 10s

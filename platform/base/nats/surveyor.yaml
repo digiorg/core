@@ -1,9 +1,7 @@
 # =============================================================================
 # NATS Surveyor — Prometheus metrics exporter for NATS
-# Protected by oauth2-proxy (Keycloak SSO)
-# Accessible externally via oauth2-proxy at /nats
-#
-# Requires NATS system account ($SYS) to be configured — see values.yaml
+# Internal only — metrics scraped by Prometheus via ServiceMonitor
+# Visualized in Grafana (NATS dashboards provisioned via ConfigMap)
 # =============================================================================
 apiVersion: apps/v1
 kind: Deployment
@@ -25,8 +23,6 @@ spec:
         app.kubernetes.io/name: nats-surveyor
         app.kubernetes.io/component: observability
     spec:
-      # No initContainer — Kubernetes restart handles the NATS startup race.
-      # Previous initContainers using nc/wget had DNS, TCP, and headless service issues.
       containers:
         - name: nats-surveyor
           image: natsio/nats-surveyor:latest
@@ -52,7 +48,6 @@ spec:
             limits:
               cpu: 200m
               memory: 128Mi
-          # Surveyor exposes only /metrics (Prometheus exporter)
           livenessProbe:
             httpGet:
               path: /metrics
