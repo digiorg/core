@@ -150,7 +150,7 @@ def deploy_root_app [] {
     print "  Wave -1: root-app (just deployed)"
     print "  Wave  0: cert-manager (TLS), postgresql (shared database)"
     print "  Wave  1: keycloak (IdP), argocd (self-managed GitOps)"
-    print "  Wave  2: landingpage, backstage, gitea, monitoring"
+    print "  Wave  2: landingpage, backstage, gitea, grafana"
     print "  Wave  3: crossplane, kyverno"
 }
 
@@ -162,7 +162,7 @@ def wait_for_argocd_apps [] {
     print ""
     
     # Apps to wait for (in wave order)
-    let apps = ["cert-manager", "postgresql", "keycloak", "gitea", "landingpage", "backstage", "monitoring", "crossplane", "kyverno"]
+    let apps = ["cert-manager", "postgresql", "keycloak", "gitea", "landingpage", "backstage", "grafana", "crossplane", "kyverno"]
     
     mut all_healthy = false
     mut attempts = 0

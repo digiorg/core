@@ -16,10 +16,9 @@ apps/
 │   ├── landingpage.yaml   # Platform Entry Point (Wave 2)
 │   ├── gitea.yaml         # Git Service (Wave 2)
 │   ├── backstage.yaml     # Developer Portal (Wave 2)
+│   ├── grafana.yaml       # Prometheus + Grafana (Wave 2)
 │   ├── crossplane.yaml    # Infrastructure as Code (Wave 3)
 │   └── kyverno.yaml       # Policy Engine (Wave 3)
-└── observability/         # Monitoring and logging
-    └── monitoring.yaml    # Prometheus + Grafana (Wave 2)
 ```
 
 ## Sync Waves
@@ -31,7 +30,7 @@ Applications are deployed in order using ArgoCD sync waves:
 | -1 | root-app | Bootstrap (deployed by setup script) |
 | 0 | cert-manager, postgresql, nats | TLS certificates + shared database layer + messaging |
 | 1 | keycloak, argocd | Core infrastructure (IdP, GitOps) |
-| 2 | landingpage, gitea, backstage, monitoring | Platform services (depend on PostgreSQL + Keycloak) |
+| 2 | landingpage, gitea, backstage, grafana | Platform services (depend on PostgreSQL + Keycloak) |
 | 3 | crossplane, kyverno | Extensions (no Keycloak dependency) |
 
 ## How It Works
@@ -113,4 +112,5 @@ Secrets are created by the setup script **before** ArgoCD is installed:
 | gitea | gitea-admin-secret | Admin username and password (generated, not in Git) |
 
 The setup script does **not** create a bootstrap Grafana secret in the `monitoring` namespace. Refer to the setup script for the exact keys present in each bootstrap secret.
+
 For production, use External Secrets Operator with Azure KeyVault / AWS Secrets Manager.
