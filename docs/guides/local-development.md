@@ -153,7 +153,7 @@ nu scripts/local-setup.nu reset
 │      ├── apps/platform/argocd.yaml      → Wave 1 (self-managed)        │
 │      ├── apps/platform/gitea.yaml       → Wave 2                       │
 │      ├── apps/platform/backstage.yaml   → Wave 2                       │
-│      ├── apps/observability/monitoring.yaml → Wave 2                   │
+│      ├── apps/platform/grafana.yaml      → Wave 2                      │
 │      ├── apps/platform/crossplane.yaml  → Wave 3                       │
 │      └── apps/platform/kyverno.yaml     → Wave 3                       │
 │                                                                         │
@@ -167,7 +167,7 @@ nu scripts/local-setup.nu reset
 | -1 | root-app | Bootstrap (deployed by script) |
 | 0 | postgresql | Ingress, Secrets (shared DB for platform services) |
 | 1 | keycloak, argocd | keycloak: PostgreSQL, Ingress; argocd: Ingress (self-managed after Helm install) |
-| 2 | gitea, backstage, monitoring | gitea: PostgreSQL; backstage: PostgreSQL, Keycloak (OIDC); monitoring: None |
+| 2 | gitea, backstage, grafana | gitea: PostgreSQL; backstage: PostgreSQL, Keycloak (OIDC); grafana: None |
 | 3 | crossplane, kyverno | None |
 
 ## Development Workflow

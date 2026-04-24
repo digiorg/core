@@ -18,7 +18,7 @@ platform/
     ├── keycloak/        # Keycloak IdP (uses shared PostgreSQL)
     ├── kyverno/         # Policy Engine
     ├── landingpage/     # Platform Landing Page with SSO
-    ├── monitoring/      # Prometheus + Grafana
+    ├── grafana/         # Prometheus + Grafana (Logging & Monitoring)
     └── postgresql/      # Shared PostgreSQL (Keycloak + Backstage + Gitea)
 ```
 
@@ -43,7 +43,7 @@ Kustomize bases for all platform components:
 | landingpage | Platform Entry Point | Keycloak OIDC (public client) | 2 |
 | backstage | Internal Developer Portal | Keycloak OIDC / Guest | 2 |
 | gitea | Self-hosted Git Service | Local admin; Keycloak OIDC (manual config) | 2 |
-| monitoring | Prometheus + Grafana | Keycloak OAuth | 2 |
+| grafana | Prometheus + Grafana | Keycloak OAuth | 2 |
 | crossplane | Infrastructure as Code | - | 3 |
 | ingress | NGINX Ingress + TLS termination | - | - |
 | kyverno | Policy Engine | - | 3 |

@@ -1,7 +1,7 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: monitoring
+  name: grafana
   namespace: argocd
   finalizers:
     - resources-finalizer.argocd.argoproj.io
@@ -18,7 +18,7 @@ spec:
       helm:
         releaseName: prometheus
         valueFiles:
-          - $values/platform/base/monitoring/values.yaml
+          - $values/platform/base/grafana/values.yaml
     - repoURL: https://github.com/digiorg/core.git
       targetRevision: HEAD
       ref: values
