@@ -509,8 +509,28 @@ def configure_gitea_oidc [] {
     print $"(ansi cyan_bold)Configuring Gitea OIDC integration with Keycloak(ansi reset)"
     print "────────────────────────────────────"
 
-    # --- Step 1: Register self-signed CA cert in Gitea container ---
-    print "  1. Registering self-signed CA cert in Gitea..."
+    # --- Step 1: Provision CA cert ConfigMap for Gitea TLS trust ---
+    # The Gitea Helm values mount this ConfigMap and run update-ca-certificates
+    # via initPreScript before the Gitea process starts.
+    # Fixes: https://github.com/digiorg/core/issues/72
+    print "  1. Provisioning CA cert ConfigMap for Gitea..."
+
+    # Extract CA cert from cert-manager secret
+    let ca_cert_b64 = (do { kubectl get secret digiorg-local-ca-secret -n cert-manager -o jsonpath='{.data.ca\.crt}' } | complete)
+    if $ca_cert_b64.exit_code != 0 or ($ca_cert_b64.stdout | str trim | is-empty) {
+        print $"(ansi yellow)Warning: Could not extract CA cert, skipping Gitea OIDC configuration(ansi reset)"
+        return
+    }
+    let ca_cert = ($ca_cert_b64.stdout | str trim | decode base64 | decode)
+
+    # Create/update ConfigMap with the CA cert in the gitea namespace
+    $ca_cert | kubectl create configmap gitea-ca-cert -n gitea --from-file=digiorg-local-ca.crt=/dev/stdin --dry-run=client -o yaml | kubectl apply -f -
+    print $"  (ansi green)✓ ConfigMap gitea-ca-cert created/updated(ansi reset)"
+
+    # Restart Gitea so the initPreScript picks up the (new) ConfigMap and
+    # installs the CA cert into the trust store before the server starts.
+    print "     Restarting Gitea to apply CA trust..."
+    kubectl delete pod -n gitea -l app.kubernetes.io/name=gitea --wait=true
 
     # Wait for Gitea pod to be ready
     mut gitea_ready = false
@@ -527,49 +547,12 @@ def configure_gitea_oidc [] {
         sleep 10sec
     }
     if not $gitea_ready {
-        print $"(ansi yellow)Warning: Gitea pod not ready, skipping OIDC configuration(ansi reset)"
+        print $"(ansi yellow)Warning: Gitea pod not ready after CA ConfigMap update, skipping OIDC configuration(ansi reset)"
         return
     }
 
     let gitea_pod = (kubectl get pods -n gitea -l app.kubernetes.io/name=gitea -o jsonpath='{.items[0].metadata.name}' | str trim)
-
-    # Extract CA cert from cert-manager secret
-    let ca_cert_b64 = (do { kubectl get secret digiorg-local-ca-secret -n cert-manager -o jsonpath='{.data.ca\.crt}' } | complete)
-    if $ca_cert_b64.exit_code != 0 or ($ca_cert_b64.stdout | str trim | is-empty) {
-        print $"(ansi yellow)Warning: Could not extract CA cert, skipping Gitea OIDC configuration(ansi reset)"
-        return
-    }
-    let ca_cert = ($ca_cert_b64.stdout | str trim | decode base64 | decode)
-
-    # Copy CA cert into Gitea container and update trust store
-    $ca_cert | kubectl exec -i -n gitea $gitea_pod -c gitea -- tee /usr/local/share/ca-certificates/digiorg-local-ca.crt | complete
-    kubectl exec -n gitea $gitea_pod -c gitea -- update-ca-certificates | complete | ignore
-    print $"  (ansi green)✓ CA cert registered in Gitea trust store(ansi reset)"
-
-    # Restart Gitea pod so the Go TLS stack picks up the new CA certificate.
-    # The Go runtime caches the system cert pool at process startup;
-    # update-ca-certificates only updates the on-disk bundle.
-    # Fixes: https://github.com/digiorg/core/issues/72
-    print "     Restarting Gitea pod to reload TLS trust store..."
-    kubectl delete pod -n gitea $gitea_pod --wait=true
-    # Wait for the new pod to become ready (StatefulSet recreates it)
-    mut gitea_restarted = false
-    for attempt in 1..30 {
-        let ready_result = (do { kubectl wait --for=condition=ready pod -n gitea -l app.kubernetes.io/name=gitea --timeout=10s } | complete)
-        if $ready_result.exit_code == 0 {
-            $gitea_restarted = true
-            break
-        }
-        print $"     Waiting for Gitea restart... [attempt ($attempt)/30]"
-        sleep 10sec
-    }
-    if not $gitea_restarted {
-        print $"(ansi yellow)Warning: Gitea pod did not restart in time, skipping OIDC configuration(ansi reset)"
-        return
-    }
-    # Re-resolve pod name after restart
-    let gitea_pod = (kubectl get pods -n gitea -l app.kubernetes.io/name=gitea -o jsonpath='{.items[0].metadata.name}' | str trim)
-    print $"  (ansi green)✓ Gitea restarted — TLS trust store reloaded(ansi reset)"
+    print $"  (ansi green)✓ Gitea running with platform CA in trust store(ansi reset)"
 
     # --- Step 2: Add Keycloak as OIDC authentication source ---
     print "  2. Configuring Keycloak OIDC provider in Gitea..."
