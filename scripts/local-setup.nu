@@ -546,6 +546,31 @@ def configure_gitea_oidc [] {
     kubectl exec -n gitea $gitea_pod -c gitea -- update-ca-certificates 2>&1 | ignore
     print $"  (ansi green)✓ CA cert registered in Gitea trust store(ansi reset)"
 
+    # Restart Gitea pod so the Go TLS stack picks up the new CA certificate.
+    # The Go runtime caches the system cert pool at process startup;
+    # update-ca-certificates only updates the on-disk bundle.
+    # Fixes: https://github.com/digiorg/core/issues/72
+    print "     Restarting Gitea pod to reload TLS trust store..."
+    kubectl delete pod -n gitea $gitea_pod --wait=true
+    # Wait for the new pod to become ready (StatefulSet recreates it)
+    mut gitea_restarted = false
+    for attempt in 1..30 {
+        let ready_result = (do { kubectl wait --for=condition=ready pod -n gitea -l app.kubernetes.io/name=gitea --timeout=10s } | complete)
+        if $ready_result.exit_code == 0 {
+            $gitea_restarted = true
+            break
+        }
+        print $"     Waiting for Gitea restart... [attempt ($attempt)/30]"
+        sleep 10sec
+    }
+    if not $gitea_restarted {
+        print $"(ansi yellow)Warning: Gitea pod did not restart in time, skipping OIDC configuration(ansi reset)"
+        return
+    }
+    # Re-resolve pod name after restart
+    let gitea_pod = (kubectl get pods -n gitea -l app.kubernetes.io/name=gitea -o jsonpath='{.items[0].metadata.name}' | str trim)
+    print $"  (ansi green)✓ Gitea restarted — TLS trust store reloaded(ansi reset)"
+
     # --- Step 2: Add Keycloak as OIDC authentication source ---
     print "  2. Configuring Keycloak OIDC provider in Gitea..."
 
