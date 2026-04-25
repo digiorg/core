@@ -9,6 +9,7 @@ resources:
 configMapGenerator:
   - name: keycloak-realm-import
     files:
-      - realm-export.json
+      - digiorg-core-platform-realm.json
+      - digiorg-core-platform-users-0.json
     options:
       disableNameSuffixHash: true
