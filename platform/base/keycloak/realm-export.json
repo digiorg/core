@@ -234,21 +234,38 @@
   ],
   "users": [
     {
-      "username": "admin",
+      "username": "digiorgadmin",
       "enabled": true,
       "emailVerified": true,
-      "email": "admin@example.com",
-      "firstName": "Platform",
-      "lastName": "Admin",
+      "email": "admin@digiorg.local",
+      "firstName": "Admin",
+      "lastName": "DigiOrg",
       "credentials": [
         {
           "type": "password",
-          "value": "admin",
+          "value": "digiorgadmin",
           "temporary": false
         }
       ],
       "realmRoles": ["platform-admin"],
       "groups": ["platform-admins"]
+    },
+    {
+      "username": "digiorgdeveloper",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "developer@digiorg.local",
+      "firstName": "Developer",
+      "lastName": "DigiOrg",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "digiorgdeveloper",
+          "temporary": false
+        }
+      ],
+      "realmRoles": ["developer"],
+      "groups": ["developers"]
     }
   ]
 }
