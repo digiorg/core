@@ -143,6 +143,38 @@ readinessProbe:
   timeoutSeconds: 5
   failureThreshold: 3
 
+# =============================================================================
+# Self-signed CA trust for Keycloak OIDC (Ref: Issue #72)
+# =============================================================================
+# The platform uses a self-signed CA (cert-manager) for TLS. Gitea must trust
+# this CA to connect to Keycloak's OIDC discovery endpoint via HTTPS.
+#
+# The CA cert is provided via ConfigMap 'gitea-ca-cert' (created by local-setup.nu
+# from the cert-manager CA secret). The initPreScript copies it into the system
+# trust store before Gitea starts, so both the server and CLI commands (e.g.
+# 'gitea admin auth add-oauth') can verify Keycloak's TLS certificate.
+# =============================================================================
+
+# Mount the platform CA certificate into the container
+extraVolumes:
+  - name: platform-ca-cert
+    configMap:
+      name: gitea-ca-cert
+
+extraVolumeMounts:
+  - name: platform-ca-cert
+    mountPath: /extra-certs
+    readOnly: true
+
+# initPreScript runs in the init-app-ini init container before Gitea starts.
+# This ensures the CA is in the trust store when any Go process loads x509.SystemCertPool().
+initPreScript: |
+  if [ -f /extra-certs/digiorg-local-ca.crt ]; then
+    cp /extra-certs/digiorg-local-ca.crt /usr/local/share/ca-certificates/digiorg-local-ca.crt
+    update-ca-certificates
+    echo "[init] Platform CA certificate installed into trust store"
+  fi
+
 # Note: Custom initContainers removed.
 # The Gitea Helm chart has built-in init containers (init-directories, init-app-ini, configure-gitea)
 # that handle initialization. PostgreSQL readiness is ensured by ArgoCD sync waves:
