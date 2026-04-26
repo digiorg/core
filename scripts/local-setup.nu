@@ -542,7 +542,8 @@ def configure_gitea_oidc [] {
     let ca_cert = ($ca_cert_b64.stdout | str trim | decode base64 | decode)
 
     # Copy CA cert into Gitea container and update trust store
-    $ca_cert | kubectl exec -i -n gitea $gitea_pod -c gitea -- tee /usr/local/share/ca-certificates/digiorg-local-ca.crt | complete
+    # $ca_cert | kubectl exec -i -n gitea $gitea_pod -c gitea -- tee /usr/local/share/ca-certificates/digiorg-local-ca.crt | complete
+    $ca_cert | kubectl exec -i -n gitea $gitea_pod -c gitea -- tee /tmp/digiorg-local-ca.crt | complete
     kubectl exec -n gitea $gitea_pod -c gitea -- update-ca-certificates | complete | ignore
     print $"  (ansi green)✓ CA cert registered in Gitea trust store(ansi reset)"
 
