@@ -515,9 +515,9 @@ def configure_gitea_oidc [] {
     # Wait for Gitea pod to be ready
     mut gitea_ready = false
     for attempt in 1..30 {
-        let pod_result = (do { kubectl get pods -n gitea -l app.kubernetes.io/name=gitea -o jsonpath='{.items[0].metadata.name}' } | complete)
+        let pod_result = (do { kubectl --kubeconfig $KUBECONFIG_PATH get pods -n gitea -l app.kubernetes.io/name=gitea -o jsonpath='{.items[0].metadata.name}' } | complete)
         if $pod_result.exit_code == 0 and ($pod_result.stdout | str trim | is-not-empty) {
-            let ready_result = (do { kubectl wait --for=condition=ready pod -n gitea -l app.kubernetes.io/name=gitea --timeout=10s } | complete)
+            let ready_result = (do { kubectl --kubeconfig $KUBECONFIG_PATH wait --for=condition=ready pod -n gitea -l app.kubernetes.io/name=gitea --timeout=10s } | complete)
             if $ready_result.exit_code == 0 {
                 $gitea_ready = true
                 break
@@ -530,71 +530,45 @@ def configure_gitea_oidc [] {
         print $"(ansi yellow)Warning: Gitea pod not ready, skipping OIDC configuration(ansi reset)"
         return
     }
-
-    let gitea_pod = (kubectl get pods -n gitea -l app.kubernetes.io/name=gitea -o jsonpath='{.items[0].metadata.name}' | str trim)
+    let gitea_pod = (kubectl --kubeconfig $KUBECONFIG_PATH get pods -n gitea -l app.kubernetes.io/name=gitea -o jsonpath='{.items[0].metadata.name}' | str trim)
 
     # Extract CA cert from cert-manager secret
-    let ca_cert_b64 = (do { kubectl get secret digiorg-local-ca-secret -n cert-manager -o jsonpath='{.data.ca\.crt}' } | complete)
-    if $ca_cert_b64.exit_code != 0 or ($ca_cert_b64.stdout | str trim | is-empty) {
-        print $"(ansi yellow)Warning: Could not extract CA cert, skipping Gitea OIDC configuration(ansi reset)"
-        return
-    }
-    let ca_cert = ($ca_cert_b64.stdout | str trim | decode base64 | decode)
-
     # Copy CA cert into Gitea container and update trust store
-    # $ca_cert | kubectl exec -i -n gitea $gitea_pod -c gitea -- tee /usr/local/share/ca-certificates/digiorg-local-ca.crt | complete
-    $ca_cert | kubectl exec -i -n gitea $gitea_pod -c gitea -- tee /tmp/digiorg-local-ca.crt | complete
-    kubectl exec -n gitea $gitea_pod -c gitea -- update-ca-certificates | complete | ignore
+    kubectl --kubeconfig $KUBECONFIG_PATH cp digiorg-local-ca.crt -c gitea gitea/($gitea_pod):/usr/local/share/ca-certificates/digiorg-local-ca.crt | complete
+    kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- update-ca-certificates | complete
     print $"  (ansi green)✓ CA cert registered in Gitea trust store(ansi reset)"
 
     # Restart Gitea pod so the Go TLS stack picks up the new CA certificate.
     # The Go runtime caches the system cert pool at process startup;
     # update-ca-certificates only updates the on-disk bundle.
     # Fixes: https://github.com/digiorg/core/issues/72
-    print "     Restarting Gitea pod to reload TLS trust store..."
-    kubectl delete pod -n gitea $gitea_pod --wait=true
+    #print "     Restarting Gitea pod to reload TLS trust store..."
+    #kubectl --kubeconfig kubeconfig-local.yaml delete pod -n gitea $gitea_pod --wait=true
     # Wait for the new pod to become ready (StatefulSet recreates it)
-    mut gitea_restarted = false
-    for attempt in 1..30 {
-        let ready_result = (do { kubectl wait --for=condition=ready pod -n gitea -l app.kubernetes.io/name=gitea --timeout=10s } | complete)
-        if $ready_result.exit_code == 0 {
-            $gitea_restarted = true
-            break
-        }
-        print $"     Waiting for Gitea restart... [attempt ($attempt)/30]"
-        sleep 10sec
-    }
-    if not $gitea_restarted {
-        print $"(ansi yellow)Warning: Gitea pod did not restart in time, skipping OIDC configuration(ansi reset)"
-        return
-    }
+    #mut gitea_restarted = false
+    #for attempt in 1..30 {
+    #    let ready_result = (do { kubectl --kubeconfig kubeconfig-local.yaml wait --for=condition=ready pod -n gitea -l app.kubernetes.io/name=gitea --timeout=10s } | complete)
+    #    if $ready_result.exit_code == 0 {
+    #        $gitea_restarted = true
+    #        break
+    #    }
+    #    print $"     Waiting for Gitea restart... [attempt ($attempt)/30]"
+    #    sleep 10sec
+    #}
+    #if not $gitea_restarted {
+    #    print $"(ansi yellow)Warning: Gitea pod did not restart in time, skipping OIDC configuration(ansi reset)"
+    #    return
+    #}
     # Re-resolve pod name after restart
-    let gitea_pod = (kubectl get pods -n gitea -l app.kubernetes.io/name=gitea -o jsonpath='{.items[0].metadata.name}' | str trim)
-    print $"  (ansi green)✓ Gitea restarted — TLS trust store reloaded(ansi reset)"
+    #let gitea_pod = (kubectl --kubeconfig kubeconfig-local.yaml get pods -n gitea -l app.kubernetes.io/name=gitea -o jsonpath='{.items[0].metadata.name}' | str trim)
+    #print $"  (ansi green)✓ Gitea restarted — TLS trust store reloaded(ansi reset)"
 
     # --- Step 2: Add Keycloak as OIDC authentication source ---
     print "  2. Configuring Keycloak OIDC provider in Gitea..."
-
-    # Get Gitea admin credentials for API access
-    let admin_user = "gitea_admin"
-    let admin_pass_result = (do { kubectl get secret gitea-admin-secret -n gitea -o jsonpath='{.data.password}' } | complete)
-    if $admin_pass_result.exit_code != 0 or ($admin_pass_result.stdout | str trim | is-empty) {
-        print $"(ansi yellow)Warning: Could not get Gitea admin password, skipping OIDC configuration(ansi reset)"
-        return
-    }
-    let admin_pass = ($admin_pass_result.stdout | str trim | decode base64 | decode)
-
-    let gitea_api = "http://gitea-http.gitea.svc.cluster.local:3000/gitea/api/v1"
-    let auth_header = $"($admin_user):($admin_pass)" | encode base64 | $"Basic ($in)"
-
+    
     # Check if Keycloak OIDC source already exists (idempotency)
-    let existing_sources = (do {
-        kubectl exec -n gitea $gitea_pod -c gitea -- curl -sf -H $"Authorization: ($auth_header)" $"($gitea_api)/admin/identity-sources"
-    } | complete)
-
-    # Fallback: use gitea CLI inside the container to check existing auth sources
     let existing_oauth = (do {
-        kubectl exec -n gitea $gitea_pod -c gitea -- gitea admin auth list --vertical
+        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- su git gitea admin auth list --vertical
     } | complete)
 
     mut oidc_exists = false
@@ -607,7 +581,7 @@ def configure_gitea_oidc [] {
     if not $oidc_exists {
         # Add OIDC provider via gitea CLI (most reliable method inside the container)
         let add_result = (do {
-            kubectl exec -n gitea $gitea_pod -c gitea -- gitea admin auth add-oauth --name "Keycloak" --provider openidConnect --key gitea --secret gitea-client-secret --auto-discover-url "https://digiorg.local/keycloak/realms/digiorg-core-platform/.well-known/openid-configuration" --scopes "openid profile email roles" --skip-local-2fa true --group-claim-name groups
+            kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- su git -c 'gitea admin auth add-oauth --name "Keycloak" --provider openidConnect --key gitea --secret gitea-client-secret --auto-discover-url "https://digiorg.local/keycloak/realms/digiorg-core-platform/.well-known/openid-configuration"'
         } | complete)
         if $add_result.exit_code == 0 {
             print $"  (ansi green)✓ Keycloak OIDC provider added to Gitea(ansi reset)"
@@ -622,40 +596,43 @@ def configure_gitea_oidc [] {
     # --- Step 3: Create initial users in Gitea ---
     print "  3. Creating initial users in Gitea..."
 
+    kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- su git -c 'gitea admin user create --username "digiorgadmin" --email "admin@digiorg.local" --password "digiorgadmin" --must-change-password false --admin true'
+    kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- su git -c 'gitea admin user create --username "digiorgdeveloper" --email "developer@digiorg.local" --password "digiorgdeveloper" --must-change-password false --admin false'
+    print $"  (ansi green)✓ Initial users created(ansi reset)"
+
     # Create users via Gitea Admin API
-    let users = [
-        { username: "digiorgadmin", email: "admin@digiorg.local", password: "digiorgadmin", admin: true },
-        { username: "digiorgdeveloper", email: "developer@digiorg.local", password: "digiorgdeveloper", admin: false }
-    ]
+    #let users = [
+    #    { username: "digiorgadmin", email: "admin@digiorg.local", password: "digiorgadmin", admin: true },
+    #    { username: "digiorgdeveloper", email: "developer@digiorg.local", password: "digiorgdeveloper", admin: false }
+    #]
 
-    for user in $users {
-        # Check if user already exists (idempotency)
-        let user_check = (do {
-            kubectl exec -n gitea $gitea_pod -c gitea -- curl -sf -H $"Authorization: ($auth_header)" $"($gitea_api)/users/($user.username)"
-        } | complete)
+    #for user in $users {
+    #    # Check if user already exists (idempotency)
+    #    let user_check = (do {
+    #        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- su git gitea admin user list --vertical
+    #    } | complete)
 
-        if $user_check.exit_code == 0 and ($user_check.stdout | str trim | str starts-with "{") {
-            print $"  (ansi yellow)✓ User '($user.username)' already exists(ansi reset)"
-        } else {
-            let payload = ({ username: $user.username, email: $user.email, password: $user.password, must_change_password: false, login_name: $user.username, source_id: 0, visibility: "public" } | to json -r)
-            let create_result = (do {
-                kubectl exec -n gitea $gitea_pod -c gitea -- curl -sf -X POST -H $"Authorization: ($auth_header)" -H "Content-Type: application/json" -d $payload $"($gitea_api)/admin/users"
-            } | complete)
+    #    mut user_exists = false
+    #    if $user_check.exit_code == 0 {
+    #        if ($user_check.stdout | str contains $user.username) {
+    #            $user_exists = true
+    #        }
+    #    }
 
-            if $create_result.exit_code == 0 {
-                # Set admin flag if needed
-                if $user.admin {
-                    let admin_payload = ({ login_name: $user.username, source_id: 0, admin: true } | to json -r)
-                    do {
-                        kubectl exec -n gitea $gitea_pod -c gitea -- curl -sf -X PATCH -H $"Authorization: ($auth_header)" -H "Content-Type: application/json" -d $admin_payload $"($gitea_api)/admin/users/($user.username)"
-                    } | complete | ignore
-                }
-                print $"  (ansi green)✓ User '($user.username)' created(ansi reset)"
-            } else {
-                print $"  (ansi red)✗ Failed to create user '($user.username)': ($create_result.stderr)(ansi reset)"
-            }
-        }
-    }
+    #    if $user_exists {
+    #        print $"  (ansi yellow)✓ User '($user.username)' already exists(ansi reset)"
+    #    } else {
+    #        let create_result = (do {
+    #            kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- su git -c 'gitea admin user create --username ($user.username) --email ($user.email) --password ($user.password) --must-change-password false --admin ($user.admin)'
+    #        } | complete)
+
+    #        if $create_result.exit_code == 0 {
+    #            print $"  (ansi green)✓ User '($user.username)' created(ansi reset)"
+    #        } else {
+    #            print $"  (ansi red)✗ Failed to create user '($user.username)': ($create_result.stderr)(ansi reset)"
+    #        }
+    #    }
+    #}
 
     print $"(ansi green)✓ Gitea OIDC integration configured(ansi reset)"
 }
@@ -663,8 +640,8 @@ def configure_gitea_oidc [] {
 # Restart pods that depend on OIDC/Keycloak
 def restart_oidc_dependent_pods [] {
     $env.KUBECONFIG = $KUBECONFIG_PATH
-    
     print "Restarting OIDC-dependent pods to refresh DNS/config..."
+    
     
     # ArgoCD Server
     try {

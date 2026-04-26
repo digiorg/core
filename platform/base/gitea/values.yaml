@@ -53,7 +53,7 @@ gitea:
     
     server:
       DOMAIN: digiorg.local
-      ROOT_URL: "http://digiorg.local/gitea/"
+      ROOT_URL: "https://digiorg.local/gitea/"
       SSH_DOMAIN: digiorg.local
       SSH_PORT: 22
       # Run behind reverse proxy with subpath
