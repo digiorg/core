@@ -17,6 +17,7 @@
 # - https://digiorg.local/grafana    → Grafana Monitoring
 # - https://digiorg.local/backstage  → Backstage Developer Portal
 # - https://digiorg.local/gitea      → Gitea Git Service
+# - https://digiorg.local/jaeger     → Jaeger Distributed Tracing
 # =============================================================================
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -67,6 +68,14 @@ spec:
                 name: prometheus-grafana
                 port:
                   number: 80
+          # Jaeger Distributed Tracing
+          - path: /jaeger(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: jaeger-query
+                port:
+                  number: 16686
           # Landing Page (root path - must be last due to catch-all)
           - path: /
             pathType: Prefix
@@ -198,6 +207,17 @@ spec:
   externalName: gitea-http.gitea.svc.cluster.local
   ports:
     - port: 3000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jaeger-query
+  namespace: ingress-nginx
+spec:
+  type: ExternalName
+  externalName: jaeger-query.tracing.svc.cluster.local
+  ports:
+    - port: 16686
 ---
 apiVersion: v1
 kind: Service

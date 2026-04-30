@@ -59,5 +59,15 @@ data:
         "category": "monitoring",
         "requiresAuth": true,
         "displayOrder": 5
+      },
+      {
+        "id": "jaeger",
+        "name": "Jaeger",
+        "description": "Distributed Tracing",
+        "path": "/jaeger",
+        "icon": "tracing",
+        "category": "observability",
+        "requiresAuth": true,
+        "displayOrder": 6
       }
     ]
