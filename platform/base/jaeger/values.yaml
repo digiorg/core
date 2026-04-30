@@ -1,0 +1,33 @@
+# Jaeger Helm Values — all-in-one for local dev
+allInOne:
+  enabled: true
+  image:
+    tag: latest
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  extraArgs:
+    - "--query.base-path=/jaeger"
+  extraPorts:
+    - name: otlp-grpc
+      containerPort: 4317
+      protocol: TCP
+    - name: otlp-http
+      containerPort: 4318
+      protocol: TCP
+collector:
+  enabled: false
+query:
+  enabled: false
+storage:
+  type: memory
+service:
+  type: ClusterIP
+serviceMonitor:
+  enabled: false
+ingress:
+  enabled: false

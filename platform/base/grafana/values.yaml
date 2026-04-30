@@ -31,6 +31,16 @@ grafana:
       # Remove in production (use proper CA trust instead)
       tls_skip_verify_insecure: true
 
+  additionalDataSources:
+    - name: Jaeger
+      type: jaeger
+      url: http://jaeger-query.tracing.svc.cluster.local:16686/jaeger
+      access: proxy
+      isDefault: false
+      jsonData:
+        tracesToLogsV2:
+          datasourceUid: prometheus
+
 prometheus:
   prometheusSpec:
     retention: 1d
