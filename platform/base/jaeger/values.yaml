@@ -103,3 +103,11 @@ userconfig:
 # Ingress managed via unified platform ingress (platform/base/ingress/digiorg-ingress.yaml)
 ingress:
   enabled: false
+
+# Disable Cassandra sub-chart — OpenSearch (platform-db) is the active storage backend.
+# The chart 3.x default is provisionDataStore.cassandra: true which deploys an unused
+# Cassandra StatefulSet. Explicitly disabled here.
+provisionDataStore:
+  cassandra: false
+  elasticsearch: false
+  kafka: false

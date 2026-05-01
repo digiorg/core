@@ -1,0 +1,112 @@
+# =============================================================================
+# oauth2-proxy — Keycloak SSO gateway for Jaeger UI
+#
+# Flow:
+#   Browser → NGINX (/jaeger) → oauth2-proxy:4180 → Keycloak OIDC → Jaeger UI
+#
+# The proxy-prefix /jaeger/oauth2 scopes the callback within the /jaeger sub-path.
+# Jaeger itself handles /jaeger natively via base_path — no NGINX URL rewriting needed.
+#
+# Secret: jaeger-oauth2-proxy-secrets (created by local-setup.nu)
+#   - client-secret  : Keycloak client secret for the "jaeger" OIDC client
+#   - cookie-secret  : 32-byte random base64 string for session cookie encryption
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jaeger-oauth2-proxy
+  namespace: tracing
+  labels:
+    app.kubernetes.io/name: jaeger-oauth2-proxy
+    app.kubernetes.io/component: auth-proxy
+    app.kubernetes.io/part-of: digiorg-core-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: jaeger-oauth2-proxy
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: jaeger-oauth2-proxy
+        app.kubernetes.io/component: auth-proxy
+    spec:
+      containers:
+        - name: oauth2-proxy
+          image: quay.io/oauth2-proxy/oauth2-proxy:v7.6.0
+          args:
+            - --provider=oidc
+            - --oidc-issuer-url=https://digiorg.local/keycloak/realms/digiorg-core-platform
+            - --client-id=jaeger
+            - --redirect-url=https://digiorg.local/jaeger/oauth2/callback
+            # Jaeger handles /jaeger natively (base_path: /jaeger) — pass full path upstream.
+            - --upstream=http://jaeger-query.tracing.svc.cluster.local:16686/
+            - --http-address=0.0.0.0:4180
+            # proxy-prefix scopes the OAuth2 callback within the /jaeger sub-path
+            - --proxy-prefix=/jaeger/oauth2
+            - --cookie-secure=true
+            - --cookie-samesite=lax
+            - --cookie-path=/jaeger
+            - --cookie-name=_oauth2_proxy_jaeger
+            - --email-domain=*
+            - --skip-provider-button=true
+            - --pass-access-token=false
+            - --pass-authorization-header=false
+            - --set-xauthrequest=false
+            # Skip TLS verification for self-signed cert (local dev only — remove in production)
+            - --ssl-insecure-skip-verify=true
+            - --oidc-extra-audience=jaeger
+            # Allow unverified emails for local dev Keycloak test users
+            - --insecure-oidc-allow-unverified-email=true
+          env:
+            - name: OAUTH2_PROXY_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: jaeger-oauth2-proxy-secrets
+                  key: client-secret
+            - name: OAUTH2_PROXY_COOKIE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: jaeger-oauth2-proxy-secrets
+                  key: cookie-secret
+          ports:
+            - name: http
+              containerPort: 4180
+              protocol: TCP
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jaeger-oauth2-proxy
+  namespace: tracing
+  labels:
+    app.kubernetes.io/name: jaeger-oauth2-proxy
+    app.kubernetes.io/component: auth-proxy
+    app.kubernetes.io/part-of: digiorg-core-platform
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: jaeger-oauth2-proxy
+  ports:
+    - name: http
+      port: 4180
+      targetPort: http

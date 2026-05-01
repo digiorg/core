@@ -17,7 +17,7 @@
 # - https://digiorg.local/grafana    → Grafana Monitoring
 # - https://digiorg.local/backstage  → Backstage Developer Portal
 # - https://digiorg.local/gitea      → Gitea Git Service
-# - https://digiorg.local/jaeger     → Jaeger Distributed Tracing
+# - https://digiorg.local/jaeger     → Jaeger UI (via oauth2-proxy → Keycloak SSO)
 # =============================================================================
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -68,14 +68,15 @@ spec:
                 name: prometheus-grafana
                 port:
                   number: 80
-          # Jaeger Distributed Tracing
+          # Jaeger Distributed Tracing — routed via oauth2-proxy for Keycloak SSO
+          # oauth2-proxy handles /jaeger and /jaeger/oauth2/callback (proxy-prefix)
           - path: /jaeger(/|$)(.*)
             pathType: ImplementationSpecific
             backend:
               service:
-                name: jaeger-query
+                name: jaeger-oauth2-proxy
                 port:
-                  number: 16686
+                  number: 4180
           # Landing Page (root path - must be last due to catch-all)
           - path: /
             pathType: Prefix
@@ -211,13 +212,13 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: jaeger-query
+  name: jaeger-oauth2-proxy
   namespace: ingress-nginx
 spec:
   type: ExternalName
-  externalName: jaeger-query.tracing.svc.cluster.local
+  externalName: jaeger-oauth2-proxy.tracing.svc.cluster.local
   ports:
-    - port: 16686
+    - port: 4180
 ---
 apiVersion: v1
 kind: Service
