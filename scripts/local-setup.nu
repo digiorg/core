@@ -481,6 +481,9 @@ def create_platform_secrets [] {
     kubectl create namespace messaging --dry-run=client -o yaml | kubectl apply -f -
     print $"(ansi green)✓ Messaging namespace created(ansi reset)"
 
+    kubectl create namespace tracing --dry-run=client -o yaml | kubectl apply -f -
+    print $"(ansi green)✓ Tracing namespace created(ansi reset)"
+
     # Jaeger oauth2-proxy secret (Keycloak OIDC client + cookie encryption)
     let jaeger_oidc_secret = ($env.JAEGER_OIDC_CLIENT_SECRET? | default "jaeger-client-secret")
     let jaeger_cookie_secret = ($env.JAEGER_COOKIE_SECRET? | default (generate_password | str substring 0..31 | encode base64))
@@ -497,7 +500,6 @@ def create_platform_secrets [] {
         --from-literal=OPENSEARCH_ADMIN_PASSWORD=($opensearch_admin_password)
         --dry-run=client -o yaml | kubectl apply -f -)
     # Secret in tracing namespace (for Jaeger to authenticate against OpenSearch)
-    kubectl create namespace tracing --dry-run=client -o yaml | kubectl apply -f -
     (kubectl create secret generic jaeger-opensearch-credentials -n tracing
         --from-literal=password=($opensearch_admin_password)
         --dry-run=client -o yaml | kubectl apply -f -)
