@@ -1,6 +1,6 @@
 # ADR-005: Tracing Backend — Jaeger
 
-**Status:** Accepted  
+**Status:** Accepted (updated 2026-05-01)  
 **Date:** 2026-04-30  
 **Deciders:** @simon-itstudio  
 
@@ -75,11 +75,11 @@ For local development we deploy in **all-in-one** mode with in-memory storage. F
 
 ### Migration path to production
 
-1. Provision OpenSearch cluster (or reuse existing if available).
-2. Update `storage.type: opensearch` and add connection config to values.yaml.
-3. Disable `allInOne`, enable separate `collector` and `query` deployments.
-4. Add OAuth2 proxy (Keycloak) in front of the query service.
-5. Configure adaptive sampling in the collector.
+1. ~~Provision OpenSearch cluster (or reuse existing if available).~~ ✅ **Done** — OpenSearch deployed in `platform-db` namespace (see [ADR-006](006-observability-storage-opensearch.md) and issue #83).
+2. ~~Update `storage.type: opensearch` and add connection config to values.yaml.~~ ✅ **Done** — `jaeger_storage.backends.primary_store` switched to `elasticsearch` backend pointing to `opensearch-cluster-master.platform-db.svc.cluster.local:9200`.
+3. Disable `allInOne`, enable separate `collector` and `query` deployments. _(planned for production scale-out)_
+4. Add OAuth2 proxy (Keycloak) in front of the query service. _(tracked in issue #82)_
+5. Configure adaptive sampling in the collector. _(planned)_
 
 ## References
 

@@ -151,7 +151,7 @@ def deploy_root_app [] {
     print ""
     print "ArgoCD Sync Waves:"
     print "  Wave -1: root-app (just deployed)"
-    print "  Wave  0: cert-manager (TLS), postgresql (shared database)"
+    print "  Wave  0: cert-manager (TLS), postgresql (shared database), opensearch (observability backend), nats (messaging)"
     print "  Wave  1: keycloak (IdP), argocd (self-managed GitOps)"
     print "  Wave  2: landingpage, backstage, gitea, grafana"
     print "  Wave  3: crossplane, kyverno"
@@ -165,7 +165,7 @@ def wait_for_argocd_apps [] {
     print ""
     
     # Apps to wait for (in wave order)
-    let apps = ["cert-manager", "postgresql", "keycloak", "gitea", "landingpage", "backstage", "grafana", "crossplane", "kyverno"]
+    let apps = ["cert-manager", "postgresql", "opensearch", "keycloak", "gitea", "landingpage", "backstage", "grafana", "crossplane", "kyverno"]
     
     mut all_healthy = false
     mut attempts = 0
@@ -480,6 +480,19 @@ def create_platform_secrets [] {
     # Messaging namespace (for NATS server + Surveyor)
     kubectl create namespace messaging --dry-run=client -o yaml | kubectl apply -f -
     print $"(ansi green)✓ Messaging namespace created(ansi reset)"
+
+    # OpenSearch secret (admin password for observability backend)
+    let opensearch_admin_password = ($env.OPENSEARCH_ADMIN_PASSWORD? | default (generate_password))
+    # Secret in platform-db namespace (for OpenSearch itself)
+    (kubectl create secret generic opensearch-secrets -n platform-db
+        --from-literal=OPENSEARCH_ADMIN_PASSWORD=($opensearch_admin_password)
+        --dry-run=client -o yaml | kubectl apply -f -)
+    # Secret in tracing namespace (for Jaeger to authenticate against OpenSearch)
+    kubectl create namespace tracing --dry-run=client -o yaml | kubectl apply -f -
+    (kubectl create secret generic jaeger-opensearch-credentials -n tracing
+        --from-literal=password=($opensearch_admin_password)
+        --dry-run=client -o yaml | kubectl apply -f -)
+    print $"(ansi green)✓ OpenSearch secrets created [platform-db + tracing](ansi reset)"
 }
 
 def install_argocd [] {
