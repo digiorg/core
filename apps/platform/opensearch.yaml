@@ -12,8 +12,8 @@ spec:
   project: default
 
   sources:
-    # OpenSearch via official Helm chart
-    - repoURL: https://helm.opensearch.org
+    # OpenSearch via official Helm chart (GitHub Pages — https://helm.opensearch.org does not exist)
+    - repoURL: https://opensearch-project.github.io/helm-charts
       chart: opensearch
       targetRevision: "3.6.0"
       helm:
