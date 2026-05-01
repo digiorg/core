@@ -8,6 +8,15 @@
 
 # Resource limits for the Jaeger pod
 jaeger:
+  # Inject OpenSearch admin password into Jaeger via environment variable.
+  # The jaeger-opensearch-credentials secret is created by local-setup.nu.
+  extraEnv:
+    - name: OPENSEARCH_ADMIN_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          name: jaeger-opensearch-credentials
+          key: password
+
   resources:
     requests:
       cpu: 50m
@@ -66,8 +75,18 @@ userconfig:
     jaeger_storage:
       backends:
         primary_store:
-          memory:
-            max_traces: 100000  # in-memory storage for local dev
+          elasticsearch:
+            # OpenSearch is Elasticsearch 7.10.2 API-compatible — use elasticsearch backend type.
+            # OpenSearch deployed in platform-db namespace (Wave 0, ready before Jaeger).
+            server_urls: http://opensearch-cluster-master.platform-db.svc.cluster.local:9200
+            index_prefix: jaeger
+            # Credentials reference the jaeger-opensearch-credentials secret (created by local-setup.nu)
+            username: admin
+            password: "${OPENSEARCH_ADMIN_PASSWORD}"
+            # Self-signed cert in local dev — disable host verification
+            # Remove tls section in production and configure proper CA trust
+            tls:
+              skip_host_verify: true
 
   receivers:
     otlp:

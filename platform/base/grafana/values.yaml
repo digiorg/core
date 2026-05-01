@@ -41,6 +41,21 @@ grafana:
         tracesToLogsV2:
           datasourceUid: prometheus
 
+    # OpenSearch as Elasticsearch-compatible datasource for direct trace/log search.
+    # Uses the jaeger-span-* index pattern written by Jaeger.
+    - name: OpenSearch (Traces)
+      type: elasticsearch
+      url: http://opensearch-cluster-master.platform-db.svc.cluster.local:9200
+      access: proxy
+      isDefault: false
+      jsonData:
+        esVersion: "70"          # OpenSearch is compatible with ES 7.10.2 API
+        timeField: startTimeMillis
+        logMessageField: operationName
+        logLevelField: tags.level
+      # Index pattern: jaeger-span-YYYY-MM-DD (daily rotation by Jaeger)
+      database: "jaeger-span-*"
+
 prometheus:
   prometheusSpec:
     retention: 1d

@@ -1,0 +1,50 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: opensearch
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    # Wave 0: Data layer — deployed alongside PostgreSQL, before Jaeger (Wave 2)
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: default
+
+  sources:
+    # OpenSearch via official Helm chart
+    - repoURL: https://helm.opensearch.org
+      chart: opensearch
+      targetRevision: "3.6.0"
+      helm:
+        releaseName: opensearch
+        valueFiles:
+          - $values/platform/base/opensearch/values.yaml
+
+    # Reference to values file in Git repo
+    - repoURL: https://github.com/digiorg/core.git
+      targetRevision: HEAD
+      ref: values
+
+    # ServiceMonitor and supplementary resources via Kustomize
+    - repoURL: https://github.com/digiorg/core.git
+      targetRevision: HEAD
+      path: platform/base/opensearch
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: platform-db
+
+  syncPolicy:
+    automated:
+      selfHeal: true
+      prune: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

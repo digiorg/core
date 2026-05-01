@@ -1,0 +1,106 @@
+# OpenSearch Helm Values — Single-node for local dev / KinD
+# Chart:   opensearch-project/opensearch v3.6.0
+# Repo:    https://helm.opensearch.org
+# Docs:    https://docs.opensearch.org/latest/install-and-configure/install-opensearch/helm/
+#
+# Role: Observability data backend
+#   - Primary trace storage for Jaeger (replaces in-memory)
+#   - Foundation for future log aggregation (OpenSearch + Fluent Bit)
+#   - Grafana Elasticsearch-compatible datasource
+#
+# Production notes:
+#   - Set singleNode: false, replicas: 3
+#   - Remove DISABLE_SECURITY_PLUGIN and configure TLS + RBAC
+#   - Increase heap to -Xmx2G or higher depending on ingest volume
+#   - Add Keycloak OIDC via OpenSearch Security plugin
+
+# =============================================================================
+# Cluster identity
+# =============================================================================
+clusterName: "opensearch-cluster"
+nodeGroup: "master"
+
+# Single-node mode: disables bootstrap checks and forces replicas=1.
+# Required for KinD / local dev — set to false in production.
+singleNode: true
+replicas: 1
+
+# =============================================================================
+# Java Heap
+# =============================================================================
+# Keep Xms == Xmx to avoid heap resize overhead.
+# 512 MB is sufficient for trace-only workloads on local dev.
+opensearchJavaOpts: "-Xmx512M -Xms512M"
+
+# =============================================================================
+# Environment — admin password + security plugin
+# =============================================================================
+extraEnvs:
+  # Required since OpenSearch 2.12: strong admin password must be provided
+  - name: OPENSEARCH_INITIAL_ADMIN_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: opensearch-secrets
+        key: OPENSEARCH_ADMIN_PASSWORD
+  # Disable the security plugin for local dev (no TLS / RBAC required).
+  # Remove this env var in production and configure the security plugin properly.
+  - name: DISABLE_SECURITY_PLUGIN
+    value: "true"
+
+# =============================================================================
+# Resources
+# =============================================================================
+resources:
+  requests:
+    cpu: "250m"
+    memory: "512Mi"
+  limits:
+    cpu: "1000m"
+    memory: "1Gi"
+
+# =============================================================================
+# Persistent storage
+# =============================================================================
+persistence:
+  enabled: true
+  size: 8Gi
+  # storageClass: "" — uses cluster default (standard on KinD)
+
+# =============================================================================
+# OpenSearch configuration
+# =============================================================================
+config:
+  opensearch.yml: |
+    cluster.name: opensearch-cluster
+    network.host: 0.0.0.0
+    # Single-node: suppresses bootstrap checks (multi-node cluster formation disabled)
+    discovery.type: single-node
+
+# =============================================================================
+# KinD bootstrap: vm.max_map_count
+# =============================================================================
+# OpenSearch requires vm.max_map_count >= 262144.
+# On KinD the Docker node doesn't inherit host sysctl settings, so we set it
+# via a privileged initContainer before OpenSearch starts.
+extraInitContainers:
+  - name: sysctl
+    image: busybox:1.36
+    imagePullPolicy: IfNotPresent
+    command: ["sysctl", "-w", "vm.max_map_count=262144"]
+    securityContext:
+      privileged: true
+
+# =============================================================================
+# Network
+# =============================================================================
+# No direct external ingress needed — accessed internally by Jaeger and Grafana.
+# Service is ClusterIP by default.
+ingress:
+  enabled: false
+
+# =============================================================================
+# RBAC / ServiceAccount
+# =============================================================================
+rbac:
+  create: false
+  serviceAccountName: ""

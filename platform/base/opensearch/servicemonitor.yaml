@@ -1,0 +1,18 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: opensearch
+  namespace: platform-db
+  labels:
+    release: prometheus    # Required: kube-prometheus-stack discovers by this label
+spec:
+  namespaceSelector:
+    matchNames:
+      - platform-db
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: opensearch
+  endpoints:
+    - port: http            # OpenSearch HTTP port (9200) — exposes /_prometheus/metrics
+      path: /_prometheus/metrics
+      interval: 30s
