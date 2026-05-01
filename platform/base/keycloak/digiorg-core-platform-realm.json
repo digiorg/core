@@ -200,6 +200,42 @@
           }
         }
       ]
+    },
+    {
+      "clientId": "jaeger",
+      "name": "Jaeger",
+      "description": "Jaeger Distributed Tracing UI — Keycloak SSO via oauth2-proxy",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "jaeger-client-secret",
+      "redirectUris": [
+        "https://digiorg.local/jaeger/oauth2/callback"
+      ],
+      "webOrigins": [
+        "https://digiorg.local/jaeger"
+      ],
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": true,
+      "protocolMappers": [
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "full.path": "false",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "groups",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
     }
   ],
   "roles": {

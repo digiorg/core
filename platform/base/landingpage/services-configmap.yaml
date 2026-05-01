@@ -62,8 +62,8 @@ data:
       },
       {
         "id": "jaeger",
-        "name": "Jaeger",
-        "description": "Distributed Tracing",
+        "name": "Tracing & Observing",
+        "description": "Distributed Tracing & Observing",
         "path": "/jaeger",
         "icon": "tracing",
         "category": "observability",
