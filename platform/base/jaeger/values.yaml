@@ -1,13 +1,28 @@
-# Jaeger Helm Values — Jaeger v2 (chart 3.x)
+# Jaeger Helm Values — Jaeger v2 (chart 3.x, OTEL Collector architecture)
 # Docs: https://github.com/jaegertracing/jaeger/blob/main/cmd/jaeger/config.yaml
 # Chart: https://github.com/jaegertracing/helm-charts/blob/main/charts/jaeger/values.yaml
 #
-# NOTE: Jaeger v2 uses the OpenTelemetry Collector framework.
+# NOTE: Jaeger v2 uses the OpenTelemetry Collector framework as a single binary.
 # All Jaeger-specific config goes under `userconfig:` (OTEL Collector YAML).
-# The old v1 schema (allInOne, collector, query, storage.type) does NOT exist in chart 3.x.
+# The old v1 schema (allInOne, collector, query, storage.type for pods) does NOT apply.
+#
+# IMPORTANT: The chart 3.x deploys the `jaegertracing/jaeger` image (v2 binary).
+# We pin the tag explicitly to avoid falling back to v1 images.
 
-# Resource limits for the Jaeger pod
+# =============================================================================
+# Jaeger v2 Deployment
+# =============================================================================
 jaeger:
+  enabled: true
+  replicas: 1
+
+  image:
+    repository: jaegertracing/jaeger
+    # Pin to stable Jaeger v2 release — single binary with OTEL Collector framework.
+    # This ensures the chart does NOT deploy legacy v1 collector/query pods.
+    tag: "2.6.0"
+    pullPolicy: IfNotPresent
+
   # Inject OpenSearch admin password into Jaeger via environment variable.
   # The jaeger-opensearch-credentials secret is created by local-setup.nu.
   extraEnv:
@@ -24,7 +39,8 @@ jaeger:
     limits:
       cpu: 500m
       memory: 512Mi
-  # Expose OTLP + Prometheus metrics ports via the service
+
+  # Expose OTLP + Prometheus metrics + Query UI ports via the service
   service:
     extraPorts:
       - name: otlp-grpc
@@ -39,9 +55,18 @@ jaeger:
         port: 8888
         targetPort: 8888
         protocol: TCP
+      - name: jaeger-query
+        port: 16686
+        targetPort: 16686
+        protocol: TCP
 
-# Jaeger v2 OTEL Collector config
-# base_path: /jaeger is required for correct static asset routing behind NGINX subpath
+# =============================================================================
+# Jaeger v2 OTEL Collector Configuration (userconfig)
+# =============================================================================
+# This is the full OTEL Collector config rendered into a ConfigMap and mounted
+# into the Jaeger v2 pod. The single binary handles receiving, storage, and query.
+#
+# base_path: /jaeger is required for correct static asset routing behind NGINX subpath.
 userconfig:
   service:
     extensions: [jaeger_storage, jaeger_query, healthcheckv2]
@@ -100,14 +125,57 @@ userconfig:
     jaeger_storage_exporter:
       trace_storage: primary_store
 
-# Ingress managed via unified platform ingress (platform/base/ingress/digiorg-ingress.yaml)
-ingress:
+# =============================================================================
+# Storage — ES Maintenance Jobs
+# =============================================================================
+# These settings configure es-index-cleaner, es-rollover, and spark jobs.
+# In Jaeger v2, the primary storage config is in userconfig above.
+# The storage section below is ONLY used by maintenance CronJobs.
+storage:
+  type: elasticsearch
+  elasticsearch:
+    tls:
+      enabled: false
+    url: http://opensearch-cluster-master.platform-db.svc.cluster.local:9200
+    user: admin
+    password: changeme  # Overridden at runtime via secret mount in maintenance jobs
+
+# =============================================================================
+# ES Index Cleaner — automatic index lifecycle (7-day retention)
+# =============================================================================
+esIndexCleaner:
+  enabled: true
+  image:
+    repository: jaegertracing/jaeger-es-index-cleaner
+    tag: "2.6.0"
+    pullPolicy: IfNotPresent
+  schedule: "55 23 * * *"
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  numberOfDays: 7
+
+# =============================================================================
+# Disable unused sub-charts and maintenance jobs
+# =============================================================================
+esRollover:
   enabled: false
 
-# Disable Cassandra sub-chart — OpenSearch (platform-db) is the active storage backend.
-# The chart 3.x default is provisionDataStore.cassandra: true which deploys an unused
-# Cassandra StatefulSet. Explicitly disabled here.
+esLookback:
+  enabled: false
+
+spark:
+  enabled: false
+
+# =============================================================================
+# Data Store Provisioning — all disabled (OpenSearch managed externally)
+# =============================================================================
 provisionDataStore:
   cassandra: false
   elasticsearch: false
   kafka: false
+
+# =============================================================================
+# Ingress — managed via unified platform ingress
+# =============================================================================
+ingress:
+  enabled: false
