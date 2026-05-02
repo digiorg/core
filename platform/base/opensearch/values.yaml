@@ -80,15 +80,14 @@ config:
 # KinD bootstrap: vm.max_map_count
 # =============================================================================
 # OpenSearch requires vm.max_map_count >= 262144.
-# On KinD the Docker node doesn't inherit host sysctl settings, so we set it
-# via a privileged initContainer before OpenSearch starts.
-extraInitContainers:
-  - name: sysctl
-    image: busybox:1.36
-    imagePullPolicy: IfNotPresent
-    command: ["sysctl", "-w", "vm.max_map_count=262144"]
-    securityContext:
-      privileged: true
+# This is set at the KinD node level via `docker exec` in scripts/local-setup.nu
+# (Step 2, after cluster creation). This avoids a privileged initContainer that
+# fails on Docker Desktop for Windows/WSL2 due to nested-container sysctl
+# restrictions.
+#
+# For production (non-KinD) deployments, ensure vm.max_map_count is set at the
+# host level via a DaemonSet, node tuning operator, or sysctl.d configuration.
+# See: https://docs.opensearch.org/latest/install-and-configure/install-opensearch/index/#important-settings
 
 # =============================================================================
 # Network

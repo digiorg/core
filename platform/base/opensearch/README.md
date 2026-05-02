@@ -83,7 +83,7 @@ curl http://opensearch-cluster-master.platform-db.svc.cluster.local:9200/_cat/in
 | `opensearchJavaOpts` | `-Xmx512M -Xms512M` | JVM heap |
 | `DISABLE_SECURITY_PLUGIN` | `true` | Local dev only — remove in production |
 | Storage | 8Gi PVC | Default provisioner (standard on KinD) |
-| `vm.max_map_count` | 262144 | Set via privileged initContainer |
+| `vm.max_map_count` | 262144 | Set at KinD node level via `docker exec` in `local-setup.nu` |
 
 ## Jaeger Integration
 
@@ -131,6 +131,11 @@ OpenSearch is deployed in **Wave 0** — same wave as PostgreSQL — to ensure i
 4. **Index lifecycle:** Configure ISM (Index State Management) for automatic index rollover and deletion (e.g. 30-day retention).
 5. **Keycloak OIDC:** Enable OpenSearch Dashboards with Keycloak SSO for direct log/trace search UI.
 6. **Persistent volume:** Use a high-performance storage class (SSD-backed).
+7. **vm.max_map_count:** On non-KinD deployments, ensure `vm.max_map_count >= 262144` is set at the host level. Options:
+   - **DaemonSet:** Run a privileged init DaemonSet that sets the sysctl on each node.
+   - **Node tuning operator:** Use the OpenShift Node Tuning Operator or equivalent.
+   - **sysctl.d:** Add `vm.max_map_count=262144` to `/etc/sysctl.d/99-opensearch.conf` on each node.
+   - See: [OpenSearch Important Settings](https://docs.opensearch.org/latest/install-and-configure/install-opensearch/index/#important-settings)
 
 ## Troubleshooting
 

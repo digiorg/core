@@ -111,29 +111,35 @@ def "main bootstrap" [] {
     print "   Waiting for cluster nodes..."
     kubectl wait --for=condition=Ready nodes --all --timeout=120s
     
-    # 2. Install Gateway API CRDs
-    print "2. Installing Gateway API CRDs..."
+    # 2. Set vm.max_map_count on KinD node (required by OpenSearch)
+    print "2. Setting vm.max_map_count on KinD node..."
+    let kind_node = $"($CLUSTER_NAME)-control-plane"
+    docker exec $kind_node sysctl -w vm.max_map_count=262144
+    print $"(ansi green)✓ vm.max_map_count=262144 set on KinD node(ansi reset)"
+    
+    # 3. Install Gateway API CRDs
+    print "3. Installing Gateway API CRDs..."
     install_gateway_api
     
-    # 3. Install Ingress Controller
-    print "3. Installing NGINX Ingress Controller..."
+    # 4. Install Ingress Controller
+    print "4. Installing NGINX Ingress Controller..."
     install_ingress
     
-    # 4. Apply Platform Ingress rules
-    print "4. Installing Platform Ingress rules..."
+    # 5. Apply Platform Ingress rules
+    print "5. Installing Platform Ingress rules..."
     kubectl apply -k platform/base/ingress/
     print $"(ansi green)✓ Platform Ingress installed(ansi reset)"
     
-    # 5. Configure CoreDNS for digiorg.local
-    print "5. Configuring CoreDNS for digiorg.local..."
+    # 6. Configure CoreDNS for digiorg.local
+    print "6. Configuring CoreDNS for digiorg.local..."
     configure_coredns_digiorg_local
     
-    # 6. Create Platform Secrets (before ArgoCD!)
-    print "6. Creating Platform Secrets..."
+    # 7. Create Platform Secrets (before ArgoCD!)
+    print "7. Creating Platform Secrets..."
     create_platform_secrets
     
-    # 7. Install ArgoCD (Helm)
-    print "7. Installing ArgoCD (Helm)..."
+    # 8. Install ArgoCD (Helm)
+    print "8. Installing ArgoCD (Helm)..."
     install_argocd
     
     print ""
