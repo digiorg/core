@@ -77,6 +77,14 @@ spec:
                 name: jaeger-oauth2-proxy
                 port:
                   number: 4180
+          # SonarQube Code Quality — no URL rewriting needed (sonarWebContext=/sonarqube handles subpath natively)
+          - path: /sonarqube(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: sonarqube
+                port:
+                  number: 9000
           # Landing Page (root path - must be last due to catch-all)
           - path: /
             pathType: Prefix
@@ -219,6 +227,17 @@ spec:
   externalName: jaeger-oauth2-proxy.tracing.svc.cluster.local
   ports:
     - port: 4180
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sonarqube
+  namespace: ingress-nginx
+spec:
+  type: ExternalName
+  externalName: sonarqube.code-quality.svc.cluster.local
+  ports:
+    - port: 9000
 ---
 apiVersion: v1
 kind: Service

@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: code-quality
+  labels:
+    app.kubernetes.io/managed-by: argocd
+    platform.digiorg.io/component: code-quality

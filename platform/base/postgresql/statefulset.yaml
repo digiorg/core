@@ -24,6 +24,10 @@ data:
         CREATE USER gitea WITH PASSWORD '${GITEA_DB_PASSWORD}';
         CREATE DATABASE gitea OWNER gitea;
         GRANT ALL PRIVILEGES ON DATABASE gitea TO gitea;
+
+        CREATE USER sonarqube WITH PASSWORD '${SONARQUBE_DB_PASSWORD}';
+        CREATE DATABASE sonarqube OWNER sonarqube;
+        GRANT ALL PRIVILEGES ON DATABASE sonarqube TO sonarqube;
     EOSQL
 
     psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname keycloak <<-EOSQL
@@ -36,6 +40,10 @@ data:
 
     psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname gitea <<-EOSQL
         GRANT ALL ON SCHEMA public TO gitea;
+    EOSQL
+
+    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname sonarqube <<-EOSQL
+        GRANT ALL ON SCHEMA public TO sonarqube;
     EOSQL
 ---
 apiVersion: apps/v1
@@ -85,6 +93,11 @@ spec:
                 secretKeyRef:
                   name: postgresql-secrets
                   key: GITEA_DB_PASSWORD
+            - name: SONARQUBE_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgresql-secrets
+                  key: SONARQUBE_DB_PASSWORD
             # Set PGDATA to a subdirectory to avoid "lost+found" issues
             - name: PGDATA
               value: /var/lib/postgresql/data/pgdata

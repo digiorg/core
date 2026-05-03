@@ -1,0 +1,14 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: code-quality
+
+resources:
+  - namespace.yaml
+
+# SonarQube itself is deployed via Helm by the ArgoCD Application (apps/platform/sonarqube.yaml).
+# The following secrets must be created manually by local-setup.nu before ArgoCD sync:
+#   - sonarqube-db-secret          (SONAR_JDBC_PASSWORD)
+#   - sonarqube-monitoring-secret  (SONAR_WEB_SYSTEMPASSCODE)
+#   - sonarqube-saml-secret        (sonar.auth.saml.certificate.secured)
+# See platform/base/sonarqube/README.md for details.

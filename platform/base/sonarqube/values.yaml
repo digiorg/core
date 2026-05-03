@@ -1,0 +1,157 @@
+# =============================================================================
+# SonarQube Community Build — Helm Values
+# Chart:  https://github.com/SonarSource/helm-chart-sonarqube
+# Docs:   https://docs.sonarsource.com/sonarqube-server/latest/setup-and-upgrade/deploy-on-kubernetes/
+# Issue:  #78
+# =============================================================================
+
+# ── Edition: Community Build ──────────────────────────────────────────────────
+community:
+  enabled: true
+  # buildNumber pins the Community Build version (year.month.patch.buildid format).
+  # Update to the desired Community Build release.
+  buildNumber: "26.4.0.121862"
+
+# ── Deployment ─────────────────────────────────────────────────────────────────
+replicaCount: 1
+deploymentType: "StatefulSet"
+
+# ── Web Context (subpath for NGINX ingress) ────────────────────────────────────
+# SonarQube served under /sonarqube. The chart automatically injects this value
+# as SONAR_WEB_CONTEXT env var — do NOT also set it in the env section below.
+sonarWebContext: "/sonarqube"
+
+# ── Database: shared PostgreSQL in platform-db namespace ──────────────────────
+# Disable the built-in PostgreSQL sub-chart (we use the shared platform instance)
+postgresql:
+  enabled: false
+
+# External database — correct Helm key is jdbcOverwrite (not jdbcOverride)
+jdbcOverwrite:
+  enabled: true
+  jdbcUrl: "jdbc:postgresql://postgresql.platform-db.svc.cluster.local:5432/sonarqube"
+  jdbcUsername: sonarqube
+  # Password sourced from Kubernetes Secret (created by local-setup.nu)
+  jdbcSecretName: "sonarqube-db-secret"
+  jdbcSecretPasswordKey: "SONAR_JDBC_PASSWORD"
+
+# ── Monitoring Passcode (REQUIRED for liveness probe) ─────────────────────────
+# The liveness probe calls /api/system/liveness with X-Sonar-Passcode header.
+# Without this, the probe returns 401 → pod never becomes ready → restart loop.
+monitoringPasscodeSecretName: "sonarqube-monitoring-secret"
+monitoringPasscodeSecretKey: "SONAR_WEB_SYSTEMPASSCODE"
+
+# ── Elasticsearch (embedded) ───────────────────────────────────────────────────
+elasticsearch:
+  # Disable strict bootstrap checks — KinD doesn't support vm.max_map_count changes.
+  # Set to true in production and configure the sysctl init container.
+  bootstrapChecks: false
+
+# Init container for vm.max_map_count — disabled for local KinD dev.
+# Enable in production with privileged node access.
+initSysctl:
+  enabled: false
+
+# ── Security Context ───────────────────────────────────────────────────────────
+securityContext:
+  fsGroup: 0
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 0
+  seccompProfile:
+    type: RuntimeDefault
+  capabilities:
+    drop: ["ALL"]
+
+# ── Service ────────────────────────────────────────────────────────────────────
+service:
+  type: ClusterIP
+  externalPort: 9000
+  internalPort: 9000
+
+# ── Ingress: managed via unified platform ingress ─────────────────────────────
+ingress:
+  enabled: false
+
+# ── Persistence ───────────────────────────────────────────────────────────────
+persistence:
+  enabled: true
+  size: 5Gi
+  accessMode: ReadWriteOnce
+
+# ── Resources ──────────────────────────────────────────────────────────────────
+# SonarQube + embedded Elasticsearch is memory-intensive.
+# Chart defaults: requests=2048M, limits=6144M — reduced here for local KinD dev.
+resources:
+  requests:
+    cpu: 200m
+    memory: 2Gi
+  limits:
+    cpu: 2000m
+    memory: 4Gi
+
+# ── Startup / Readiness / Liveness Probes ─────────────────────────────────────
+# SonarQube can take 2-3 minutes to start (Elasticsearch init + DB migrations).
+startupProbe:
+  initialDelaySeconds: 30
+  failureThreshold: 24   # 24 * 10s = 4 min total startup budget
+  periodSeconds: 10
+  timeoutSeconds: 1
+
+livenessProbe:
+  initialDelaySeconds: 60
+  periodSeconds: 30
+  failureThreshold: 6
+  timeoutSeconds: 10
+
+readinessProbe:
+  initialDelaySeconds: 60
+  periodSeconds: 30
+  failureThreshold: 6
+  timeoutSeconds: 10
+
+# ── Prometheus Monitoring ──────────────────────────────────────────────────────
+prometheusMonitoring:
+  podMonitor:
+    enabled: true
+    # namespace is deprecated — PodMonitor is created in the release namespace
+    interval: 30s
+    labels:
+      release: prometheus   # required for kube-prometheus-stack discovery
+
+# ── Authentication: Keycloak SAML ─────────────────────────────────────────────
+# SonarQube Community Build has native SAML support (no plugin required).
+# OIDC is NOT natively supported in Community Build — use SAML instead.
+#
+# Keycloak SAML client "sonarqube" is configured in:
+#   platform/base/keycloak/digiorg-core-platform-realm.json
+#
+# The IdP certificate must be stored in the sonarqube-saml-secret Secret
+# (see README.md for how to obtain it from Keycloak).
+sonarProperties:
+  sonar.auth.saml.enabled: "true"
+  sonar.auth.saml.applicationId: "sonarqube"
+  sonar.auth.saml.providerName: "Keycloak"
+  # Keycloak realm EntityID
+  sonar.auth.saml.providerId: "https://digiorg.local/keycloak/realms/digiorg-core-platform"
+  # Keycloak SAML SSO endpoint
+  sonar.auth.saml.loginUrl: "https://digiorg.local/keycloak/realms/digiorg-core-platform/protocol/saml"
+  # SAML attribute mappings (must match Keycloak protocol mappers in realm JSON)
+  sonar.auth.saml.userLogin: "login"
+  sonar.auth.saml.userName: "name"
+  sonar.auth.saml.userEmail: "email"
+  # Allow users to sign up via SSO on first login
+  sonar.auth.saml.allowUsersToSignUp: "true"
+
+# Keycloak IdP certificate — stored in Secret, appended to sonar.properties.
+# Secret key: sonar.auth.saml.certificate.secured=<base64-cert>
+# Created by local-setup.nu after Keycloak is up (see README.md).
+sonarSecretProperties: "sonarqube-saml-secret"
+
+# ── Plugins ────────────────────────────────────────────────────────────────────
+# No additional plugins needed — SAML is built-in for Community Build.
+plugins:
+  install: []
