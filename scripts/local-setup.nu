@@ -160,9 +160,9 @@ def deploy_root_app [] {
     print ""
     print "ArgoCD Sync Waves:"
     print "  Wave -1: root-app (just deployed)"
-    print "  Wave  0: cert-manager (TLS), postgresql (shared database), opensearch (observability backend), nats (messaging)"
-    print "  Wave  1: keycloak (IdP), argocd (self-managed GitOps)"
-    print "  Wave  2: landingpage, backstage, gitea, grafana"
+    print "  Wave  0: cert-manager, postgresql, opensearch, nats"
+    print "  Wave  1: keycloak, argocd (self-managed)"
+    print "  Wave  2: landingpage, backstage, gitea, grafana, jaeger, sonarqube"
     print "  Wave  3: crossplane, kyverno"
 }
 
@@ -173,8 +173,17 @@ def wait_for_argocd_apps [] {
     print "Waiting for ArgoCD applications to sync (this may take 10-15 minutes)..."
     print ""
     
-    # Apps to wait for (in wave order)
-    let apps = ["cert-manager", "postgresql", "opensearch", "keycloak", "gitea", "landingpage", "backstage", "grafana", "crossplane", "kyverno"]
+    # Apps to wait for (in wave order) — must match apps/platform/*.yaml exactly
+    let apps = [
+        # Wave 0
+        "cert-manager", "postgresql", "opensearch", "nats",
+        # Wave 1
+        "keycloak", "argocd",
+        # Wave 2
+        "landingpage", "backstage", "gitea", "grafana", "jaeger", "sonarqube",
+        # Wave 3
+        "crossplane", "kyverno"
+    ]
     
     mut all_healthy = false
     mut attempts = 0
