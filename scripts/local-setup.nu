@@ -501,7 +501,8 @@ def create_platform_secrets [] {
     # Code-quality namespace + SonarQube secrets
     # sonarqube-db-secret:         SONAR_JDBC_PASSWORD — PostgreSQL connection
     # sonarqube-monitoring-secret: SONAR_WEB_SYSTEMPASSCODE — required for liveness probe
-    # sonarqube-saml-secret:       created later by configure_sonarqube_saml (needs Keycloak)
+    # sonarqube-saml-secret:       NOT created here — no longer a volume dependency (see issue #109).
+    #                               The IdP cert is configured manually via SonarQube Admin UI post-startup.
     kubectl create namespace code-quality --dry-run=client -o yaml | kubectl apply -f -
     (kubectl create secret generic sonarqube-db-secret -n code-quality
         --from-literal=SONAR_JDBC_PASSWORD=($sonarqube_db_password)
@@ -695,48 +696,31 @@ def configure_gitea_oidc [] {
     print $"(ansi green)✓ Gitea OIDC integration configured(ansi reset)"
 }
 
-# Create sonarqube-saml-secret from the Keycloak realm signing certificate.
-# Must run AFTER Keycloak is ready (cert is only available then).
+# Print instructions for the manual SonarQube SAML certificate setup.
+# sonarSecretProperties is intentionally not used (see issue #109) — the
+# SonarQube Pod has no Secret volume dependency and starts without it.
+# The IdP cert must be entered once via the Admin UI after first startup.
 def configure_sonarqube_saml [] {
-    $env.KUBECONFIG = $KUBECONFIG_PATH
-
     print ""
-    print $"(ansi cyan_bold)Creating SonarQube SAML secret from Keycloak realm cert(ansi reset)"
+    print $"(ansi cyan_bold)SonarQube SAML — Manual Post-Setup Step(ansi reset)"
     print "────────────────────────────────────"
-
-    # Wait for Keycloak and fetch realm public key
-    mut cert = ""
-    for attempt in 1..30 {
-        # NOTE: kubectl exec -- <cmd> must be on ONE line in Nushell.
-        # A newline after '--' is parsed as end-of-expression, leaving
-        # kubectl exec without a container command → 'you must specify at
-        # least one command for the container' error. (see issue #103)
-        let result = (do {
-            kubectl exec -n keycloak deploy/keycloak -- curl -sk https://digiorg.local/keycloak/realms/digiorg-core-platform
-        } | complete)
-
-        if $result.exit_code == 0 {
-            let parsed = (do { $result.stdout | from json } | complete)
-            if $parsed.exit_code == 0 and ("public_key" in $parsed.value) {
-                $cert = $parsed.value.public_key
-                break
-            }
-        }
-        print $"  Waiting for Keycloak realm cert... [attempt ($attempt)/30]"
-        sleep 10sec
-    }
-
-    if ($cert | is-empty) {
-        print $"(ansi yellow)Warning: Could not fetch Keycloak realm cert — skipping sonarqube-saml-secret.(ansi reset)"
-        print $"(ansi yellow)  Create it manually after Keycloak is ready [see platform/base/sonarqube/README.md](ansi reset)"
-        return
-    }
-
-    (kubectl create secret generic sonarqube-saml-secret -n code-quality
-        --from-literal=$"sonar.auth.saml.certificate.secured=($cert)"
-        --dry-run=client -o yaml | kubectl apply -f -)
-
-    print $"(ansi green)✓ sonarqube-saml-secret created [code-quality](ansi reset)"
+    print ""
+    print $"(ansi yellow)The Keycloak IdP certificate must be added to SonarQube manually after"
+    print "the cluster is fully up. SonarQube starts without it (no Secret volume"
+    print $"dependency), but SAML login will not work until the cert is configured.(ansi reset)"
+    print ""
+    print "  1. Obtain the Keycloak realm certificate:"
+    print "       kubectl port-forward -n keycloak svc/keycloak 18080:8080 &"
+    print "       curl -s http://localhost:18080/keycloak/realms/digiorg-core-platform \\"
+    print "         | python3 -c \"import json,sys; print(json.load(sys.stdin)['public_key'])\""
+    print "       kill %1"
+    print ""
+    print "  2. Open SonarQube Admin UI:"
+    print "       https://digiorg.local/sonarqube"
+    print "       Administration → Security → SAML → X.509 Certificate (IdP)"
+    print ""
+    print "  See: platform/base/sonarqube/README.md"
+    print ""
 }
 
 # Restart pods that depend on OIDC/Keycloak

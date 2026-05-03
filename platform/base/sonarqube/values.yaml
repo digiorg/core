@@ -146,10 +146,23 @@ sonarProperties:
   # Allow users to sign up via SSO on first login
   sonar.auth.saml.allowUsersToSignUp: "true"
 
-# Keycloak IdP certificate — stored in Secret, appended to sonar.properties.
-# Secret key: sonar.auth.saml.certificate.secured=<base64-cert>
-# Created by local-setup.nu after Keycloak is up (see README.md).
-sonarSecretProperties: "sonarqube-saml-secret"
+# sonarSecretProperties is intentionally NOT set.
+#
+# Setting it would create a required Secret volume mount (no optional:true in the
+# chart). If the Secret doesn't exist the Pod cannot start at all — causing a
+# hard dependency that breaks the deployment on fresh clusters (see issue #109).
+#
+# The Keycloak IdP certificate for SAML must be entered manually after first
+# startup via the SonarQube Admin UI:
+#   Administration → Security → SAML → X.509 Certificate (IdP)
+#
+# How to obtain the cert from Keycloak (run after cluster is ready):
+#   kubectl port-forward -n keycloak svc/keycloak 18080:8080 &
+#   curl -s http://localhost:18080/keycloak/realms/digiorg-core-platform \
+#     | python3 -c "import json,sys; print(json.load(sys.stdin)['public_key'])"
+#   kill %1
+#
+# See also: platform/base/sonarqube/README.md
 
 # ── Plugins ────────────────────────────────────────────────────────────────────
 # No additional plugins needed — SAML is built-in for Community Build.
