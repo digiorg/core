@@ -40,7 +40,9 @@ spec:
             - --client-id=jaeger
             - --redirect-url=https://digiorg.local/jaeger/oauth2/callback
             # Jaeger handles /jaeger natively (base_path: /jaeger) — pass full path upstream.
-            - --upstream=http://jaeger-query.tracing.svc.cluster.local:16686/
+            # Chart 4.x allInOne creates a single 'jaeger' Service (not separate jaeger-query).
+            # 'jaeger-query' was the Jaeger v1 service name — does not exist in Chart 4.x.
+            - --upstream=http://jaeger.tracing.svc.cluster.local:16686/
             - --http-address=0.0.0.0:4180
             # proxy-prefix scopes the OAuth2 callback within the /jaeger sub-path
             - --proxy-prefix=/jaeger/oauth2
