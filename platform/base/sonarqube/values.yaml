@@ -95,20 +95,45 @@ resources:
 
 # ── Startup / Readiness / Liveness Probes ─────────────────────────────────────
 # SonarQube can take 2-3 minutes to start (Elasticsearch init + DB migrations).
+#
+# IMPORTANT: Helm chart 10.x generates probe scripts using `wget`, but the
+# SonarQube Community Build image does NOT include wget (only curl).
+# Override exec.command here to use curl explicitly. (see issue #111)
 startupProbe:
   initialDelaySeconds: 30
   failureThreshold: 24   # 24 * 10s = 4 min total startup budget
   periodSeconds: 10
-  timeoutSeconds: 1
+  timeoutSeconds: 5      # chart default (1s) too tight under DB migration load
 
 livenessProbe:
-  initialDelaySeconds: 60
+  exec:
+    command:
+      - sh
+      - -c
+      - |
+        # curl replaces wget — wget not available in Community Build image (issue #111)
+        curl --noproxy "*" -fsS -o /dev/null --max-time 10 \
+          -H "X-Sonar-Passcode: $SONAR_WEB_SYSTEMPASSCODE" \
+          "http://localhost:9000/sonarqube/api/system/liveness"
+  initialDelaySeconds: 120   # increased from 60 — first-run DB schema setup takes longer
   periodSeconds: 30
   failureThreshold: 6
   timeoutSeconds: 10
 
 readinessProbe:
-  initialDelaySeconds: 60
+  exec:
+    command:
+      - sh
+      - -c
+      - |
+        #!/bin/bash
+        # curl replaces wget — wget not available in Community Build image (issue #111)
+        if curl --noproxy "*" -s http://localhost:9000/sonarqube/api/system/status | \
+          grep -q -e '"status":"UP"' -e '"status":"DB_MIGRATION_NEEDED"' -e '"status":"DB_MIGRATION_RUNNING"'; then
+          exit 0
+        fi
+        exit 1
+  initialDelaySeconds: 120   # increased from 60 — consistent with livenessProbe
   periodSeconds: 30
   failureThreshold: 6
   timeoutSeconds: 10
