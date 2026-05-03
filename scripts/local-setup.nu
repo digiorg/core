@@ -698,9 +698,12 @@ def configure_sonarqube_saml [] {
     # Wait for Keycloak and fetch realm public key
     mut cert = ""
     for attempt in 1..30 {
+        # NOTE: kubectl exec -- <cmd> must be on ONE line in Nushell.
+        # A newline after '--' is parsed as end-of-expression, leaving
+        # kubectl exec without a container command → 'you must specify at
+        # least one command for the container' error. (see issue #103)
         let result = (do {
-            kubectl exec -n keycloak deploy/keycloak --
-                curl -sk https://digiorg.local/keycloak/realms/digiorg-core-platform
+            kubectl exec -n keycloak deploy/keycloak -- curl -sk https://digiorg.local/keycloak/realms/digiorg-core-platform
         } | complete)
 
         if $result.exit_code == 0 {
