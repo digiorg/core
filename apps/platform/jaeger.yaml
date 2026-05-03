@@ -12,7 +12,7 @@ spec:
   sources:
     - repoURL: https://jaegertracing.github.io/helm-charts
       chart: jaeger
-      targetRevision: "3.x"
+      targetRevision: "4.x"
       helm:
         releaseName: jaeger
         valueFiles:
