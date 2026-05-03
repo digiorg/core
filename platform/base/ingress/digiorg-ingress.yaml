@@ -235,7 +235,9 @@ metadata:
   namespace: ingress-nginx
 spec:
   type: ExternalName
-  externalName: sonarqube.code-quality.svc.cluster.local
+  # SonarQube chart fullname = "{release}-{chart}" = sonarqube-sonarqube
+  # (no deduplication logic unlike e.g. Jaeger — see issue #113)
+  externalName: sonarqube-sonarqube.code-quality.svc.cluster.local
   ports:
     - port: 9000
 ---
