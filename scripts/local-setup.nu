@@ -728,7 +728,7 @@ def configure_sonarqube_saml [] {
 
     if ($cert | is-empty) {
         print $"(ansi yellow)Warning: Could not fetch Keycloak realm cert — skipping sonarqube-saml-secret.(ansi reset)"
-        print $"(ansi yellow)  Create it manually after Keycloak is ready (see platform/base/sonarqube/README.md)(ansi reset)"
+        print $"(ansi yellow)  Create it manually after Keycloak is ready [see platform/base/sonarqube/README.md](ansi reset)"
         return
     }
 
