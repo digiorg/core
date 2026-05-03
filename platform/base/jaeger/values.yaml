@@ -70,7 +70,10 @@ userconfig:
     healthcheckv2:
       use_v2: true
       http:
-        endpoint: 0.0.0.0:14269
+        # Port 13133 = OTel Collector standard healthcheck port.
+        # Chart 4.x allinone-deploy.yaml hardcodes probes to port 13133 — must match.
+        # Port 14269 was the Jaeger v1 admin port and caused liveness/readiness failures.
+        endpoint: 0.0.0.0:13133
 
     jaeger_query:
       base_path: /jaeger
