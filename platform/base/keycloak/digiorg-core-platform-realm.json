@@ -236,6 +236,71 @@
           }
         }
       ]
+    },
+    {
+      "clientId": "sonarqube",
+      "name": "SonarQube",
+      "description": "SonarQube Code Quality — Keycloak SSO via SAML",
+      "enabled": true,
+      "protocol": "saml",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "fullScopeAllowed": true,
+      "frontchannelLogout": true,
+      "attributes": {
+        "saml.authn.statement": "true",
+        "saml.client.signature": "false",
+        "saml.force.post.binding": "true",
+        "saml.server.signature": "true",
+        "saml_force_name_id_format": "true",
+        "saml.assertion.signature": "false",
+        "saml_name_id_format": "username",
+        "saml.signature.algorithm": "RSA_SHA256"
+      },
+      "rootUrl": "https://digiorg.local",
+      "baseUrl": "/sonarqube",
+      "redirectUris": [
+        "https://digiorg.local/sonarqube/oauth2/callback/saml",
+        "https://digiorg.local/sonarqube/*"
+      ],
+      "webOrigins": [
+        "https://digiorg.local/sonarqube"
+      ],
+      "protocolMappers": [
+        {
+          "name": "login",
+          "protocol": "saml",
+          "protocolMapper": "saml-user-property-mapper",
+          "consentRequired": false,
+          "config": {
+            "attribute.nameformat": "Basic",
+            "attribute.name": "login",
+            "user.attribute": "username"
+          }
+        },
+        {
+          "name": "email",
+          "protocol": "saml",
+          "protocolMapper": "saml-user-property-mapper",
+          "consentRequired": false,
+          "config": {
+            "attribute.nameformat": "Basic",
+            "attribute.name": "email",
+            "user.attribute": "email"
+          }
+        },
+        {
+          "name": "name",
+          "protocol": "saml",
+          "protocolMapper": "saml-user-property-mapper",
+          "consentRequired": false,
+          "config": {
+            "attribute.nameformat": "Basic",
+            "attribute.name": "name",
+            "user.attribute": "firstName"
+          }
+        }
+      ]
     }
   ],
   "roles": {

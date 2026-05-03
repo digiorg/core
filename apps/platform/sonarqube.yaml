@@ -1,0 +1,50 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: sonarqube
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    # Wave 2: Code Quality tier — depends on PostgreSQL (wave 0) + Keycloak (wave 1)
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: default
+
+  sources:
+    # SonarQube Community Build Helm chart
+    - repoURL: https://SonarSource.github.io/helm-chart-sonarqube
+      chart: sonarqube
+      targetRevision: "10.*"
+      helm:
+        releaseName: sonarqube
+        valueFiles:
+          - $values/platform/base/sonarqube/values.yaml
+
+    # Reference to values file in Git repo
+    - repoURL: https://github.com/digiorg/core.git
+      targetRevision: HEAD
+      ref: values
+
+    # Namespace + additional manifests via Kustomize
+    - repoURL: https://github.com/digiorg/core.git
+      targetRevision: HEAD
+      path: platform/base/sonarqube
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: code-quality
+
+  syncPolicy:
+    automated:
+      selfHeal: true
+      prune: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 5m
