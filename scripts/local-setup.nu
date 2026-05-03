@@ -66,6 +66,9 @@ def "main up" [] {
     # Configure Gitea OIDC integration with Keycloak
     configure_gitea_oidc
 
+    # Create SonarQube SAML secret from Keycloak realm certificate
+    configure_sonarqube_saml
+
     # Restart OIDC-dependent pods after Keycloak is ready
     restart_oidc_dependent_pods
     
@@ -422,6 +425,8 @@ def create_platform_secrets [] {
     let backstage_oidc_secret = ($env.AUTH_OIDC_CLIENT_SECRET? | default "backstage-client-secret")
     let gitea_db_password = ($env.GITEA_DB_PASSWORD? | default (generate_password))
     let gitea_oidc_secret = ($env.GITEA_OIDC_CLIENT_SECRET? | default "gitea-client-secret")
+    let sonarqube_db_password = ($env.SONARQUBE_DB_PASSWORD? | default (generate_password))
+    let sonarqube_monitoring_passcode = ($env.SONARQUBE_MONITORING_PASSCODE? | default (generate_password))
     
     # Platform-db namespace and PostgreSQL secrets (shared database for Keycloak + Backstage + Gitea)
     kubectl create namespace platform-db --dry-run=client -o yaml | kubectl apply -f -
@@ -430,6 +435,7 @@ def create_platform_secrets [] {
         --from-literal=KEYCLOAK_DB_PASSWORD=($keycloak_db_password)
         --from-literal=BACKSTAGE_DB_PASSWORD=($backstage_db_password)
         --from-literal=GITEA_DB_PASSWORD=($gitea_db_password)
+        --from-literal=SONARQUBE_DB_PASSWORD=($sonarqube_db_password)
         --dry-run=client -o yaml | kubectl apply -f -)
     print $"(ansi green)✓ PostgreSQL secrets created [platform-db](ansi reset)"
     
@@ -482,6 +488,19 @@ def create_platform_secrets [] {
         print $"(ansi green)✓ Gitea namespace and secrets created(ansi reset)"
         print $"(ansi yellow)  ! Existing gitea-admin-secret preserved; set GITEA_ADMIN_PASSWORD to rotate(ansi reset)"
     }
+
+    # Code-quality namespace + SonarQube secrets
+    # sonarqube-db-secret:         SONAR_JDBC_PASSWORD — PostgreSQL connection
+    # sonarqube-monitoring-secret: SONAR_WEB_SYSTEMPASSCODE — required for liveness probe
+    # sonarqube-saml-secret:       created later by configure_sonarqube_saml (needs Keycloak)
+    kubectl create namespace code-quality --dry-run=client -o yaml | kubectl apply -f -
+    (kubectl create secret generic sonarqube-db-secret -n code-quality
+        --from-literal=SONAR_JDBC_PASSWORD=($sonarqube_db_password)
+        --dry-run=client -o yaml | kubectl apply -f -)
+    (kubectl create secret generic sonarqube-monitoring-secret -n code-quality
+        --from-literal=SONAR_WEB_SYSTEMPASSCODE=($sonarqube_monitoring_passcode)
+        --dry-run=client -o yaml | kubectl apply -f -)
+    print $"(ansi green)✓ SonarQube secrets created [code-quality](ansi reset)"
 
     # Messaging namespace (for NATS server + Surveyor)
     kubectl create namespace messaging --dry-run=client -o yaml | kubectl apply -f -
@@ -665,6 +684,47 @@ def configure_gitea_oidc [] {
     #}
 
     print $"(ansi green)✓ Gitea OIDC integration configured(ansi reset)"
+}
+
+# Create sonarqube-saml-secret from the Keycloak realm signing certificate.
+# Must run AFTER Keycloak is ready (cert is only available then).
+def configure_sonarqube_saml [] {
+    $env.KUBECONFIG = $KUBECONFIG_PATH
+
+    print ""
+    print $"(ansi cyan_bold)Creating SonarQube SAML secret from Keycloak realm cert(ansi reset)"
+    print "────────────────────────────────────"
+
+    # Wait for Keycloak and fetch realm public key
+    mut cert = ""
+    for attempt in 1..30 {
+        let result = (do {
+            kubectl exec -n keycloak deploy/keycloak --
+                curl -sk https://digiorg.local/keycloak/realms/digiorg-core-platform
+        } | complete)
+
+        if $result.exit_code == 0 {
+            let parsed = (do { $result.stdout | from json } | complete)
+            if $parsed.exit_code == 0 and ("public_key" in $parsed.value) {
+                $cert = $parsed.value.public_key
+                break
+            }
+        }
+        print $"  Waiting for Keycloak realm cert... [attempt ($attempt)/30]"
+        sleep 10sec
+    }
+
+    if ($cert | is-empty) {
+        print $"(ansi yellow)Warning: Could not fetch Keycloak realm cert — skipping sonarqube-saml-secret.(ansi reset)"
+        print $"(ansi yellow)  Create it manually after Keycloak is ready (see platform/base/sonarqube/README.md)(ansi reset)"
+        return
+    }
+
+    (kubectl create secret generic sonarqube-saml-secret -n code-quality
+        --from-literal=$"sonar.auth.saml.certificate.secured=($cert)"
+        --dry-run=client -o yaml | kubectl apply -f -)
+
+    print $"(ansi green)✓ sonarqube-saml-secret created [code-quality](ansi reset)"
 }
 
 # Restart pods that depend on OIDC/Keycloak
