@@ -105,13 +105,15 @@ userconfig:
                 rollover_frequency: day
                 shards: 5
                 replicas: 0
-            # Credentials reference the jaeger-opensearch-credentials secret (created by local-setup.nu)
-            username: admin
-            password: "${OPENSEARCH_ADMIN_PASSWORD}"
-            # Self-signed cert in local dev — disable host verification.
-            # Remove tls section in production and configure proper CA trust.
-            tls:
-              skip_host_verify: true
+            # Auth must be nested under auth.basic (Jaeger v2 / OTel strict-mode config schema).
+            # username/password directly under opensearch: are NOT valid keys (see issue #94).
+            # Uses ${env:...} OTel provider syntax for env var substitution.
+            # The jaeger-opensearch-credentials secret is created by local-setup.nu.
+            auth:
+              basic:
+                username: admin
+                password: "${env:OPENSEARCH_ADMIN_PASSWORD}"
+            # No tls: section needed — connection uses plain HTTP (http://)
 
   receivers:
     otlp:
