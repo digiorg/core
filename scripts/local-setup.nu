@@ -748,30 +748,94 @@ def configure_sonarqube_base_url [] {
     }
 }
 
-# sonarSecretProperties is intentionally not used (see issue #109) — the
-# SonarQube Pod has no Secret volume dependency and starts without it.
-# The IdP cert must be entered once via the Admin UI after first startup.
+# Automate SonarQube SAML configuration via Web API.
+# sonar.auth.saml.* are database-stored settings, NOT system properties — they are
+# silently ignored in sonarProperties/values.yaml. Must be pushed via API after startup.
+# The Keycloak IdP certificate is fetched directly from the Keycloak realm endpoint
+# via the ingress (https://digiorg.local/keycloak/...) — no kubectl exec needed.
 def configure_sonarqube_saml [] {
     print ""
-    print $"(ansi cyan_bold)SonarQube SAML — Manual Post-Setup Step(ansi reset)"
+    print $"(ansi cyan_bold)Configuring SonarQube SAML via API(ansi reset)"
     print "────────────────────────────────────"
-    print ""
-    print $"(ansi yellow)The Keycloak IdP certificate must be added to SonarQube manually after"
-    print "the cluster is fully up. SonarQube starts without it (no Secret volume"
-    print $"dependency), but SAML login will not work until the cert is configured.(ansi reset)"
-    print ""
-    print "  1. Obtain the Keycloak realm certificate:"
-    print "       kubectl port-forward -n keycloak svc/keycloak 18080:8080 &"
-    print "       curl -s http://localhost:18080/keycloak/realms/digiorg-core-platform \\"
-    print "         | python3 -c \"import json,sys; print(json.load(sys.stdin)['public_key'])\""
-    print "       kill %1"
-    print ""
-    print "  2. Open SonarQube Admin UI:"
-    print "       https://digiorg.local/sonarqube"
-    print "       Administration → Security → SAML → X.509 Certificate (IdP)"
-    print ""
-    print "  See: platform/base/sonarqube/README.md"
-    print ""
+
+    let sonar_url = "https://digiorg.local/sonarqube"
+    let keycloak_realm_url = "https://digiorg.local/keycloak/realms/digiorg-core-platform"
+    let admin_pass = (do -i { kubectl --kubeconfig $KUBECONFIG_PATH get secret sonarqube-admin-secret -n code-quality -o jsonpath='{.data.password}' } | complete)
+
+    let password = if $admin_pass.exit_code == 0 {
+        $admin_pass.stdout | str trim | decode base64
+    } else {
+        ($env.SONARQUBE_ADMIN_PASSWORD? | default "admin")
+    }
+
+    # --- Step 1: Fetch Keycloak IdP certificate ---
+    print "  1. Fetching Keycloak IdP certificate..."
+    let cert_result = (do -i { curl --noproxy "*" -sk $keycloak_realm_url } | complete)
+    if $cert_result.exit_code != 0 {
+        print $"  (ansi red)✗ Failed to reach Keycloak realm endpoint: ($cert_result.stderr)(ansi reset)"
+        return
+    }
+    let keycloak_cert = ($cert_result.stdout | from json | get public_key)
+    if ($keycloak_cert | is-empty) {
+        print $"  (ansi red)✗ Could not extract public_key from Keycloak realm response(ansi reset)"
+        return
+    }
+    print $"  (ansi green)✓ Keycloak IdP certificate fetched(ansi reset)"
+
+    # --- Step 2: Wait for SonarQube to be ready ---
+    print "  2. Waiting for SonarQube..."
+    mut sonar_ready = false
+    for attempt in 1..30 {
+        let status = (do -i { curl --noproxy "*" -sk -u $"admin:($password)" $"($sonar_url)/api/system/status" } | complete)
+        if $status.exit_code == 0 and ($status.stdout | str contains '"status":"UP"') {
+            $sonar_ready = true
+            break
+        }
+        print $"    Waiting for SonarQube... [attempt ($attempt)/30]"
+        sleep 10sec
+    }
+    if not $sonar_ready {
+        print $"  (ansi yellow)Warning: SonarQube not ready, skipping SAML configuration(ansi reset)"
+        return
+    }
+
+    # --- Step 3: Push all SAML settings via Settings API ---
+    print "  3. Pushing SAML settings to SonarQube API..."
+    let saml_settings = [
+        [key value];
+        ["sonar.auth.saml.applicationId"     "sonarqube"]
+        ["sonar.auth.saml.providerName"       "Keycloak"]
+        ["sonar.auth.saml.providerId"         "https://digiorg.local/keycloak/realms/digiorg-core-platform"]
+        ["sonar.auth.saml.loginUrl"           "https://digiorg.local/keycloak/realms/digiorg-core-platform/protocol/saml"]
+        ["sonar.auth.saml.user.login"         "login"]
+        ["sonar.auth.saml.user.name"          "name"]
+        ["sonar.auth.saml.user.email"         "email"]
+        ["sonar.auth.saml.group.name"         "groups"]
+        ["sonar.auth.saml.allowUsersToSignUp" "true"]
+        ["sonar.auth.saml.certificate.secured" $keycloak_cert]
+    ]
+
+    mut all_ok = true
+    for setting in $saml_settings {
+        let r = (do -i { curl --noproxy "*" -sk -u $"admin:($password)" -X POST $"($sonar_url)/api/settings/set" --data-urlencode $"key=($setting.key)" --data-urlencode $"value=($setting.value)" } | complete)
+        if $r.exit_code != 0 {
+            print $"  (ansi red)✗ Failed to set ($setting.key): ($r.stderr)(ansi reset)"
+            $all_ok = false
+        }
+    }
+
+    # --- Step 4: Enable SAML ---
+    let enable_result = (do -i { curl --noproxy "*" -sk -u $"admin:($password)" -X POST $"($sonar_url)/api/settings/set" --data-urlencode "key=sonar.auth.saml.enabled" --data-urlencode "value=true" } | complete)
+    if $enable_result.exit_code != 0 {
+        print $"  (ansi red)✗ Failed to enable SAML: ($enable_result.stderr)(ansi reset)"
+        $all_ok = false
+    }
+
+    if $all_ok {
+        print $"  (ansi green)✓ SAML fully configured and enabled in SonarQube(ansi reset)"
+    } else {
+        print $"  (ansi yellow)Warning: Some SAML settings may not have been applied(ansi reset)"
+    }
 }
 
 # Restart pods that depend on OIDC/Keycloak
