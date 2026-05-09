@@ -156,8 +156,11 @@ prometheusMonitoring:
 #
 # The IdP certificate must be stored in the sonarqube-saml-secret Secret
 # (see README.md for how to obtain it from Keycloak).
+#
+# NOTE: sonar.core.serverBaseURL is NOT a system property and cannot be set here.
+# It is a database-stored setting that must be configured via the SonarQube Web API
+# after startup. This is handled automatically by local-setup.nu.
 sonarProperties:
-  sonar.core.serverBaseURL: "https://digiorg.local/sonarqube"
   sonar.auth.saml.enabled: "true"
   sonar.auth.saml.applicationId: "sonarqube"
   sonar.auth.saml.providerName: "Keycloak"
@@ -165,11 +168,11 @@ sonarProperties:
   sonar.auth.saml.providerId: "https://digiorg.local/keycloak/realms/digiorg-core-platform"
   # Keycloak SAML SSO endpoint
   sonar.auth.saml.loginUrl: "https://digiorg.local/keycloak/realms/digiorg-core-platform/protocol/saml"
-  # SAML attribute mappings (must match Keycloak protocol mappers in realm JSON)
-  sonar.auth.saml.userLogin: "login"
-  sonar.auth.saml.userName: "name"
-  sonar.auth.saml.userEmail: "email"
-  sonar.auth.saml.group: "groups"
+  # SAML attribute mappings — correct system property names (dots, not camelCase)
+  sonar.auth.saml.user.login: "login"
+  sonar.auth.saml.user.name: "name"
+  sonar.auth.saml.user.email: "email"
+  sonar.auth.saml.group.name: "groups"
   # Allow users to sign up via SSO on first login
   sonar.auth.saml.allowUsersToSignUp: "true"
 
