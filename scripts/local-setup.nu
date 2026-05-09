@@ -66,6 +66,9 @@ def "main up" [] {
     # Configure Gitea OIDC integration with Keycloak
     configure_gitea_oidc
 
+    # Set SonarQube Server Base URL via Web API (not a system property, must be set post-startup)
+    configure_sonarqube_base_url
+
     # Create SonarQube SAML secret from Keycloak realm certificate
     configure_sonarqube_saml
 
@@ -697,6 +700,59 @@ def configure_gitea_oidc [] {
 }
 
 # Print instructions for the manual SonarQube SAML certificate setup.
+# Configure SonarQube Server Base URL via Web API.
+# sonar.core.serverBaseURL is NOT a system property and cannot be set via sonarProperties
+# in values.yaml — it is a database-stored setting that must be pushed via the API.
+# Required for correct SAML ACS URL construction in SAML AuthnRequests.
+def configure_sonarqube_base_url [] {
+    print ""
+    print $"(ansi cyan_bold)Configuring SonarQube Server Base URL(ansi reset)"
+    print "────────────────────────────────────"
+
+    let sonar_url = "https://digiorg.local/sonarqube"
+    let admin_pass = (do -i { kubectl get secret sonarqube-admin-secret -n code-quality -o jsonpath='{.data.password}' } | complete)
+
+    # Derive admin password: prefer sonarqube-admin-secret, fall back to env
+    let password = if $admin_pass.exit_code == 0 {
+        $admin_pass.stdout | str trim | decode base64
+    } else {
+        ($env.SONARQUBE_ADMIN_PASSWORD? | default "admin")
+    }
+
+    # Wait for SonarQube to be ready (up to 5 min)
+    mut sonar_ready = false
+    for attempt in 1..30 {
+        let status = (do -i {
+            curl --noproxy "*" -sk -u $"admin:($password)" $"($sonar_url)/api/system/status"
+        } | complete)
+        if $status.exit_code == 0 and ($status.stdout | str contains '"status":"UP"') {
+            $sonar_ready = true
+            break
+        }
+        print $"    Waiting for SonarQube... [attempt ($attempt)/30]"
+        sleep 10sec
+    }
+
+    if not $sonar_ready {
+        print $"(ansi yellow)Warning: SonarQube not ready, skipping Server Base URL configuration(ansi reset)"
+        return
+    }
+
+    # Set sonar.core.serverBaseURL via Settings API
+    let result = (do -i {
+        curl --noproxy "*" -sk -u $"admin:($password)" -X POST
+            $"($sonar_url)/api/settings/set"
+            --data-urlencode "key=sonar.core.serverBaseURL"
+            --data-urlencode $"value=($sonar_url)"
+    } | complete)
+
+    if $result.exit_code == 0 {
+        print $"  (ansi green)✓ SonarQube Server Base URL set to ($sonar_url)(ansi reset)"
+    } else {
+        print $"  (ansi red)✗ Failed to set Server Base URL: ($result.stderr)(ansi reset)"
+    }
+}
+
 # sonarSecretProperties is intentionally not used (see issue #109) — the
 # SonarQube Pod has no Secret volume dependency and starts without it.
 # The IdP cert must be entered once via the Admin UI after first startup.
