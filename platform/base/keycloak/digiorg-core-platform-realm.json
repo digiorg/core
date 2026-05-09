@@ -299,6 +299,18 @@
             "attribute.name": "name",
             "user.attribute": "firstName"
           }
+        },
+        {
+          "name": "groups",
+          "protocol": "saml",
+          "protocolMapper": "saml-group-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "single": "true",
+            "attribute.nameformat": "Basic",
+            "full.path": "false",
+            "attribute.name": "groups"
+          }
         }
       ]
     }

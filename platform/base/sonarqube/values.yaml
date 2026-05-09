@@ -157,6 +157,7 @@ prometheusMonitoring:
 # The IdP certificate must be stored in the sonarqube-saml-secret Secret
 # (see README.md for how to obtain it from Keycloak).
 sonarProperties:
+  sonar.core.serverBaseURL: "https://digiorg.local/sonarqube"
   sonar.auth.saml.enabled: "true"
   sonar.auth.saml.applicationId: "sonarqube"
   sonar.auth.saml.providerName: "Keycloak"
@@ -168,6 +169,7 @@ sonarProperties:
   sonar.auth.saml.userLogin: "login"
   sonar.auth.saml.userName: "name"
   sonar.auth.saml.userEmail: "email"
+  sonar.auth.saml.group: "groups"
   # Allow users to sign up via SSO on first login
   sonar.auth.saml.allowUsersToSignUp: "true"
 
