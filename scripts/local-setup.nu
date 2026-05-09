@@ -739,12 +739,7 @@ def configure_sonarqube_base_url [] {
     }
 
     # Set sonar.core.serverBaseURL via Settings API
-    let result = (do -i {
-        curl --noproxy "*" -sk -u $"admin:($password)" -X POST
-            $"($sonar_url)/api/settings/set"
-            --data-urlencode "key=sonar.core.serverBaseURL"
-            --data-urlencode $"value=($sonar_url)"
-    } | complete)
+    let result = (do -i { curl --noproxy "*" -sk -u $"admin:($password)" -X POST $"($sonar_url)/api/settings/set" --data-urlencode "key=sonar.core.serverBaseURL" --data-urlencode $"value=($sonar_url)" } | complete)
 
     if $result.exit_code == 0 {
         print $"  (ansi green)✓ SonarQube Server Base URL set to ($sonar_url)(ansi reset)"
