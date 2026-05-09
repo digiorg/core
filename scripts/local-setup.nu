@@ -759,7 +759,7 @@ def configure_sonarqube_saml [] {
     print "────────────────────────────────────"
 
     let sonar_url = "https://digiorg.local/sonarqube"
-    let keycloak_realm_url = "https://digiorg.local/keycloak/realms/digiorg-core-platform"
+    let keycloak_saml_descriptor_url = "https://digiorg.local/keycloak/realms/digiorg-core-platform/protocol/saml/descriptor"
     let admin_pass = (do -i { kubectl --kubeconfig $KUBECONFIG_PATH get secret sonarqube-admin-secret -n code-quality -o jsonpath='{.data.password}' } | complete)
 
     let password = if $admin_pass.exit_code == 0 {
@@ -768,19 +768,21 @@ def configure_sonarqube_saml [] {
         ($env.SONARQUBE_ADMIN_PASSWORD? | default "admin")
     }
 
-    # --- Step 1: Fetch Keycloak IdP certificate ---
-    print "  1. Fetching Keycloak IdP certificate..."
-    let cert_result = (do -i { curl --noproxy "*" -sk $keycloak_realm_url } | complete)
+    # --- Step 1: Fetch Keycloak IdP X.509 certificate from SAML descriptor ---
+    # The SAML metadata descriptor endpoint returns the full X.509 certificate
+    # (not just the raw public key), which is what SonarQube requires.
+    print "  1. Fetching Keycloak IdP X.509 certificate from SAML descriptor..."
+    let cert_result = (do -i { curl --noproxy "*" -sk $keycloak_saml_descriptor_url } | complete)
     if $cert_result.exit_code != 0 {
-        print $"  (ansi red)✗ Failed to reach Keycloak realm endpoint: ($cert_result.stderr)(ansi reset)"
+        print $"  (ansi red)✗ Failed to reach Keycloak SAML descriptor endpoint: ($cert_result.stderr)(ansi reset)"
         return
     }
-    let keycloak_cert = ($cert_result.stdout | from json | get public_key)
+    let keycloak_cert = ($cert_result.stdout | parse --regex '(?s)<ds:X509Certificate>(.*?)</ds:X509Certificate>' | get capture0 | first | str trim)
     if ($keycloak_cert | is-empty) {
-        print $"  (ansi red)✗ Could not extract public_key from Keycloak realm response(ansi reset)"
+        print $"  (ansi red)✗ Could not extract X509Certificate from SAML descriptor(ansi reset)"
         return
     }
-    print $"  (ansi green)✓ Keycloak IdP certificate fetched(ansi reset)"
+    print $"  (ansi green)✓ Keycloak IdP X.509 certificate fetched(ansi reset)"
 
     # --- Step 2: Wait for SonarQube to be ready ---
     print "  2. Waiting for SonarQube..."
