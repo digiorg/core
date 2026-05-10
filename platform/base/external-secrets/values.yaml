@@ -1,0 +1,40 @@
+# =============================================================================
+# External Secrets Operator Helm Chart Values
+# Chart: https://external-secrets.io/latest/introduction/getting-started/
+# =============================================================================
+
+# Install CRDs via Helm (preferred for ArgoCD-managed lifecycle)
+installCRDs: true
+
+# Operator
+replicaCount: 1
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 256Mi
+
+# Webhook
+webhook:
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 25m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
+
+# Certificate controller
+certController:
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 25m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
