@@ -662,6 +662,112 @@ def configure_gitea_oidc [] {
     kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- su git -c 'gitea admin user create --username "digiorgdeveloper" --email "developer@digiorg.local" --password "digiorgdeveloper" --must-change-password false --admin false'
     print $"  (ansi green)✓ Initial users created(ansi reset)"
 
+    # --- Step 4: Create DigiOrg organisation via tea CLI ---
+    print "  4. Creating DigiOrg organisation in Gitea..."
+
+    # 4a: Install tea CLI if not already present
+    let tea_check = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c 'test -x /usr/local/bin/tea && echo "exists"'
+    } | complete)
+
+    if ($tea_check.exit_code == 0) and ($tea_check.stdout | str contains "exists") {
+        print $"  (ansi yellow)✓ tea CLI already installed(ansi reset)"
+    } else {
+        let tea_install = (do {
+            kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c 'wget -qO /usr/local/bin/tea https://dl.gitea.com/tea/0.9.2/tea-0.9.2-linux-amd64 && chmod +x /usr/local/bin/tea'
+        } | complete)
+        if $tea_install.exit_code == 0 {
+            print $"  (ansi green)✓ tea CLI installed(ansi reset)"
+        } else {
+            print $"  (ansi red)✗ Failed to install tea CLI: ($tea_install.stderr)(ansi reset)"
+            return
+        }
+    }
+
+    # 4b: Set up tea login if not already present
+    let login_check = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c 'tea login list 2>/dev/null | grep -q "digiorg-local" && echo "exists"'
+    } | complete)
+
+    if ($login_check.exit_code == 0) and ($login_check.stdout | str contains "exists") {
+        print $"  (ansi yellow)✓ tea login 'digiorg-local' already configured(ansi reset)"
+    } else {
+        let login_add = (do {
+            kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c 'tea login add --name digiorg-local --url http://localhost:3000 --user gitea_admin --password gitea_admin --insecure'
+        } | complete)
+        if $login_add.exit_code == 0 {
+            print $"  (ansi green)✓ tea login 'digiorg-local' configured(ansi reset)"
+        } else {
+            print $"  (ansi red)✗ Failed to configure tea login: ($login_add.stderr)(ansi reset)"
+            return
+        }
+    }
+
+    # 4c: Create DigiOrg organisation if not already present
+    let org_check = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c 'tea org list --login digiorg-local 2>/dev/null | grep -q "DigiOrg" && echo "exists"'
+    } | complete)
+
+    if ($org_check.exit_code == 0) and ($org_check.stdout | str contains "exists") {
+        print $"  (ansi yellow)✓ Organisation 'DigiOrg' already exists(ansi reset)"
+    } else {
+        let org_create = (do {
+            kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c 'tea org create --login digiorg-local DigiOrg'
+        } | complete)
+        if $org_create.exit_code == 0 {
+            print $"  (ansi green)✓ Organisation 'DigiOrg' created(ansi reset)"
+        } else {
+            print $"  (ansi red)✗ Failed to create organisation 'DigiOrg': ($org_create.stderr)(ansi reset)"
+            return
+        }
+    }
+
+    # 4d: Add digiorgadmin as Owner of DigiOrg
+    let owner_check = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c 'tea org members --login digiorg-local DigiOrg 2>/dev/null | grep -q "digiorgadmin" && echo "exists"'
+    } | complete)
+
+    if ($owner_check.exit_code == 0) and ($owner_check.stdout | str contains "exists") {
+        print $"  (ansi yellow)✓ 'digiorgadmin' already member of 'DigiOrg'(ansi reset)"
+    } else {
+        let owner_add = (do {
+            kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c 'tea org members add --login digiorg-local --role owner DigiOrg digiorgadmin'
+        } | complete)
+        if $owner_add.exit_code == 0 {
+            print $"  (ansi green)✓ 'digiorgadmin' added as Owner of 'DigiOrg'(ansi reset)"
+        } else {
+            print $"  (ansi red)✗ Failed to add 'digiorgadmin' as Owner: ($owner_add.stderr)(ansi reset)"
+            return
+        }
+    }
+
+    # 4e: Add digiorgdeveloper as Member of DigiOrg
+    let member_check = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c 'tea org members --login digiorg-local DigiOrg 2>/dev/null | grep -q "digiorgdeveloper" && echo "exists"'
+    } | complete)
+
+    if ($member_check.exit_code == 0) and ($member_check.stdout | str contains "exists") {
+        print $"  (ansi yellow)✓ 'digiorgdeveloper' already member of 'DigiOrg'(ansi reset)"
+    } else {
+        let member_add = (do {
+            kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c 'tea org members add --login digiorg-local DigiOrg digiorgdeveloper'
+        } | complete)
+        if $member_add.exit_code == 0 {
+            print $"  (ansi green)✓ 'digiorgdeveloper' added as Member of 'DigiOrg'(ansi reset)"
+        } else {
+            print $"  (ansi red)✗ Failed to add 'digiorgdeveloper' as Member: ($member_add.stderr)(ansi reset)"
+            return
+        }
+    }
+
+    # 4f: Verification
+    let verify = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c 'tea org members --login digiorg-local DigiOrg 2>/dev/null'
+    } | complete)
+    if $verify.exit_code == 0 {
+        print $"  (ansi green)✓ DigiOrg members: ($verify.stdout | str trim)(ansi reset)"
+    }
+
     # Create users via Gitea Admin API
     #let users = [
     #    { username: "digiorgadmin", email: "admin@digiorg.local", password: "digiorgadmin", admin: true },
