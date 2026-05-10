@@ -684,35 +684,56 @@ def configure_gitea_oidc [] {
         }
     }
 
-    # 4b: Set up tea login if not already present
+    # 4b: Check if tea login already exists (idempotency check first)
     let login_check = (do {
-        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c 'tea login list 2>/dev/null | grep -q "digiorg-local" && echo "exists"'
+        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c 'tea login list 2>/dev/null | grep -q "teaadmin-digiorg" && echo "exists"'
     } | complete)
 
+    mut gitea_token = ""
+
     if ($login_check.exit_code == 0) and ($login_check.stdout | str contains "exists") {
-        print $"  (ansi yellow)✓ tea login 'digiorg-local' already configured(ansi reset)"
+        print $"  (ansi yellow)✓ tea login 'teaadmin-digiorg' already configured(ansi reset)"
+        # Extract stored token from tea config for subsequent API calls
+        let token_extract = (do {
+            kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c 'grep -A10 "teaadmin-digiorg" /root/.config/tea/config.yml | grep "token:" | head -1 | sed "s/.*token: //"'
+        } | complete)
+        if $token_extract.exit_code == 0 {
+            $gitea_token = ($token_extract.stdout | str trim)
+        }
     } else {
+        # 4c: Generate access token — must run as git user, not root
+        let token_result = (do {
+            kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- su git -c 'gitea admin user generate-access-token --username gitea_admin --token-name teaadmin --scopes write:activitypub,write:admin,write:issue,write:misc,write:notification,write:organization,write:package,write:repository,write:user --raw'
+        } | complete)
+        if $token_result.exit_code != 0 {
+            print $"  (ansi red)✗ Failed to generate access token: ($token_result.stderr)(ansi reset)"
+            return
+        }
+        $gitea_token = ($token_result.stdout | str trim)
+        print $"  (ansi green)✓ Access token generated(ansi reset)"
+
+        # 4d: Set up tea login (token-based)
         let login_add = (do {
-            kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c 'tea login add --name digiorg-local --url http://localhost:3000 --user gitea_admin --password gitea_admin --insecure'
+            kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c $"tea login add --name=teaadmin-digiorg --url=https://digiorg.local/gitea --token=($gitea_token)"
         } | complete)
         if $login_add.exit_code == 0 {
-            print $"  (ansi green)✓ tea login 'digiorg-local' configured(ansi reset)"
+            print $"  (ansi green)✓ tea login 'teaadmin-digiorg' configured(ansi reset)"
         } else {
             print $"  (ansi red)✗ Failed to configure tea login: ($login_add.stderr)(ansi reset)"
             return
         }
     }
 
-    # 4c: Create DigiOrg organisation if not already present
+    # 4e: Create DigiOrg organisation (idempotent)
     let org_check = (do {
-        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c 'tea org list --login digiorg-local 2>/dev/null | grep -q "DigiOrg" && echo "exists"'
+        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c 'tea organizations list --login teaadmin-digiorg 2>/dev/null | grep -q "DigiOrg" && echo "exists"'
     } | complete)
 
     if ($org_check.exit_code == 0) and ($org_check.stdout | str contains "exists") {
         print $"  (ansi yellow)✓ Organisation 'DigiOrg' already exists(ansi reset)"
     } else {
         let org_create = (do {
-            kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c 'tea org create --login digiorg-local DigiOrg'
+            kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c 'tea organization create --description "DigiOrg Organization" --visibility public --repo-admins-can-change-team-access --login teaadmin-digiorg DigiOrg'
         } | complete)
         if $org_create.exit_code == 0 {
             print $"  (ansi green)✓ Organisation 'DigiOrg' created(ansi reset)"
@@ -722,50 +743,67 @@ def configure_gitea_oidc [] {
         }
     }
 
-    # 4d: Add digiorgadmin as Owner of DigiOrg
-    let owner_check = (do {
-        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c 'tea org members --login digiorg-local DigiOrg 2>/dev/null | grep -q "digiorgadmin" && echo "exists"'
+    # 4f: Get Owners team ID via Gitea API
+    let teams_result = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c $"curl -sk -H 'Authorization: token ($gitea_token)' https://digiorg.local/gitea/api/v1/orgs/DigiOrg/teams"
+    } | complete)
+    if $teams_result.exit_code != 0 {
+        print $"  (ansi red)✗ Failed to retrieve DigiOrg teams: ($teams_result.stderr)(ansi reset)"
+        return
+    }
+    let owners_team = ($teams_result.stdout | from json | where name == "Owners")
+    if ($owners_team | is-empty) {
+        print $"  (ansi red)✗ Could not find Owners team in DigiOrg(ansi reset)"
+        return
+    }
+    let owners_team_id = ($owners_team | get id | first)
+    print $"  (ansi green)✓ DigiOrg Owners team ID: ($owners_team_id)(ansi reset)"
+
+    # 4g: Add digiorgadmin to Owners team (idempotent)
+    let admin_check = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c $"curl -sk -o /dev/null -w '%{http_code}' -H 'Authorization: token ($gitea_token)' https://digiorg.local/gitea/api/v1/teams/($owners_team_id)/members/digiorgadmin"
     } | complete)
 
-    if ($owner_check.exit_code == 0) and ($owner_check.stdout | str contains "exists") {
-        print $"  (ansi yellow)✓ 'digiorgadmin' already member of 'DigiOrg'(ansi reset)"
+    if ($admin_check.exit_code == 0) and (($admin_check.stdout | str trim) == "204") {
+        print $"  (ansi yellow)✓ 'digiorgadmin' already member of Owners team(ansi reset)"
     } else {
-        let owner_add = (do {
-            kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c 'tea org members add --login digiorg-local --role owner DigiOrg digiorgadmin'
+        let admin_add = (do {
+            kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c $"curl -sk -X PUT -H 'Authorization: token ($gitea_token)' https://digiorg.local/gitea/api/v1/teams/($owners_team_id)/members/digiorgadmin"
         } | complete)
-        if $owner_add.exit_code == 0 {
-            print $"  (ansi green)✓ 'digiorgadmin' added as Owner of 'DigiOrg'(ansi reset)"
+        if $admin_add.exit_code == 0 {
+            print $"  (ansi green)✓ 'digiorgadmin' added to Owners team(ansi reset)"
         } else {
-            print $"  (ansi red)✗ Failed to add 'digiorgadmin' as Owner: ($owner_add.stderr)(ansi reset)"
+            print $"  (ansi red)✗ Failed to add 'digiorgadmin' to Owners team: ($admin_add.stderr)(ansi reset)"
             return
         }
     }
 
-    # 4e: Add digiorgdeveloper as Member of DigiOrg
-    let member_check = (do {
-        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c 'tea org members --login digiorg-local DigiOrg 2>/dev/null | grep -q "digiorgdeveloper" && echo "exists"'
+    # 4h: Add digiorgdeveloper to Owners team (idempotent)
+    let dev_check = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c $"curl -sk -o /dev/null -w '%{http_code}' -H 'Authorization: token ($gitea_token)' https://digiorg.local/gitea/api/v1/teams/($owners_team_id)/members/digiorgdeveloper"
     } | complete)
 
-    if ($member_check.exit_code == 0) and ($member_check.stdout | str contains "exists") {
-        print $"  (ansi yellow)✓ 'digiorgdeveloper' already member of 'DigiOrg'(ansi reset)"
+    if ($dev_check.exit_code == 0) and (($dev_check.stdout | str trim) == "204") {
+        print $"  (ansi yellow)✓ 'digiorgdeveloper' already member of Owners team(ansi reset)"
     } else {
-        let member_add = (do {
-            kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c 'tea org members add --login digiorg-local DigiOrg digiorgdeveloper'
+        let dev_add = (do {
+            kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c $"curl -sk -X PUT -H 'Authorization: token ($gitea_token)' https://digiorg.local/gitea/api/v1/teams/($owners_team_id)/members/digiorgdeveloper"
         } | complete)
-        if $member_add.exit_code == 0 {
-            print $"  (ansi green)✓ 'digiorgdeveloper' added as Member of 'DigiOrg'(ansi reset)"
+        if $dev_add.exit_code == 0 {
+            print $"  (ansi green)✓ 'digiorgdeveloper' added to Owners team(ansi reset)"
         } else {
-            print $"  (ansi red)✗ Failed to add 'digiorgdeveloper' as Member: ($member_add.stderr)(ansi reset)"
+            print $"  (ansi red)✗ Failed to add 'digiorgdeveloper' to Owners team: ($dev_add.stderr)(ansi reset)"
             return
         }
     }
 
-    # 4f: Verification
+    # 4i: Verification — list Owners team members
     let verify = (do {
-        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c 'tea org members --login digiorg-local DigiOrg 2>/dev/null'
+        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c $"curl -sk -H 'Authorization: token ($gitea_token)' https://digiorg.local/gitea/api/v1/teams/($owners_team_id)/members"
     } | complete)
     if $verify.exit_code == 0 {
-        print $"  (ansi green)✓ DigiOrg members: ($verify.stdout | str trim)(ansi reset)"
+        let members = ($verify.stdout | from json | get login | str join ", ")
+        print $"  (ansi green)✓ DigiOrg Owners team members: ($members)(ansi reset)"
     }
 
     # Create users via Gitea Admin API
