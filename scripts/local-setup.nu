@@ -689,17 +689,15 @@ def configure_gitea_oidc [] {
         kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c 'tea login list 2>/dev/null | grep -q "teaadmin-digiorg" && echo "exists"'
     } | complete)
 
-    mut gitea_token = ""
-
-    if ($login_check.exit_code == 0) and ($login_check.stdout | str contains "exists") {
+    # 4b/4c/4d: Resolve gitea_token — immutable, derived from both branches
+    # Nushell does not allow capturing mut variables in closures; use let + if expression instead.
+    let gitea_token = if ($login_check.exit_code == 0) and ($login_check.stdout | str contains "exists") {
         print $"  (ansi yellow)✓ tea login 'teaadmin-digiorg' already configured(ansi reset)"
         # Extract stored token from tea config for subsequent API calls
         let token_extract = (do {
             kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c 'grep -A10 "teaadmin-digiorg" /root/.config/tea/config.yml | grep "token:" | head -1 | sed "s/.*token: //"'
         } | complete)
-        if $token_extract.exit_code == 0 {
-            $gitea_token = ($token_extract.stdout | str trim)
-        }
+        $token_extract.stdout | str trim
     } else {
         # 4c: Generate access token — must run as git user, not root
         let token_result = (do {
@@ -709,12 +707,12 @@ def configure_gitea_oidc [] {
             print $"  (ansi red)✗ Failed to generate access token: ($token_result.stderr)(ansi reset)"
             return
         }
-        $gitea_token = ($token_result.stdout | str trim)
+        let token = ($token_result.stdout | str trim)
         print $"  (ansi green)✓ Access token generated(ansi reset)"
 
-        # 4d: Set up tea login (token-based)
+        # 4d: Set up tea login (token-based, using immutable $token — capturable in closures)
         let login_add = (do {
-            kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c $"tea login add --name=teaadmin-digiorg --url=https://digiorg.local/gitea --token=($gitea_token)"
+            kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c $"tea login add --name=teaadmin-digiorg --url=https://digiorg.local/gitea --token=($token)"
         } | complete)
         if $login_add.exit_code == 0 {
             print $"  (ansi green)✓ tea login 'teaadmin-digiorg' configured(ansi reset)"
@@ -722,6 +720,7 @@ def configure_gitea_oidc [] {
             print $"  (ansi red)✗ Failed to configure tea login: ($login_add.stderr)(ansi reset)"
             return
         }
+        $token
     }
 
     # 4e: Create DigiOrg organisation (idempotent)
