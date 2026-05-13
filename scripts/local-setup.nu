@@ -7,10 +7,11 @@
 # ArgoCD then manages all platform components via the App-of-Apps pattern.
 #
 # Usage:
-#   nu scripts/local-setup.nu up       # Bootstrap cluster + deploy root app
-#   nu scripts/local-setup.nu down     # Destroy local cluster
-#   nu scripts/local-setup.nu reset    # Reset cluster (down + up)
-#   nu scripts/local-setup.nu status   # Show cluster status
+#   nu scripts/local-setup.nu up        # Bootstrap cluster + deploy root app
+#   nu scripts/local-setup.nu down      # Destroy local cluster
+#   nu scripts/local-setup.nu reset     # Reset cluster (down + up)
+#   nu scripts/local-setup.nu status    # Show cluster status
+#   nu scripts/local-setup.nu bootstrap # Run only Phase 1 bootstrap (no root app)
 #
 # Architecture:
 #   Phase 1 (this script): KinD → Ingress → CoreDNS → Secrets → ArgoCD → Root App
@@ -46,33 +47,30 @@ def "main up" [] {
     # Phase 1: Bootstrap
     print $"(ansi cyan_bold)Phase 1: Bootstrap Infrastructure(ansi reset)"
     print "────────────────────────────────────"
-    
     main bootstrap
     
     # Phase 2: Deploy Root App
     print ""
     print $"(ansi cyan_bold)Phase 2: Deploy ArgoCD Root App(ansi reset)"
     print "────────────────────────────────────"
-    
     deploy_root_app
     
-    # Wait for apps to sync
+    # Configure Gitea (Keycloak OIDC integration + initial users/org) — requires Gitea to be up and running
     print ""
-    print $"(ansi cyan_bold)Phase 3: Waiting for ArgoCD Apps(ansi reset)"
+    print $"(ansi cyan_bold)Phase 3: Configure Gitea(ansi reset)"
     print "────────────────────────────────────"
-    
-    wait_for_argocd_apps
-    
-    # Configure Gitea OIDC integration with Keycloak
-    configure_gitea_oidc
+    configure_gitea
 
-    # Set SonarQube Server Base URL via Web API (not a system property, must be set post-startup)
-    configure_sonarqube_base_url
-
-    # Create SonarQube SAML secret from Keycloak realm certificate
-    configure_sonarqube_saml
+    # Configure SonarQube (SAML + base URL)
+    print ""
+    print $"(ansi cyan_bold)Phase 3: Configure SonarQube(ansi reset)"
+    print "────────────────────────────────────"
+    configure_sonarqube
 
     # Restart OIDC-dependent pods after Keycloak is ready
+    print ""
+    print $"(ansi cyan_bold)Phase 3: Restart OIDC dependent PODs(ansi reset)"
+    print "────────────────────────────────────"
     restart_oidc_dependent_pods
     
     print ""
@@ -86,11 +84,12 @@ def "main up" [] {
     print "Access services (all via https://digiorg.local):"
     print "  Landing Page: https://digiorg.local/          (Login via Keycloak)"
     print "  Keycloak:     https://digiorg.local/keycloak  (admin / admin)"
-    print "  ArgoCD:       https://digiorg.local/argocd    (Login via Keycloak)"
-    print "  Grafana:      https://digiorg.local/grafana   (Login via Keycloak)"
     print "  Backstage:    https://digiorg.local/backstage (Login via Keycloak)"
     print "  Gitea:        https://digiorg.local/gitea     (Login via Keycloak)"
-    # NATS metrics available via Grafana dashboards (no separate UI)
+    print "  SonarQube:    https://digiorg.local/sonarqube (Login via Keycloak)"
+    print "  ArgoCD:       https://digiorg.local/argocd    (Login via Keycloak)"
+    print "  Grafana:      https://digiorg.local/grafana   (Login via Keycloak)"
+    print "  Jaeger:       https://digiorg.local/jaeger    (Login via Keycloak)"
     print ""
     print $"(ansi yellow)Prerequisites:(ansi reset)"
     print $"  1. Add to /etc/hosts: 127.0.0.1 digiorg.local"
@@ -99,139 +98,56 @@ def "main up" [] {
 
 # Run only Phase 1 bootstrap (no root app)
 def "main bootstrap" [] {
-    # Check prerequisites
+    # 0. Check prerequisites
     check_prerequisites
     
     # 1. Create KinD cluster
     if (cluster_exists) {
         print $"(ansi yellow)✓ Cluster '($CLUSTER_NAME)' already exists(ansi reset)"
     } else {
-        print "1. Creating KinD cluster..."
+        print "1.1 Creating KinD cluster..."
         kind create cluster --config $KIND_CONFIG --kubeconfig $KUBECONFIG_PATH
         print $"(ansi green)✓ KinD cluster created(ansi reset)"
     }
-    
     $env.KUBECONFIG = $KUBECONFIG_PATH
     
     # Wait for cluster
-    print "   Waiting for cluster nodes..."
+    print "Waiting for cluster nodes..."
     kubectl wait --for=condition=Ready nodes --all --timeout=120s
     
     # 2. Set vm.max_map_count on KinD node (required by OpenSearch)
-    print "2. Setting vm.max_map_count on KinD node..."
+    print "1.2 Setting vm.max_map_count on KinD node..."
     let kind_node = $"($CLUSTER_NAME)-control-plane"
     docker exec $kind_node sysctl -w vm.max_map_count=262144
     print $"(ansi green)✓ vm.max_map_count=262144 set on KinD node(ansi reset)"
     
     # 3. Install Gateway API CRDs
-    print "3. Installing Gateway API CRDs..."
+    print "1.3 Installing Gateway API CRDs..."
     install_gateway_api
     
     # 4. Install Ingress Controller
-    print "4. Installing NGINX Ingress Controller..."
+    print "1.4 Installing NGINX Ingress Controller..."
     install_ingress
     
     # 5. Apply Platform Ingress rules
-    print "5. Installing Platform Ingress rules..."
+    print "1.5 Installing Platform Ingress rules..."
     kubectl apply -k platform/base/ingress/
     print $"(ansi green)✓ Platform Ingress installed(ansi reset)"
     
     # 6. Configure CoreDNS for digiorg.local
-    print "6. Configuring CoreDNS for digiorg.local..."
+    print "1.6 Configuring CoreDNS for digiorg.local..."
     configure_coredns_digiorg_local
     
     # 7. Create Platform Secrets (before ArgoCD!)
-    print "7. Creating Platform Secrets..."
-    create_platform_secrets
+    print "1.7 Creating Platform Nanespaces and Secrets..."
+    create_platform_namespaces_secrets
     
     # 8. Install ArgoCD (Helm)
-    print "8. Installing ArgoCD (Helm)..."
+    print "1.8 Installing ArgoCD (Helm)..."
     install_argocd
     
     print ""
     print $"(ansi green_bold)✓ Phase 1 Bootstrap complete(ansi reset)"
-}
-
-# Deploy ArgoCD Root App (triggers App-of-Apps)
-def deploy_root_app [] {
-    $env.KUBECONFIG = $KUBECONFIG_PATH
-    
-    print "Deploying ArgoCD Root App..."
-    kubectl apply -f platform/base/argocd/applications/root-app.yaml
-    
-    print $"(ansi green)✓ Root App deployed - ArgoCD will now sync all platform components(ansi reset)"
-    print ""
-    print "ArgoCD Sync Waves:"
-    print "  Wave -1: root-app (just deployed)"
-    print "  Wave  0: cert-manager, postgresql, opensearch, nats"
-    print "  Wave  1: keycloak, argocd (self-managed)"
-    print "  Wave  2: landingpage, backstage, gitea, grafana, jaeger, sonarqube"
-    print "  Wave  3: crossplane, kyverno"
-}
-
-# Wait for ArgoCD apps to become healthy
-def wait_for_argocd_apps [] {
-    $env.KUBECONFIG = $KUBECONFIG_PATH
-    
-    print "Waiting for ArgoCD applications to sync (this may take 10-15 minutes)..."
-    print ""
-    
-    # Apps to wait for (in wave order) — must match apps/platform/*.yaml exactly
-    let apps = [
-        # Wave 0
-        "cert-manager", "postgresql", "opensearch", "nats",
-        # Wave 1
-        "keycloak", "argocd",
-        # Wave 2
-        "landingpage", "backstage", "gitea", "grafana", "jaeger", "sonarqube",
-        # Wave 3
-        "crossplane", "kyverno"
-    ]
-    
-    mut all_healthy = false
-    mut attempts = 0
-    let max_attempts = 90  # 15 minutes with 10sec intervals
-    
-    loop {
-        $attempts = $attempts + 1
-        if $attempts > $max_attempts {
-            print $"(ansi yellow)Warning: Timeout waiting for all apps. Check ArgoCD UI for status.(ansi reset)"
-            break
-        }
-        
-        mut healthy_count = 0
-        
-        for app in $apps {
-            let status = (do { 
-                kubectl get application $app -n argocd -o jsonpath='{.status.health.status}' 
-            } | complete)
-            
-            if $status.exit_code == 0 and ($status.stdout | str trim) == "Healthy" {
-                $healthy_count = $healthy_count + 1
-            }
-        }
-        
-        print $"  Apps healthy: ($healthy_count)/($apps | length) [attempt ($attempts)/($max_attempts)]"
-        
-        if $healthy_count == ($apps | length) {
-            $all_healthy = true
-            break
-        }
-        
-        sleep 10sec
-    }
-    
-    if $all_healthy {
-        print $"(ansi green)✓ All ArgoCD applications are healthy!(ansi reset)"
-    }
-    
-    # Show final status
-    print ""
-    print "ArgoCD Application Status:"
-    kubectl get applications -n argocd -o wide
-
-    # Patch ArgoCD OIDC config with self-signed CA cert
-    patch_argocd_oidc_ca
 }
 
 # Destroy local cluster
@@ -281,10 +197,10 @@ def "main status" [] {
         print $"(ansi cyan_bold)Platform Pods(ansi reset)"
         print "============="
         
-        let namespaces = ["platform-db", "argocd", "keycloak", "messaging", "crossplane-system", "kyverno", "monitoring", "backstage", "gitea", "platform-apps"]
+        let namespaces = ["kube-system", "platform-db", "argocd", "keycloak", "messaging", "crossplane-system", "kyverno", "monitoring", "backstage", "gitea", "platform-apps", "cert-manager", "code-quality", "tracing", "external-secrets"]
         for ns in $namespaces {
             let status = try {
-                let pods = (kubectl get pods -n $ns --no-headers 2>/dev/null | lines | length)
+                let pods = (kubectl get pods -n $ns --no-headers | lines | length)
                 if $pods > 0 {
                     $"(ansi green)● ($ns) - ($pods) pods(ansi reset)"
                 } else {
@@ -321,7 +237,7 @@ def install_gateway_api [] {
 def install_ingress [] {
     kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/kind/deploy.yaml
     
-    print "   Waiting for ingress controller..."
+    print "Waiting for ingress controller..."
     sleep 10sec
     
     try {
@@ -331,7 +247,7 @@ def install_ingress [] {
     }
     
     # Wait for admission webhook
-    print "   Waiting for ingress admission webhook..."
+    print "Waiting for ingress admission webhook..."
     mut webhook_ready = false
     mut attempts = 0
     loop {
@@ -423,12 +339,7 @@ data:
     print $"(ansi green)✓ CoreDNS configured for digiorg.local [($ingress_ip)](ansi reset)"
 }
 
-# Generate a random password (alphanumeric, 24 chars)
-def generate_password [] {
-    random chars --length 24
-}
-
-def create_platform_secrets [] {
+def create_platform_namespaces_secrets [] {
     # Generate passwords (can be overridden via environment variables)
     let postgres_password = ($env.POSTGRES_PASSWORD? | default (generate_password))
     let keycloak_db_password = ($env.KEYCLOAK_DB_PASSWORD? | default (generate_password))
@@ -449,14 +360,12 @@ def create_platform_secrets [] {
         --from-literal=GITEA_DB_PASSWORD=($gitea_db_password)
         --from-literal=SONARQUBE_DB_PASSWORD=($sonarqube_db_password)
         --dry-run=client -o yaml | kubectl apply -f -)
-    print $"(ansi green)✓ PostgreSQL secrets created [platform-db](ansi reset)"
     
     # Keycloak namespace and DB credentials secret
     kubectl create namespace keycloak --dry-run=client -o yaml | kubectl apply -f -
     (kubectl create secret generic keycloak-db-credentials -n keycloak
         --from-literal=password=($keycloak_db_password)
         --dry-run=client -o yaml | kubectl apply -f -)
-    print $"(ansi green)✓ Keycloak namespace and secrets created(ansi reset)"
     
     # Backstage secrets (use same password as PostgreSQL backstage user)
     kubectl create namespace backstage --dry-run=client -o yaml | kubectl apply -f -
@@ -466,19 +375,15 @@ def create_platform_secrets [] {
         --from-literal=AUTH_OIDC_CLIENT_SECRET=($backstage_oidc_secret)
         --from-literal=GITHUB_TOKEN=""
         --dry-run=client -o yaml | kubectl apply -f -)
-    print $"(ansi green)✓ Backstage secrets created(ansi reset)"
     
     # Monitoring namespace (Grafana uses Helm values for OAuth secret)
     kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
-    print $"(ansi green)✓ Monitoring namespace created(ansi reset)"
     
     # Crossplane namespace
     kubectl create namespace crossplane-system --dry-run=client -o yaml | kubectl apply -f -
-    print $"(ansi green)✓ Crossplane namespace created(ansi reset)"
     
     # Kyverno namespace
     kubectl create namespace kyverno --dry-run=client -o yaml | kubectl apply -f -
-    print $"(ansi green)✓ Kyverno namespace created(ansi reset)"
     
     # Gitea namespace and secrets
     let gitea_admin_password_override = ($env.GITEA_ADMIN_PASSWORD? | default "")
@@ -495,17 +400,11 @@ def create_platform_secrets [] {
             --from-literal=username=gitea_admin
             --from-literal=password=($gitea_admin_password)
             --dry-run=client -o yaml | kubectl apply -f -)
-        print $"(ansi green)✓ Gitea namespace and secrets created(ansi reset)"
     } else {
-        print $"(ansi green)✓ Gitea namespace and secrets created(ansi reset)"
         print $"(ansi yellow)  ! Existing gitea-admin-secret preserved; set GITEA_ADMIN_PASSWORD to rotate(ansi reset)"
     }
 
     # Code-quality namespace + SonarQube secrets
-    # sonarqube-db-secret:         SONAR_JDBC_PASSWORD — PostgreSQL connection
-    # sonarqube-monitoring-secret: SONAR_WEB_SYSTEMPASSCODE — required for liveness probe
-    # sonarqube-saml-secret:       NOT created here — no longer a volume dependency (see issue #109).
-    #                               The IdP cert is configured manually via SonarQube Admin UI post-startup.
     kubectl create namespace code-quality --dry-run=client -o yaml | kubectl apply -f -
     (kubectl create secret generic sonarqube-db-secret -n code-quality
         --from-literal=SONAR_JDBC_PASSWORD=($sonarqube_db_password)
@@ -513,14 +412,11 @@ def create_platform_secrets [] {
     (kubectl create secret generic sonarqube-monitoring-secret -n code-quality
         --from-literal=SONAR_WEB_SYSTEMPASSCODE=($sonarqube_monitoring_passcode)
         --dry-run=client -o yaml | kubectl apply -f -)
-    print $"(ansi green)✓ SonarQube secrets created [code-quality](ansi reset)"
 
     # Messaging namespace (for NATS server + Surveyor)
     kubectl create namespace messaging --dry-run=client -o yaml | kubectl apply -f -
-    print $"(ansi green)✓ Messaging namespace created(ansi reset)"
 
     kubectl create namespace tracing --dry-run=client -o yaml | kubectl apply -f -
-    print $"(ansi green)✓ Tracing namespace created(ansi reset)"
 
     # Jaeger oauth2-proxy secret (Keycloak OIDC client + cookie encryption)
     let jaeger_oidc_secret = ($env.JAEGER_OIDC_CLIENT_SECRET? | default "jaeger-client-secret")
@@ -529,7 +425,6 @@ def create_platform_secrets [] {
         --from-literal=client-secret=($jaeger_oidc_secret)
         --from-literal=cookie-secret=($jaeger_cookie_secret)
         --dry-run=client -o yaml | kubectl apply -f -)
-    print $"(ansi green)✓ Jaeger oauth2-proxy secrets created [tracing](ansi reset)"
 
     # OpenSearch secret (admin password for observability backend)
     let opensearch_admin_password = ($env.OPENSEARCH_ADMIN_PASSWORD? | default (generate_password))
@@ -541,7 +436,8 @@ def create_platform_secrets [] {
     (kubectl create secret generic jaeger-opensearch-credentials -n tracing
         --from-literal=password=($opensearch_admin_password)
         --dry-run=client -o yaml | kubectl apply -f -)
-    print $"(ansi green)✓ OpenSearch secrets created [platform-db + tracing](ansi reset)"
+    
+    print $"(ansi green)✓ Platform namespaces and secrets created.(ansi reset)"
 }
 
 def install_argocd [] {
@@ -561,18 +457,108 @@ def install_argocd [] {
     print $"(ansi green)✓ ArgoCD installed [Helm](ansi reset)"
 }
 
-# Configure Gitea OIDC integration with Keycloak
-# Registers self-signed CA cert, adds Keycloak as OIDC provider, creates initial users
-# Ref: https://github.com/digiorg/core/issues/70
-def configure_gitea_oidc [] {
+# -----------------------------------------------------------------------------
+# Phase 2: App Deployment Functions
+# -----------------------------------------------------------------------------
+
+# Deploy ArgoCD Root App (triggers App-of-Apps)
+def deploy_root_app [] {
+    $env.KUBECONFIG = $KUBECONFIG_PATH
+    
+    print "Deploying ArgoCD Root App..."
+    kubectl apply -f platform/base/argocd/applications/root-app.yaml
+    
+    print $"(ansi green)✓ Root App deployed - ArgoCD will now sync all platform components(ansi reset)"
+    print ""
+    print "ArgoCD Sync Waves:"
+    print "  Wave -1: root-app (just deployed)"
+    print "  Wave  0: cert-manager, external-secrets, postgresql, opensearch, nats"
+    print "  Wave  1: keycloak, argocd (self-managed)"
+    print "  Wave  2: landingpage, backstage, gitea, grafana, jaeger, sonarqube"
+    print "  Wave  3: crossplane, kyverno"
+
+    # Wait for apps to sync
+    print ""
+    print $"(ansi cyan_bold)Phase 3: Waiting for ArgoCD Apps(ansi reset)"
+    print "────────────────────────────────────"
+    wait_for_argocd_apps
+}
+
+# Wait for ArgoCD apps to become healthy
+def wait_for_argocd_apps [] {
+    $env.KUBECONFIG = $KUBECONFIG_PATH
+    
+    print "Waiting for ArgoCD applications to sync (this may take 10-20 minutes)..."
+    print ""
+    
+    # Apps to wait for (in wave order) — must match apps/platform/*.yaml exactly
+    let apps = [
+        # Wave 0
+        "cert-manager", "external-secrets", "postgresql", "opensearch", "nats",
+        # Wave 1
+        "keycloak", "argocd",
+        # Wave 2
+        "landingpage", "backstage", "gitea", "grafana", "jaeger", "sonarqube",
+        # Wave 3
+        "crossplane", "kyverno"
+    ]
+    
+    mut all_healthy = false
+    mut attempts = 0
+    let max_attempts = 120  # 20 minutes with 10sec intervals
+    
+    loop {
+        $attempts = $attempts + 1
+        if $attempts > $max_attempts {
+            print $"(ansi yellow)Warning: Timeout waiting for all apps. Check ArgoCD UI for status.(ansi reset)"
+            break
+        }
+        
+        mut healthy_count = 0
+        
+        for app in $apps {
+            let status = (do { 
+                kubectl get application $app -n argocd -o jsonpath='{.status.health.status}' 
+            } | complete)
+            
+            if $status.exit_code == 0 and ($status.stdout | str trim) == "Healthy" {
+                $healthy_count = $healthy_count + 1
+            }
+        }
+        
+        print $"  Apps healthy: ($healthy_count)/($apps | length) [attempt ($attempts)/($max_attempts)]"
+        
+        if $healthy_count == ($apps | length) {
+            $all_healthy = true
+            break
+        }
+        
+        sleep 10sec
+    }
+    
+    if $all_healthy {
+        print $"(ansi green)✓ All ArgoCD applications are healthy!(ansi reset)"
+    }
+    
+    # Show final status
+    print ""
+    print "ArgoCD Application Status:"
+    kubectl get applications -n argocd -o wide
+
+    # Patch ArgoCD OIDC config with self-signed CA cert
+    patch_argocd_oidc_ca
+}
+
+# -----------------------------------------------------------------------------
+# Phase 3: Configure Apps Functions
+# -----------------------------------------------------------------------------
+
+# Configure Gitea (register self-signed CA cert + add Keycloak OIDC provider + create initial users/org)
+def configure_gitea [] {
     $env.KUBECONFIG = $KUBECONFIG_PATH
 
-    print ""
-    print $"(ansi cyan_bold)Configuring Gitea OIDC integration with Keycloak(ansi reset)"
-    print "────────────────────────────────────"
-
     # --- Step 1: Register self-signed CA cert in Gitea container ---
-    print "  1. Registering self-signed CA cert in Gitea..."
+    print "1. Registering self-signed CA cert in Gitea..."
 
     # Wait for Gitea pod to be ready
     mut gitea_ready = false
@@ -585,7 +571,7 @@ def configure_gitea_oidc [] {
                 break
             }
         }
-        print $"    Waiting for Gitea pod... [attempt ($attempt)/30]"
+        print $"Waiting for Gitea pod... [attempt ($attempt)/30]"
         sleep 10sec
     }
     if not $gitea_ready {
@@ -598,35 +584,10 @@ def configure_gitea_oidc [] {
     # Copy CA cert into Gitea container and update trust store
     kubectl --kubeconfig $KUBECONFIG_PATH cp digiorg-local-ca.crt -c gitea gitea/($gitea_pod):/usr/local/share/ca-certificates/digiorg-local-ca.crt | complete
     kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- update-ca-certificates | complete
-    print $"  (ansi green)✓ CA cert registered in Gitea trust store(ansi reset)"
-
-    # Restart Gitea pod so the Go TLS stack picks up the new CA certificate.
-    # The Go runtime caches the system cert pool at process startup;
-    # update-ca-certificates only updates the on-disk bundle.
-    # Fixes: https://github.com/digiorg/core/issues/72
-    #print "     Restarting Gitea pod to reload TLS trust store..."
-    #kubectl --kubeconfig kubeconfig-local.yaml delete pod -n gitea $gitea_pod --wait=true
-    # Wait for the new pod to become ready (StatefulSet recreates it)
-    #mut gitea_restarted = false
-    #for attempt in 1..30 {
-    #    let ready_result = (do { kubectl --kubeconfig kubeconfig-local.yaml wait --for=condition=ready pod -n gitea -l app.kubernetes.io/name=gitea --timeout=10s } | complete)
-    #    if $ready_result.exit_code == 0 {
-    #        $gitea_restarted = true
-    #        break
-    #    }
-    #    print $"     Waiting for Gitea restart... [attempt ($attempt)/30]"
-    #    sleep 10sec
-    #}
-    #if not $gitea_restarted {
-    #    print $"(ansi yellow)Warning: Gitea pod did not restart in time, skipping OIDC configuration(ansi reset)"
-    #    return
-    #}
-    # Re-resolve pod name after restart
-    #let gitea_pod = (kubectl --kubeconfig kubeconfig-local.yaml get pods -n gitea -l app.kubernetes.io/name=gitea -o jsonpath='{.items[0].metadata.name}' | str trim)
-    #print $"  (ansi green)✓ Gitea restarted — TLS trust store reloaded(ansi reset)"
+    print $"(ansi green)✓ CA cert registered in Gitea trust store(ansi reset)"
 
     # --- Step 2: Add Keycloak as OIDC authentication source ---
-    print "  2. Configuring Keycloak OIDC provider in Gitea..."
+    print "2. Configuring Keycloak OIDC provider in Gitea..."
     
     # Check if Keycloak OIDC source already exists (idempotency)
     let existing_oauth = (do {
@@ -646,24 +607,24 @@ def configure_gitea_oidc [] {
             kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- su git -c 'gitea admin auth add-oauth --name "Keycloak" --provider openidConnect --key gitea --secret gitea-client-secret --auto-discover-url "https://digiorg.local/keycloak/realms/digiorg-core-platform/.well-known/openid-configuration"'
         } | complete)
         if $add_result.exit_code == 0 {
-            print $"  (ansi green)✓ Keycloak OIDC provider added to Gitea(ansi reset)"
+            print $"(ansi green)✓ Keycloak OIDC provider added to Gitea(ansi reset)"
         } else {
-            print $"  (ansi red)✗ Failed to add Keycloak OIDC provider: ($add_result.stderr)(ansi reset)"
+            print $"(ansi red)✗ Failed to add Keycloak OIDC provider: ($add_result.stderr)(ansi reset)"
             return
         }
     } else {
-        print $"  (ansi yellow)✓ Keycloak OIDC provider already exists in Gitea(ansi reset)"
+        print $"(ansi yellow)✓ Keycloak OIDC provider already exists in Gitea(ansi reset)"
     }
 
     # --- Step 3: Create initial users in Gitea ---
-    print "  3. Creating initial users in Gitea..."
+    print "3. Creating initial users in Gitea..."
 
     kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- su git -c 'gitea admin user create --username "digiorgadmin" --email "admin@digiorg.local" --password "digiorgadmin" --must-change-password false --admin true'
     kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- su git -c 'gitea admin user create --username "digiorgdeveloper" --email "developer@digiorg.local" --password "digiorgdeveloper" --must-change-password false --admin false'
-    print $"  (ansi green)✓ Initial users created(ansi reset)"
+    print $"(ansi green)✓ Initial users created(ansi reset)"
 
     # --- Step 4: Create DigiOrg organisation via tea CLI ---
-    print "  4. Creating DigiOrg organisation in Gitea..."
+    print "4. Creating DigiOrg organisation in Gitea..."
 
     # 4a: Install tea CLI if not already present
     let tea_check = (do {
@@ -671,15 +632,15 @@ def configure_gitea_oidc [] {
     } | complete)
 
     if ($tea_check.exit_code == 0) and ($tea_check.stdout | str contains "exists") {
-        print $"  (ansi yellow)✓ tea CLI already installed(ansi reset)"
+        print $"(ansi yellow)✓ tea CLI already installed(ansi reset)"
     } else {
         let tea_install = (do {
             kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c 'wget -qO /usr/local/bin/tea https://dl.gitea.com/tea/0.9.2/tea-0.9.2-linux-amd64 && chmod +x /usr/local/bin/tea'
         } | complete)
         if $tea_install.exit_code == 0 {
-            print $"  (ansi green)✓ tea CLI installed(ansi reset)"
+            print $"(ansi green)✓ tea CLI installed(ansi reset)"
         } else {
-            print $"  (ansi red)✗ Failed to install tea CLI: ($tea_install.stderr)(ansi reset)"
+            print $"(ansi red)✗ Failed to install tea CLI: ($tea_install.stderr)(ansi reset)"
             return
         }
     }
@@ -692,7 +653,7 @@ def configure_gitea_oidc [] {
     # 4b/4c/4d: Resolve gitea_token — immutable, derived from both branches
     # Nushell does not allow capturing mut variables in closures; use let + if expression instead.
     let gitea_token = if ($login_check.exit_code == 0) and ($login_check.stdout | str contains "exists") {
-        print $"  (ansi yellow)✓ tea login 'teaadmin-digiorg' already configured(ansi reset)"
+        print $"(ansi yellow)✓ tea login 'teaadmin-digiorg' already configured(ansi reset)"
         # Extract stored token from tea config for subsequent API calls
         let token_extract = (do {
             kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c 'grep -A10 "teaadmin-digiorg" /root/.config/tea/config.yml | grep "token:" | head -1 | sed "s/.*token: //"'
@@ -704,20 +665,20 @@ def configure_gitea_oidc [] {
             kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- su git -c 'gitea admin user generate-access-token --username gitea_admin --token-name teaadmin --scopes write:activitypub,write:admin,write:issue,write:misc,write:notification,write:organization,write:package,write:repository,write:user --raw'
         } | complete)
         if $token_result.exit_code != 0 {
-            print $"  (ansi red)✗ Failed to generate access token: ($token_result.stderr)(ansi reset)"
+            print $"(ansi red)✗ Failed to generate access token: ($token_result.stderr)(ansi reset)"
             return
         }
         let token = ($token_result.stdout | str trim)
-        print $"  (ansi green)✓ Access token generated(ansi reset)"
+        print $"(ansi green)✓ Access token generated(ansi reset)"
 
         # 4d: Set up tea login (token-based, using immutable $token — capturable in closures)
         let login_add = (do {
             kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c $"tea login add --name=teaadmin-digiorg --url=https://digiorg.local/gitea --token=($token)"
         } | complete)
         if $login_add.exit_code == 0 {
-            print $"  (ansi green)✓ tea login 'teaadmin-digiorg' configured(ansi reset)"
+            print $"(ansi green)✓ tea login 'teaadmin-digiorg' configured(ansi reset)"
         } else {
-            print $"  (ansi red)✗ Failed to configure tea login: ($login_add.stderr)(ansi reset)"
+            print $"(ansi red)✗ Failed to configure tea login: ($login_add.stderr)(ansi reset)"
             return
         }
         $token
@@ -729,15 +690,15 @@ def configure_gitea_oidc [] {
     } | complete)
 
     if ($org_check.exit_code == 0) and ($org_check.stdout | str contains "exists") {
-        print $"  (ansi yellow)✓ Organisation 'DigiOrg' already exists(ansi reset)"
+        print $"(ansi yellow)✓ Organisation 'DigiOrg' already exists(ansi reset)"
     } else {
         let org_create = (do {
             kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c 'tea organization create --description "DigiOrg Organization" --visibility public --repo-admins-can-change-team-access --login teaadmin-digiorg DigiOrg'
         } | complete)
         if $org_create.exit_code == 0 {
-            print $"  (ansi green)✓ Organisation 'DigiOrg' created(ansi reset)"
+            print $"(ansi green)✓ Organisation 'DigiOrg' created(ansi reset)"
         } else {
-            print $"  (ansi red)✗ Failed to create organisation 'DigiOrg': ($org_create.stderr)(ansi reset)"
+            print $"(ansi red)✗ Failed to create organisation 'DigiOrg': ($org_create.stderr)(ansi reset)"
             return
         }
     }
@@ -747,16 +708,16 @@ def configure_gitea_oidc [] {
         kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c $"curl -sk -H 'Authorization: token ($gitea_token)' https://digiorg.local/gitea/api/v1/orgs/DigiOrg/teams"
     } | complete)
     if $teams_result.exit_code != 0 {
-        print $"  (ansi red)✗ Failed to retrieve DigiOrg teams: ($teams_result.stderr)(ansi reset)"
+        print $"(ansi red)✗ Failed to retrieve DigiOrg teams: ($teams_result.stderr)(ansi reset)"
         return
     }
     let owners_team = ($teams_result.stdout | from json | where name == "Owners")
     if ($owners_team | is-empty) {
-        print $"  (ansi red)✗ Could not find Owners team in DigiOrg(ansi reset)"
+        print $"(ansi red)✗ Could not find Owners team in DigiOrg(ansi reset)"
         return
     }
     let owners_team_id = ($owners_team | get id | first)
-    print $"  (ansi green)✓ DigiOrg Owners team ID: ($owners_team_id)(ansi reset)"
+    print $"(ansi green)✓ DigiOrg Owners team ID: ($owners_team_id)(ansi reset)"
 
     # 4g: Add digiorgadmin to Owners team (idempotent)
     let admin_check = (do {
@@ -764,15 +725,15 @@ def configure_gitea_oidc [] {
     } | complete)
 
     if ($admin_check.exit_code == 0) and (($admin_check.stdout | str trim) == "204") {
-        print $"  (ansi yellow)✓ 'digiorgadmin' already member of Owners team(ansi reset)"
+        print $"(ansi yellow)✓ 'digiorgadmin' already member of Owners team(ansi reset)"
     } else {
         let admin_add = (do {
             kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c $"curl -sk -X PUT -H 'Authorization: token ($gitea_token)' https://digiorg.local/gitea/api/v1/teams/($owners_team_id)/members/digiorgadmin"
         } | complete)
         if $admin_add.exit_code == 0 {
-            print $"  (ansi green)✓ 'digiorgadmin' added to Owners team(ansi reset)"
+            print $"(ansi green)✓ 'digiorgadmin' added to Owners team(ansi reset)"
         } else {
-            print $"  (ansi red)✗ Failed to add 'digiorgadmin' to Owners team: ($admin_add.stderr)(ansi reset)"
+            print $"(ansi red)✗ Failed to add 'digiorgadmin' to Owners team: ($admin_add.stderr)(ansi reset)"
             return
         }
     }
@@ -783,15 +744,15 @@ def configure_gitea_oidc [] {
     } | complete)
 
     if ($dev_check.exit_code == 0) and (($dev_check.stdout | str trim) == "204") {
-        print $"  (ansi yellow)✓ 'digiorgdeveloper' already member of Owners team(ansi reset)"
+        print $"(ansi yellow)✓ 'digiorgdeveloper' already member of Owners team(ansi reset)"
     } else {
         let dev_add = (do {
             kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c $"curl -sk -X PUT -H 'Authorization: token ($gitea_token)' https://digiorg.local/gitea/api/v1/teams/($owners_team_id)/members/digiorgdeveloper"
         } | complete)
         if $dev_add.exit_code == 0 {
-            print $"  (ansi green)✓ 'digiorgdeveloper' added to Owners team(ansi reset)"
+            print $"(ansi green)✓ 'digiorgdeveloper' added to Owners team(ansi reset)"
         } else {
-            print $"  (ansi red)✗ Failed to add 'digiorgdeveloper' to Owners team: ($dev_add.stderr)(ansi reset)"
+            print $"(ansi red)✗ Failed to add 'digiorgdeveloper' to Owners team: ($dev_add.stderr)(ansi reset)"
             return
         }
     }
@@ -802,60 +763,18 @@ def configure_gitea_oidc [] {
     } | complete)
     if $verify.exit_code == 0 {
         let members = ($verify.stdout | from json | get login | str join ", ")
-        print $"  (ansi green)✓ DigiOrg Owners team members: ($members)(ansi reset)"
+        print $"(ansi green)✓ DigiOrg Owners team members: ($members)(ansi reset)"
     }
-
-    # Create users via Gitea Admin API
-    #let users = [
-    #    { username: "digiorgadmin", email: "admin@digiorg.local", password: "digiorgadmin", admin: true },
-    #    { username: "digiorgdeveloper", email: "developer@digiorg.local", password: "digiorgdeveloper", admin: false }
-    #]
-
-    #for user in $users {
-    #    # Check if user already exists (idempotency)
-    #    let user_check = (do {
-    #        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- su git gitea admin user list --vertical
-    #    } | complete)
-
-    #    mut user_exists = false
-    #    if $user_check.exit_code == 0 {
-    #        if ($user_check.stdout | str contains $user.username) {
-    #            $user_exists = true
-    #        }
-    #    }
-
-    #    if $user_exists {
-    #        print $"  (ansi yellow)✓ User '($user.username)' already exists(ansi reset)"
-    #    } else {
-    #        let create_result = (do {
-    #            kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- su git -c 'gitea admin user create --username ($user.username) --email ($user.email) --password ($user.password) --must-change-password false --admin ($user.admin)'
-    #        } | complete)
-
-    #        if $create_result.exit_code == 0 {
-    #            print $"  (ansi green)✓ User '($user.username)' created(ansi reset)"
-    #        } else {
-    #            print $"  (ansi red)✗ Failed to create user '($user.username)': ($create_result.stderr)(ansi reset)"
-    #        }
-    #    }
-    #}
 
     print $"(ansi green)✓ Gitea OIDC integration configured(ansi reset)"
 }
 
-# Print instructions for the manual SonarQube SAML certificate setup.
-# Configure SonarQube Server Base URL via Web API.
-# sonar.core.serverBaseURL is NOT a system property and cannot be set via sonarProperties
-# in values.yaml — it is a database-stored setting that must be pushed via the API.
-# Required for correct SAML ACS URL construction in SAML AuthnRequests.
-def configure_sonarqube_base_url [] {
-    print ""
-    print $"(ansi cyan_bold)Configuring SonarQube Server Base URL(ansi reset)"
-    print "────────────────────────────────────"
-
+# Configure SonarQube
+def configure_sonarqube [] {
     let sonar_url = "https://digiorg.local/sonarqube"
-    let admin_pass = (do -i { kubectl get secret sonarqube-admin-secret -n code-quality -o jsonpath='{.data.password}' } | complete)
+    let keycloak_saml_descriptor_url = "https://digiorg.local/keycloak/realms/digiorg-core-platform/protocol/saml/descriptor"
+    let admin_pass = (do -i { kubectl --kubeconfig $KUBECONFIG_PATH get secret sonarqube-admin-secret -n code-quality -o jsonpath='{.data.password}' } | complete)
 
-    # Derive admin password: prefer sonarqube-admin-secret, fall back to env
     let password = if $admin_pass.exit_code == 0 {
         $admin_pass.stdout | str trim | decode base64
     } else {
@@ -872,7 +791,7 @@ def configure_sonarqube_base_url [] {
             $sonar_ready = true
             break
         }
-        print $"    Waiting for SonarQube... [attempt ($attempt)/30]"
+        print $"Waiting for SonarQube... [attempt ($attempt)/30]"
         sleep 10sec
     }
 
@@ -885,30 +804,9 @@ def configure_sonarqube_base_url [] {
     let result = (do -i { curl --noproxy "*" -sk -u $"admin:($password)" -X POST $"($sonar_url)/api/settings/set" --data-urlencode "key=sonar.core.serverBaseURL" --data-urlencode $"value=($sonar_url)" } | complete)
 
     if $result.exit_code == 0 {
-        print $"  (ansi green)✓ SonarQube Server Base URL set to ($sonar_url)(ansi reset)"
+        print $"(ansi green)✓ SonarQube Server Base URL set to ($sonar_url)(ansi reset)"
     } else {
-        print $"  (ansi red)✗ Failed to set Server Base URL: ($result.stderr)(ansi reset)"
-    }
-}
-
-# Automate SonarQube SAML configuration via Web API.
-# sonar.auth.saml.* are database-stored settings, NOT system properties — they are
-# silently ignored in sonarProperties/values.yaml. Must be pushed via API after startup.
-# The Keycloak IdP certificate is fetched directly from the Keycloak realm endpoint
-# via the ingress (https://digiorg.local/keycloak/...) — no kubectl exec needed.
-def configure_sonarqube_saml [] {
-    print ""
-    print $"(ansi cyan_bold)Configuring SonarQube SAML via API(ansi reset)"
-    print "────────────────────────────────────"
-
-    let sonar_url = "https://digiorg.local/sonarqube"
-    let keycloak_saml_descriptor_url = "https://digiorg.local/keycloak/realms/digiorg-core-platform/protocol/saml/descriptor"
-    let admin_pass = (do -i { kubectl --kubeconfig $KUBECONFIG_PATH get secret sonarqube-admin-secret -n code-quality -o jsonpath='{.data.password}' } | complete)
-
-    let password = if $admin_pass.exit_code == 0 {
-        $admin_pass.stdout | str trim | decode base64
-    } else {
-        ($env.SONARQUBE_ADMIN_PASSWORD? | default "admin")
+        print $"(ansi red)✗ Failed to set Server Base URL: ($result.stderr)(ansi reset)"
     }
 
     # --- Step 1: Fetch Keycloak IdP X.509 certificate from SAML descriptor ---
@@ -917,35 +815,18 @@ def configure_sonarqube_saml [] {
     print "  1. Fetching Keycloak IdP X.509 certificate from SAML descriptor..."
     let cert_result = (do -i { curl --noproxy "*" -sk $keycloak_saml_descriptor_url } | complete)
     if $cert_result.exit_code != 0 {
-        print $"  (ansi red)✗ Failed to reach Keycloak SAML descriptor endpoint: ($cert_result.stderr)(ansi reset)"
+        print $"(ansi red)✗ Failed to reach Keycloak SAML descriptor endpoint: ($cert_result.stderr)(ansi reset)"
         return
     }
     let keycloak_cert = ($cert_result.stdout | parse --regex '(?s)<ds:X509Certificate>(.*?)</ds:X509Certificate>' | get capture0 | first | str trim)
     if ($keycloak_cert | is-empty) {
-        print $"  (ansi red)✗ Could not extract X509Certificate from SAML descriptor(ansi reset)"
+        print $"(ansi red)✗ Could not extract X509Certificate from SAML descriptor(ansi reset)"
         return
     }
-    print $"  (ansi green)✓ Keycloak IdP X.509 certificate fetched(ansi reset)"
-
-    # --- Step 2: Wait for SonarQube to be ready ---
-    print "  2. Waiting for SonarQube..."
-    mut sonar_ready = false
-    for attempt in 1..30 {
-        let status = (do -i { curl --noproxy "*" -sk -u $"admin:($password)" $"($sonar_url)/api/system/status" } | complete)
-        if $status.exit_code == 0 and ($status.stdout | str contains '"status":"UP"') {
-            $sonar_ready = true
-            break
-        }
-        print $"    Waiting for SonarQube... [attempt ($attempt)/30]"
-        sleep 10sec
-    }
-    if not $sonar_ready {
-        print $"  (ansi yellow)Warning: SonarQube not ready, skipping SAML configuration(ansi reset)"
-        return
-    }
+    print $"(ansi green)✓ Keycloak IdP X.509 certificate fetched(ansi reset)"
 
     # --- Step 3: Push all SAML settings via Settings API ---
-    print "  3. Pushing SAML settings to SonarQube API..."
+    print "3. Pushing SAML settings to SonarQube API..."
     let saml_settings = [
         [key value];
         ["sonar.auth.saml.applicationId"     "sonarqube"]
@@ -964,7 +845,7 @@ def configure_sonarqube_saml [] {
     for setting in $saml_settings {
         let r = (do -i { curl --noproxy "*" -sk -u $"admin:($password)" -X POST $"($sonar_url)/api/settings/set" --data-urlencode $"key=($setting.key)" --data-urlencode $"value=($setting.value)" } | complete)
         if $r.exit_code != 0 {
-            print $"  (ansi red)✗ Failed to set ($setting.key): ($r.stderr)(ansi reset)"
+            print $"(ansi red)✗ Failed to set ($setting.key): ($r.stderr)(ansi reset)"
             $all_ok = false
         }
     }
@@ -972,14 +853,14 @@ def configure_sonarqube_saml [] {
     # --- Step 4: Enable SAML ---
     let enable_result = (do -i { curl --noproxy "*" -sk -u $"admin:($password)" -X POST $"($sonar_url)/api/settings/set" --data-urlencode "key=sonar.auth.saml.enabled" --data-urlencode "value=true" } | complete)
     if $enable_result.exit_code != 0 {
-        print $"  (ansi red)✗ Failed to enable SAML: ($enable_result.stderr)(ansi reset)"
+        print $"(ansi red)✗ Failed to enable SAML: ($enable_result.stderr)(ansi reset)"
         $all_ok = false
     }
 
     if $all_ok {
-        print $"  (ansi green)✓ SAML fully configured and enabled in SonarQube(ansi reset)"
+        print $"(ansi green)✓ SAML fully configured and enabled in SonarQube(ansi reset)"
     } else {
-        print $"  (ansi yellow)Warning: Some SAML settings may not have been applied(ansi reset)"
+        print $"(ansi yellow)Warning: Some SAML settings may not have been applied(ansi reset)"
     }
 }
 
@@ -993,9 +874,9 @@ def restart_oidc_dependent_pods [] {
     try {
         kubectl rollout restart deployment argocd-server -n argocd
         kubectl rollout status deployment argocd-server -n argocd --timeout=120s
-        print $"  (ansi green)✓ ArgoCD Server restarted(ansi reset)"
+        print $"(ansi green)✓ ArgoCD Server restarted(ansi reset)"
     } catch {
-        print $"  (ansi yellow)Warning: Could not restart ArgoCD Server(ansi reset)"
+        print $"(ansi yellow)Warning: Could not restart ArgoCD Server(ansi reset)"
     }
     
     # Grafana
@@ -1004,7 +885,7 @@ def restart_oidc_dependent_pods [] {
         if $grafana_exists.exit_code == 0 {
             kubectl rollout restart deployment prometheus-grafana -n monitoring
             kubectl rollout status deployment prometheus-grafana -n monitoring --timeout=120s
-            print $"  (ansi green)✓ Grafana restarted(ansi reset)"
+            print $"(ansi green)✓ Grafana restarted(ansi reset)"
         }
     } catch { }
     
@@ -1014,7 +895,7 @@ def restart_oidc_dependent_pods [] {
         if $backstage_exists.exit_code == 0 {
             kubectl rollout restart deployment backstage -n backstage
             kubectl rollout status deployment backstage -n backstage --timeout=180s
-            print $"  (ansi green)✓ Backstage restarted(ansi reset)"
+            print $"(ansi green)✓ Backstage restarted(ansi reset)"
         }
     } catch { }
 
@@ -1023,12 +904,16 @@ def restart_oidc_dependent_pods [] {
         let lp_exists = (do { kubectl get deployment landingpage -n platform-apps } | complete)
         if $lp_exists.exit_code == 0 {
             kubectl rollout restart deployment landingpage -n platform-apps
-            print $"  (ansi green)✓ Landing Page restarted(ansi reset)"
+            print $"(ansi green)✓ Landing Page restarted(ansi reset)"
         }
     } catch { }
     
     print $"(ansi green)✓ OIDC-dependent pods restarted(ansi reset)"
 }
+
+# -----------------------------------------------------------------------------
+# Helper Functions
+# -----------------------------------------------------------------------------
 
 # Patch ArgoCD OIDC config with the self-signed CA cert via Helm upgrade.
 # Uses helm upgrade --reuse-values so ArgoCD self-sync does not overwrite it.
@@ -1131,10 +1016,7 @@ rootCA: |\n($indented_cert)
     print $"(ansi yellow)Restart your browser after importing the CA certificate.(ansi reset)"
 }
 
-# -----------------------------------------------------------------------------
-# Helper Functions
-# -----------------------------------------------------------------------------
-
+# Check if prequisite tools (kind, kubectl, helm) are installed before proceeding
 def check_prerequisites [] {
     print "Checking prerequisites..."
     
@@ -1168,6 +1050,7 @@ def check_prerequisites [] {
     print ""
 }
 
+# Check if cluster exists
 def cluster_exists [] {
     let result = (do { kind get clusters } | complete)
     if $result.exit_code == 0 {
@@ -1175,4 +1058,9 @@ def cluster_exists [] {
     } else {
         false
     }
+}
+
+# Generate a random password (alphanumeric, 24 chars)
+def generate_password [] {
+    random chars --length 24
 }
