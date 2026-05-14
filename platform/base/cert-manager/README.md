@@ -10,6 +10,14 @@ cert-manager is deployed as a cluster-wide component and provides:
 - **Automatic renewal** before expiry (30 days before)
 - **NGINX Ingress integration** via annotations
 
+## Files
+
+| File | Description |
+|------|-------------|
+| `cluster-issuers.yaml` | Defines the four ClusterIssuers (selfsigned-bootstrap, digiorg-local-ca-issuer, letsencrypt-staging, letsencrypt-prod) |
+| `certificate-dev.yaml` | Defines the local CA certificate (digiorg-local-ca) and the wildcard TLS certificate (digiorg-local-tls) |
+| `kustomization.yaml` | Kustomize entrypoint; installs cert-manager v1.17.0 and applies issuers and certificates |
+
 ## ClusterIssuers
 
 | Name | Environment | CA |
@@ -18,6 +26,23 @@ cert-manager is deployed as a cluster-wide component and provides:
 | `digiorg-local-ca-issuer` | Local dev (`digiorg.local`) | Self-signed local CA |
 | `letsencrypt-staging` | Staging | Let's Encrypt (staging) |
 | `letsencrypt-prod` | Production | Let's Encrypt (production) |
+
+## Bootstrap Sequence
+
+Certificates and issuers are applied in ArgoCD sync waves to satisfy ordering dependencies:
+
+| Wave | Resources |
+|------|-----------|
+| 1 | `selfsigned-bootstrap` ClusterIssuer, `letsencrypt-staging` ClusterIssuer, `letsencrypt-prod` ClusterIssuer, `digiorg-local-ca` Certificate |
+| 2 | `digiorg-local-ca-issuer` ClusterIssuer (requires `digiorg-local-ca-secret` created in wave 1) |
+| 3 | `digiorg-local-tls` Certificate (requires `digiorg-local-ca-issuer` ready from wave 2) |
+
+## Certificates
+
+| Name | Namespace | Issuer | Type | Duration | Key | Secret |
+|------|-----------|--------|------|----------|-----|--------|
+| `digiorg-local-ca` | `cert-manager` | `selfsigned-bootstrap` | CA certificate | 10 years | ECDSA P-256 | `digiorg-local-ca-secret` |
+| `digiorg-local-tls` | `ingress-nginx` | `digiorg-local-ca-issuer` | Wildcard TLS (`digiorg.local`, `*.digiorg.local`) | 1 year | ECDSA P-256 | `digiorg-local-tls` |
 
 ## Local Development
 
@@ -57,7 +82,7 @@ cert-manager.io/cluster-issuer: "letsencrypt-staging"
 cert-manager.io/cluster-issuer: "letsencrypt-prod"
 ```
 
-Also update `letsencrypt-staging` and `letsencrypt-prod` in `cluster-issuers.yaml` with a real email address.
+> **Prerequisite:** Before enabling `letsencrypt-staging` or `letsencrypt-prod`, replace the placeholder email `admin@digiorg.io` in `cluster-issuers.yaml` with a real address.
 
 ## Certificate Status
 
