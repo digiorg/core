@@ -168,9 +168,7 @@ core/
 - [Architektur-Übersicht](docs/architecture.md)
 - [Getting Started Guide](docs/guides/getting-started.md)
 - [Local Development Guide](docs/guides/local-development.md)
-- [ADR-001: Bootstrap Framework](docs/adr/001-bootstrap-framework-architecture.md)
-- [ADR-005: Tracing Backend (Jaeger)](docs/adr/005-tracing-backend-jaeger.md)
-- [ADR-006: Observability Storage (OpenSearch)](docs/adr/006-observability-storage-opensearch.md)
+- [ADR-001: Platform Architecture Decisions](docs/adr/001-bootstrap-framework-architecture.md)
 - [Beitragen](CONTRIBUTING.md)
 
 ### Lizenz
@@ -343,9 +341,7 @@ core/
 - [Architecture Overview](docs/architecture.md)
 - [Getting Started Guide](docs/guides/getting-started.md)
 - [Local Development Guide](docs/guides/local-development.md)
-- [ADR-001: Bootstrap Framework](docs/adr/001-bootstrap-framework-architecture.md)
-- [ADR-005: Tracing Backend (Jaeger)](docs/adr/005-tracing-backend-jaeger.md)
-- [ADR-006: Observability Storage (OpenSearch)](docs/adr/006-observability-storage-opensearch.md)
+- [ADR-001: Platform Architecture Decisions](docs/adr/001-bootstrap-framework-architecture.md)
 - [Contributing](CONTRIBUTING.md)
 
 ### License
