@@ -31,6 +31,8 @@ This document provides an overview of the DigiOrg Core Platform architecture.
 │  │             │             │              │                       │ │
 │  │  • ArgoCD   │  • Kyverno  │  • Prometheus│  • Crossplane         │ │
 │  │  • Backstage│  • Keycloak │  • Grafana   │  • Terraform          │ │
+│  │             │             │  • Jaeger    │                       │ │
+│  │             │             │  • OpenSearch│                       │ │
 │  └─────────────┴─────────────┴─────────────┴─────────────────────────┘ │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                       Kubernetes Runtime Layer                          │
@@ -51,31 +53,39 @@ The local development environment (`digiorg-core-dev` cluster) includes:
 │                                                                         │
 │  ┌────────────────────────────────────────────────────────────────┐    │
 │  │                     Unified Ingress                             │    │
-│  │              http://digiorg.local/<service>                     │    │
+│  │              https://digiorg.local/<service>                    │    │
 │  │  ┌────┬──────────┬──────────┬──────────┬──────────┬──────────┐ │    │
 │  │  │ /  │/keycloak │ /argocd  │ /grafana │/backstage│  /gitea  │ │    │
-│  │  └──┬─┴────┬─────┴────┬─────┴────┬─────┴────┬─────┴────┬─────┘ │    │
-│  └───────┼──────────┼──────────┼──────────┼───────────────────────┘    │
-│          │          │          │          │                            │
-│          ▼          ▼          ▼          ▼                            │
-│          │          │          │          │          │               │
-│          ▼          ▼          ▼          ▼          ▼               │
+│  │  ├────┴──────────┴──────────┴──────────┴──────────┴──────────┤ │    │
+│  │  │         /jaeger                  │       /sonarqube        │ │    │
+│  │  └──────────────────────────────────┴─────────────────────────┘ │    │
+│  └────────────────────────────────────────────────────────────────┘    │
+│          │          │          │          │          │    │    │       │
+│          ▼          ▼          ▼          ▼          ▼    ▼    ▼       │
 │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐    │
 │  │ Landing  │ │ Keycloak │ │  ArgoCD  │ │ Grafana  │ │Backstage │    │
 │  │  Page    │◀─┤   IdP    │◀─┤   SSO    │◀─┤  OAuth   │◀─┤  OIDC    │    │
 │  └──────────┘ └──────────┘ └──────────┘ └──────────┘ └──────────┘    │
-│       │                          │            │            │         │
-│       └──────────────────────────┴────────────┴────────────┘         │
-│                                  │                                   │
-│                                  ▼                                   │
-│  ┌──────────────────────────────────────────────────────────────────┐│
+│                                                                         │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐                               │
+│  │  Gitea   │ │  Jaeger  │ │SonarQube │                               │
+│  │   SCM    │ │  Tracing │ │   SAST   │                               │
+│  └──────────┘ └──────────┘ └──────────┘                               │
+│       │                                                                 │
+│       └──────────────────────────┬──────────────────────────────────── │
+│                                  │                                      │
+│                                  ▼                                      │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
 │  │         Shared PostgreSQL (platform-db namespace)               ││
 │  │  ┌────────────────┐  ┌────────────────┐  ┌────────────────┐      ││
 │  │  │  keycloak DB   │  │  backstage DB  │  │    gitea DB    │      ││
 │  │  └────────────────┘  └────────────────┘  └────────────────┘      ││
+│  │  ┌────────────────┐                                               ││
+│  │  │  sonarqube DB  │                                               ││
+│  │  └────────────────┘                                               ││
 │  └──────────────────────────────────────────────────────────────────┘│
-│  * Gitea uses Keycloak OIDC, but it is configured manually via      │
-│    the Admin UI post-deployment rather than as part of deployment   │
+│  * Gitea uses Keycloak OIDC, auto-configured by local-setup.nu        │
+│    (Phase 3: configure_gitea)                                         │
 │  ┌──────────┐ ┌──────────┐                                              │
 │  │Crossplane│ │Prometheus│                                              │
 │  └──────────┘ └──────────┘                                              │
@@ -94,7 +104,7 @@ The local development environment (`digiorg-core-dev` cluster) includes:
 
 ## Authentication Flow
 
-All services authenticate via Keycloak OIDC:
+All services authenticate via Keycloak. Most use OIDC directly; SonarQube uses Keycloak SAML; Jaeger is protected via oauth2-proxy (OIDC).
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -140,13 +150,12 @@ All services authenticate via Keycloak OIDC:
  ┌──────────────┐                     ┌──────────────┐
  │  platform-db │                     │ ingress-nginx│
  │  • postgresql│◀───────────────────┤  • controller│
- │    (shared) │  keycloak DB        └──────────────┘
- └───────┬──────┘  backstage DB
-        │          gitea DB
-        │                            ┌──────────────┐
-        │                            │  crossplane- │
-        │                            │    system    │
-        │                            │  • providers │
+ │  • opensearch│  keycloak DB        └──────────────┘
+ │    (shared) │  backstage DB
+ └───────┬──────┘  gitea DB           ┌──────────────┐
+        │          sonarqube DB       │  crossplane- │
+        │          opensearch         │    system    │
+        │          (observability)    │  • providers │
         │                            └──────────────┘
         │
         │                            ┌──────────────┐
@@ -200,6 +209,29 @@ All services authenticate via Keycloak OIDC:
  │  platform-   │
  │    apps      │
  │  • landingpg │  ← Platform entry point with Keycloak SSO
+ └──────────────┘
+
+ ┌──────────────┐
+ │  messaging   │
+ │  • nats      │  ← Wave 0: JetStream + Surveyor
+ │  • surveyor  │
+ └──────────────┘
+
+ ┌──────────────┐
+ │   tracing    │
+ │  • jaeger    │  ← Wave 2: + jaeger-oauth2-proxy
+ │  • oauth2-   │
+ │    proxy     │
+ └──────────────┘
+
+ ┌──────────────┐
+ │ code-quality │
+ │  • sonarqube │  ← Wave 2
+ └──────────────┘
+
+ ┌──────────────┐
+ │  external-   │
+ │   secrets    │  ← Wave 0: External Secrets Operator
  └──────────────┘
 ```
 
@@ -293,6 +325,67 @@ HTTP (`:80`) automatically redirects to HTTPS (`:443`).
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
+## Observability Architecture
+
+The platform implements a two-pillar observability stack (logs are planned):
+
+| Pillar  | Components                | Namespace(s)              |
+|---------|---------------------------|---------------------------|
+| Metrics | Prometheus + Grafana      | monitoring                |
+| Traces  | Jaeger + OpenSearch       | tracing + platform-db     |
+| Logs    | Planned                   | —                         |
+
+```
+  Services                    tracing ns                 platform-db ns
+  ────────                    ──────────                 ──────────────
+  App Pods ──OTLP gRPC:4317──▶ Jaeger ──────writes────▶ OpenSearch
+           ──OTLP HTTP:4318──▶        ◀──────queries───
+                                           │
+                                    Jaeger UI ──────────▶ Grafana datasource
+
+  App Pods ──ServiceMonitor──▶ Prometheus ────────────▶ Grafana dashboards
+           (all namespaces)    (monitoring ns)
+```
+
+## Messaging Architecture
+
+NATS JetStream runs in the `messaging` namespace (Wave 0) and provides persistent messaging for platform services:
+
+```
+  Application Pods ──:4222──▶ NATS JetStream ──▶ Surveyor :7777 ──▶ Prometheus
+                               (messaging ns)      (metrics exporter)
+```
+
+## Secret Management Architecture
+
+External Secrets Operator (ESO) runs in the `external-secrets` namespace (Wave 0) and enables provider-swappable secret management:
+
+```
+  ExternalSecret CR ──▶ ClusterSecretStore ──▶ Fake Provider      (local dev)
+                                           ├──▶ Azure Key Vault    (staging/prod)
+                                           └──▶ HashiCorp Vault    (on-prem)
+                              │
+                              ▼
+                       Kubernetes Secret  (consumed by workloads)
+```
+
+## Code Quality Architecture
+
+SonarQube Community Build runs in the `code-quality` namespace (Wave 2):
+
+- **Auth**: Keycloak SAML (native Community Build support — no plugin required)
+- **Storage**: Shared PostgreSQL in `platform-db` namespace; 5 Gi PVC for plugins and temporary analysis data
+
+```
+  Developer ──push──▶ Gitea ──webhook──▶ SonarQube ──SAML──▶ Keycloak
+                                          (code-quality ns)
+                                                │
+                               ┌────────────────┴────────────────┐
+                               │                                 │
+                     PostgreSQL (platform-db)             5 Gi PVC
+                     sonarqube DB                         plugins/temp
+```
+
 ## Related ADRs
 
-- [ADR-001: Bootstrap Framework Architecture](adr/001-bootstrap-framework-architecture.md)
+- [ADR-001: Platform Architecture Decisions](adr/001-bootstrap-framework-architecture.md)
