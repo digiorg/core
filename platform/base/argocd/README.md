@@ -8,6 +8,7 @@ ArgoCD is the GitOps engine for this platform, configured with Keycloak SSO.
 |------|-------------|
 | `values.yaml` | Helm values for `argo/argo-cd` chart |
 | `kustomization.yaml` | Kustomize entrypoint |
+| `rbac-cm.yaml` | Kubernetes ConfigMap for ArgoCD RBAC policy (deployed via Kustomize) |
 | `applications/` | ArgoCD Application manifests |
 
 ## Authentication
@@ -17,12 +18,13 @@ ArgoCD is configured with **Keycloak OIDC** for Single Sign-On:
 - **Keycloak Realm:** `digiorg-core-platform`
 - **Client ID:** `argocd`
 - **Login:** Click "Login via Keycloak" on the ArgoCD UI
+- **Admin account:** disabled — SSO via Keycloak is the only login method
 
 ## Access
 
 | Environment | URL |
 |-------------|-----|
-| Local (KinD) | http://digiorg.local/argocd |
+| Local (KinD) | https://digiorg.local/argocd |
 
 ## Local Development
 
@@ -38,14 +40,19 @@ helm upgrade --install argocd argo/argo-cd \
   --wait --timeout 10m
 ```
 
+After Helm install, `local-setup.nu` patches the ArgoCD OIDC ConfigMap with the self-signed CA certificate provisioned by cert-manager (`rootCA` field). In production (using Let's Encrypt), the `rootCA` field is not needed and should be omitted.
+
 ## RBAC
 
-Two default roles are configured via `values.yaml`:
+RBAC policy is split across two sources:
+
+- **`values.yaml` (`configs.rbac`)** — inline policy applied at Helm install time, including an explicit sync deny for `role:readonly`
+- **`rbac-cm.yaml`** — standalone ConfigMap deployed via Kustomize; takes effect after Kustomize apply
 
 | Role | Permissions |
 |------|-------------|
 | `role:admin` | Full access to all resources |
-| `role:readonly` | Read-only access |
+| `role:readonly` | Read-only access; sync explicitly denied |
 
 Group mappings (from Keycloak):
 - `platform-admins` → `role:admin`
@@ -58,17 +65,28 @@ Group mappings (from Keycloak):
 ```yaml
 configs:
   cm:
-    url: http://digiorg.local/argocd
+    url: https://digiorg.local/argocd
     oidc.config: |
       name: Keycloak
-      issuer: http://digiorg.local/keycloak/realms/digiorg-core-platform
+      issuer: https://digiorg.local/keycloak/realms/digiorg-core-platform
       clientID: argocd
       clientSecret: $oidc.keycloak.clientSecret
       requestedScopes:
         - openid
         - profile
         - email
-        - groups
+        - roles
+```
+
+### Path-based Routing
+
+ArgoCD is served at `/argocd` via path-based routing. The following `values.yaml` parameters configure this:
+
+```yaml
+configs:
+  params:
+    server.basehref: "/argocd"
+    server.rootpath: "/argocd"
 ```
 
 ### Ingress
@@ -80,7 +98,7 @@ ArgoCD is exposed via the unified platform ingress at `/argocd`. The ingress is 
 ### Login fails
 
 1. Check Keycloak is running: `kubectl get pods -n keycloak`
-2. Verify realm exists: `curl http://digiorg.local/keycloak/realms/digiorg-core-platform`
+2. Verify realm exists: `curl https://digiorg.local/keycloak/realms/digiorg-core-platform`
 3. Check ArgoCD logs: `kubectl logs -n argocd -l app.kubernetes.io/name=argocd-server`
 
 ### OIDC redirect issues
