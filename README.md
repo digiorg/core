@@ -33,6 +33,8 @@ Die DigiOrg Core Platform ermöglicht es Unternehmen, ihre DevSecOps-Prozesse du
 │  │   GitOps    │  Security   │ Observability│   IaC       │ │
 │  │   ArgoCD    │  Kyverno    │  Prometheus  │  Crossplane │ │
 │  │   Backstage │  Keycloak   │  Grafana     │  Terraform  │ │
+│  │             │             │  Jaeger      │             │ │
+│  │             │             │  OpenSearch  │             │ │
 │  └─────────────┴─────────────┴─────────────┴──────────────┘ │
 ├─────────────────────────────────────────────────────────────┤
 │                  Kubernetes Runtime                         │
@@ -52,14 +54,36 @@ Die DigiOrg Core Platform ermöglicht es Unternehmen, ihre DevSecOps-Prozesse du
 - **Gitea** — Self-hosted Git Service mit Code Review, Issue Tracking und CI/CD
 
 #### 🗄️ Data Layer
-- **Shared PostgreSQL** — Zentrale Datenbank für Keycloak, Backstage und Gitea (Namespace: `platform-db`)
+- **Shared PostgreSQL** — Zentrale Datenbank für Keycloak, Backstage, Gitea und SonarQube (Namespace: `platform-db`)
 
 #### 🔐 Security Stack
 - **Kyverno** — Policy-as-Code Engine
 - **Keycloak** — Identity & Access Management mit OIDC/SSO
 
+#### 🔒 TLS & Secrets
+- **cert-manager** — TLS-Zertifikatsausstellung, selbstsignierte CA für `digiorg.local`
+- **External Secrets Operator** — Provider-Wechsel: Fake-Backend für Entwicklung, Azure Key Vault / HashiCorp Vault für Produktion
+
 #### 📊 Observability Stack
-- **Prometheus + Grafana** — Metrics und Dashboards (mit Keycloak OAuth)
+
+Drei-Säulen-System: **Metriken** (Prometheus + Grafana) + **Traces** (Jaeger + OpenSearch) + **Logs** (geplant)
+
+- **Prometheus + Grafana** — Metriken und Dashboards (mit Keycloak OAuth)
+
+#### 🔍 Tracing
+- **Jaeger** — Distributed Tracing UI, gespeichert in OpenSearch (Namespace: `tracing`; Keycloak OIDC via oauth2-proxy)
+
+#### 🗄️ Observability-Datenspeicher
+- **OpenSearch** — Traces und Logs (Namespace: `platform-db`)
+
+#### 📡 Messaging
+- **NATS JetStream** — Persistentes Pub/Sub-Messaging (Namespace: `messaging`)
+
+#### ✅ Code-Qualität
+- **SonarQube** — Statische Code-Analyse, SAST, Keycloak SAML (Namespace: `code-quality`)
+
+#### 🌐 Landing Page
+- **Plattform-Startseite** — Einstiegspunkt und Service-Discovery-UI (Namespace: `platform-apps`)
 
 #### 🚀 GitOps Engine
 - **ArgoCD** — GitOps Continuous Delivery (mit Keycloak SSO)
@@ -80,14 +104,20 @@ echo "127.0.0.1 digiorg.local" | sudo tee -a /etc/hosts
 # 3. Lokales Cluster starten
 nu scripts/local-setup.nu up
 
-# 4. Services aufrufen (alle via digiorg.local)
-#    - Landing:   https://digiorg.local/           (Startseite mit Keycloak SSO)
-#    - Keycloak:  https://digiorg.local/keycloak   (admin / admin)
-#    - ArgoCD:    https://digiorg.local/argocd     (Login via Keycloak)
-#    - Grafana:   https://digiorg.local/grafana    (Login via Keycloak)
-#    - Backstage: https://digiorg.local/backstage  (Login via Keycloak)
-#    - Gitea:     https://digiorg.local/gitea      (admin login; Keycloak in Admin UI konfigurieren)
+# 4. CA-Zertifikat importieren: ./digiorg-local-ca.crt (wird automatisch gespeichert — siehe scripts/README.md)
+
+# 5. Services aufrufen (alle via digiorg.local)
+#    - Landing:    https://digiorg.local/           (Startseite mit Keycloak SSO)
+#    - Keycloak:   https://digiorg.local/keycloak   (admin / admin)
+#    - ArgoCD:     https://digiorg.local/argocd     (Login via Keycloak)
+#    - Grafana:    https://digiorg.local/grafana    (Login via Keycloak)
+#    - Backstage:  https://digiorg.local/backstage  (Login via Keycloak)
+#    - Gitea:      https://digiorg.local/gitea      (Login via Keycloak)
+#    - SonarQube:  https://digiorg.local/sonarqube  (admin / admin — sofort ändern)
+#    - Jaeger:     https://digiorg.local/jaeger     (Login via Keycloak)
 ```
+
+> **Makefile-Shortcuts:** `make up` / `make down` / `make reset` / `make status` sind als Alternativen verfügbar — rufen dasselbe Nushell-Script auf (mit Bash-Fallback).
 
 ### Cloud Provider Support
 
@@ -112,13 +142,20 @@ core/
 │   └── base/                # Kubernetes Manifeste (Kustomize)
 │       ├── argocd/          # ArgoCD mit Keycloak SSO
 │       ├── backstage/       # Backstage Developer Portal
+│       ├── cert-manager/    # TLS-Zertifikatsverwaltung (selbstsignierte CA + Let's Encrypt)
 │       ├── crossplane/      # Crossplane Setup
-│       ├── ingress/         # NGINX Ingress + Routing
+│       ├── external-secrets/ # External Secrets Operator (Secret-Backend-Abstraktion)
 │       ├── gitea/           # Gitea Git Service
+│       ├── grafana/         # Prometheus + Grafana (Metriken & Dashboards)
+│       ├── ingress/         # NGINX Ingress + Routing
+│       ├── jaeger/          # Distributed Tracing
 │       ├── keycloak/        # Keycloak IdP
 │       ├── kyverno/         # Policy Engine
-│       ├── monitoring/      # Prometheus + Grafana
-│       └── postgresql/      # Shared PostgreSQL (Keycloak + Backstage + Gitea)
+│       ├── landingpage/     # Plattform-Startseite mit SSO
+│       ├── nats/            # Message Broker (JetStream)
+│       ├── opensearch/      # Observability-Datenspeicher (Traces + zukünftige Logs)
+│       ├── postgresql/      # Shared PostgreSQL (Keycloak + Backstage + Gitea + SonarQube)
+│       └── sonarqube/       # Code-Qualität & Sicherheit
 ├── apps/                    # ArgoCD Application Manifeste
 ├── policies/                # Kyverno Policies
 ├── crossplane/              # Crossplane XRDs & Compositions
@@ -132,6 +169,9 @@ core/
 - [Getting Started Guide](docs/guides/getting-started.md)
 - [Local Development Guide](docs/guides/local-development.md)
 - [ADR-001: Bootstrap Framework](docs/adr/001-bootstrap-framework-architecture.md)
+- [ADR-005: Tracing Backend (Jaeger)](docs/adr/005-tracing-backend-jaeger.md)
+- [ADR-006: Observability Storage (OpenSearch)](docs/adr/006-observability-storage-opensearch.md)
+- [Beitragen](CONTRIBUTING.md)
 
 ### Lizenz
 
@@ -168,6 +208,8 @@ The DigiOrg Core Platform enables organizations to automate their DevSecOps proc
 │  │   GitOps    │  Security   │ Observability│   IaC       │ │
 │  │   ArgoCD    │  Kyverno    │  Prometheus  │  Crossplane │ │
 │  │   Backstage │  Keycloak   │  Grafana     │  Terraform  │ │
+│  │             │             │  Jaeger      │             │ │
+│  │             │             │  OpenSearch  │             │ │
 │  └─────────────┴─────────────┴─────────────┴──────────────┘ │
 ├─────────────────────────────────────────────────────────────┤
 │                  Kubernetes Runtime                         │
@@ -187,14 +229,36 @@ The DigiOrg Core Platform enables organizations to automate their DevSecOps proc
 - **Gitea** — Self-hosted Git service with code review, issue tracking, and CI/CD
 
 #### 🗄️ Data Layer
-- **Shared PostgreSQL** — Central database for Keycloak, Backstage, and Gitea (Namespace: `platform-db`)
+- **Shared PostgreSQL** — Central database for Keycloak, Backstage, Gitea, and SonarQube (Namespace: `platform-db`)
 
 #### 🔐 Security Stack
 - **Kyverno** — Policy-as-Code engine
 - **Keycloak** — Identity & Access Management with OIDC/SSO
 
+#### 🔒 TLS & Secrets
+- **cert-manager** — TLS certificate issuance, self-signed CA for `digiorg.local`
+- **External Secrets Operator** — Provider-swap: Fake backend for development, Azure Key Vault / HashiCorp Vault for production
+
 #### 📊 Observability Stack
+
+Three-pillar system: **Metrics** (Prometheus + Grafana) + **Traces** (Jaeger + OpenSearch) + **Logs** (planned)
+
 - **Prometheus + Grafana** — Metrics and dashboards (with Keycloak OAuth)
+
+#### 🔍 Tracing
+- **Jaeger** — Distributed Tracing UI, backed by OpenSearch (Namespace: `tracing`; Keycloak OIDC via oauth2-proxy)
+
+#### 🗄️ Observability Data
+- **OpenSearch** — Trace and log storage backend (Namespace: `platform-db`)
+
+#### 📡 Messaging
+- **NATS JetStream** — Persistent pub/sub messaging (Namespace: `messaging`)
+
+#### ✅ Code Quality
+- **SonarQube** — Static code analysis, SAST, Keycloak SAML (Namespace: `code-quality`)
+
+#### 🌐 Landing Page
+- **Platform entry point** — Service discovery UI (Namespace: `platform-apps`)
 
 #### 🚀 GitOps Engine
 - **ArgoCD** — GitOps Continuous Delivery (with Keycloak SSO)
@@ -215,14 +279,20 @@ echo "127.0.0.1 digiorg.local" | sudo tee -a /etc/hosts
 # 3. Start local cluster
 nu scripts/local-setup.nu up
 
-# 4. Access services (all via digiorg.local)
-#    - Landing:   https://digiorg.local/           (Homepage with Keycloak SSO)
-#    - Keycloak:  https://digiorg.local/keycloak   (admin / admin)
-#    - ArgoCD:    https://digiorg.local/argocd     (Login via Keycloak)
-#    - Grafana:   https://digiorg.local/grafana    (Login via Keycloak)
-#    - Backstage: https://digiorg.local/backstage  (Login via Keycloak)
-#    - Gitea:     https://digiorg.local/gitea      (admin login; configure Keycloak in Admin UI)
+# 4. Import CA certificate: ./digiorg-local-ca.crt (saved automatically — see scripts/README.md)
+
+# 5. Access services (all via digiorg.local)
+#    - Landing:    https://digiorg.local/           (Homepage with Keycloak SSO)
+#    - Keycloak:   https://digiorg.local/keycloak   (admin / admin)
+#    - ArgoCD:     https://digiorg.local/argocd     (Login via Keycloak)
+#    - Grafana:    https://digiorg.local/grafana    (Login via Keycloak)
+#    - Backstage:  https://digiorg.local/backstage  (Login via Keycloak)
+#    - Gitea:      https://digiorg.local/gitea      (Login via Keycloak)
+#    - SonarQube:  https://digiorg.local/sonarqube  (admin / admin — change immediately)
+#    - Jaeger:     https://digiorg.local/jaeger     (Login via Keycloak)
 ```
+
+> **Makefile shortcuts:** `make up` / `make down` / `make reset` / `make status` are available as alternatives — they call the same Nushell script with a Bash fallback.
 
 ### Cloud Provider Support
 
@@ -247,13 +317,20 @@ core/
 │   └── base/                # Kubernetes manifests (Kustomize)
 │       ├── argocd/          # ArgoCD with Keycloak SSO
 │       ├── backstage/       # Backstage Developer Portal
+│       ├── cert-manager/    # TLS certificate management (self-signed CA + Let's Encrypt)
 │       ├── crossplane/      # Crossplane setup
-│       ├── ingress/         # NGINX Ingress + routing
+│       ├── external-secrets/ # External Secrets Operator (secret backend abstraction)
 │       ├── gitea/           # Gitea Git Service
+│       ├── grafana/         # Prometheus + Grafana (metrics & dashboards)
+│       ├── ingress/         # NGINX Ingress + routing
+│       ├── jaeger/          # Distributed Tracing
 │       ├── keycloak/        # Keycloak IdP
 │       ├── kyverno/         # Policy engine
-│       ├── monitoring/      # Prometheus + Grafana
-│       └── postgresql/      # Shared PostgreSQL (Keycloak + Backstage + Gitea)
+│       ├── landingpage/     # Platform Landing Page with SSO
+│       ├── nats/            # Message Broker (JetStream)
+│       ├── opensearch/      # Observability data backend (traces + future logs)
+│       ├── postgresql/      # Shared PostgreSQL (Keycloak + Backstage + Gitea + SonarQube)
+│       └── sonarqube/       # Code Quality & Security
 ├── apps/                    # ArgoCD Application manifests
 ├── policies/                # Kyverno policies
 ├── crossplane/              # Crossplane XRDs & Compositions
@@ -267,6 +344,9 @@ core/
 - [Getting Started Guide](docs/guides/getting-started.md)
 - [Local Development Guide](docs/guides/local-development.md)
 - [ADR-001: Bootstrap Framework](docs/adr/001-bootstrap-framework-architecture.md)
+- [ADR-005: Tracing Backend (Jaeger)](docs/adr/005-tracing-backend-jaeger.md)
+- [ADR-006: Observability Storage (OpenSearch)](docs/adr/006-observability-storage-opensearch.md)
+- [Contributing](CONTRIBUTING.md)
 
 ### License
 
