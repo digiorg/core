@@ -8,17 +8,21 @@ This directory contains ArgoCD Application manifests managed by the App-of-Apps 
 apps/
 ├── README.md
 ├── platform/              # Platform infrastructure apps
-│   ├── cert-manager.yaml  # TLS Certificate Management (Wave 0)
-│   ├── postgresql.yaml    # Shared PostgreSQL database (Wave 0)
-│   ├── nats.yaml          # NATS JetStream Message Broker (Wave 0)
-│   ├── argocd.yaml        # Self-managed ArgoCD (Wave 1)
-│   ├── keycloak.yaml      # Identity Provider (Wave 1)
-│   ├── landingpage.yaml   # Platform Entry Point (Wave 2)
-│   ├── gitea.yaml         # Git Service (Wave 2)
-│   ├── backstage.yaml     # Developer Portal (Wave 2)
-│   ├── grafana.yaml       # Prometheus + Grafana (Wave 2)
-│   ├── crossplane.yaml    # Infrastructure as Code (Wave 3)
-│   └── kyverno.yaml       # Policy Engine (Wave 3)
+│   ├── cert-manager.yaml      # TLS Certificate Management (Wave 0)
+│   ├── postgresql.yaml        # Shared PostgreSQL database (Wave 0)
+│   ├── nats.yaml              # NATS JetStream Message Broker (Wave 0)
+│   ├── external-secrets.yaml  # External Secrets Operator (Wave 0)
+│   ├── opensearch.yaml        # Log and Trace Storage backend (Wave 0)
+│   ├── argocd.yaml            # Self-managed ArgoCD (Wave 1)
+│   ├── keycloak.yaml          # Identity Provider (Wave 1)
+│   ├── landingpage.yaml       # Platform Entry Point (Wave 2)
+│   ├── gitea.yaml             # Git Service (Wave 2)
+│   ├── backstage.yaml         # Developer Portal (Wave 2)
+│   ├── grafana.yaml           # Prometheus + Grafana (Wave 2)
+│   ├── jaeger.yaml            # Distributed Tracing (Wave 2)
+│   ├── sonarqube.yaml         # Code Quality (Wave 2)
+│   ├── crossplane.yaml        # Infrastructure as Code (Wave 3)
+│   └── kyverno.yaml           # Policy Engine (Wave 3)
 ```
 
 ## Sync Waves
@@ -28,9 +32,9 @@ Applications are deployed in order using ArgoCD sync waves:
 | Wave | Applications | Description |
 |------|--------------|-------------|
 | -1 | root-app | Bootstrap (deployed by setup script) |
-| 0 | cert-manager, postgresql, nats | TLS certificates + shared database layer + messaging |
+| 0 | cert-manager, postgresql, nats, external-secrets, opensearch | TLS certificates + shared database layer + messaging + secrets management + log/trace storage |
 | 1 | keycloak, argocd | Core infrastructure (IdP, GitOps) |
-| 2 | landingpage, gitea, backstage, grafana | Platform services (depend on PostgreSQL + Keycloak) |
+| 2 | landingpage, gitea, backstage, grafana, jaeger, sonarqube | Platform services (depend on PostgreSQL + Keycloak) |
 | 3 | crossplane, kyverno | Extensions (no Keycloak dependency) |
 
 ## How It Works
@@ -78,12 +82,19 @@ spec:
 
 ## Dependencies
 
+### Wave 0 — Foundation Services
+
+These services have no dependencies and enable all higher waves:
+- **External Secrets Operator** — enables pulling secrets from Azure KeyVault / AWS Secrets Manager into cluster Secrets
+- **OpenSearch** — log and trace storage backend used by Jaeger and Grafana Loki
+
 ### PostgreSQL Dependencies (Wave 1+)
 
 These services require the shared PostgreSQL instance (Wave 0):
 - **Keycloak** — stores realm, user, and session data in the `keycloak` database
 - **Backstage** — stores catalog and scaffolder data in the `backstage` database
 - **Gitea** — stores repository metadata, users, and issues in the `gitea` database
+- **SonarQube** — stores analysis data in the `sonarqube` database
 
 ### Keycloak Dependencies (Wave 2+)
 
@@ -93,6 +104,11 @@ These services require Keycloak for authentication:
 - **Grafana** — OAuth login
 - **Backstage** — OIDC login
 - **Gitea** — OIDC login (configured via Admin UI post-deployment)
+
+### OpenSearch Dependencies (Wave 2+)
+
+These services use OpenSearch as a storage backend:
+- **Jaeger** — stores distributed traces in OpenSearch
 
 ### No Dependencies (Wave 3)
 
@@ -110,6 +126,9 @@ Secrets are created by the setup script **before** ArgoCD is installed:
 | backstage | backstage-secrets | Bootstrap application secret created by the setup script |
 | gitea | gitea-secrets | PostgreSQL password and OIDC client secret |
 | gitea | gitea-admin-secret | Admin username and password (generated, not in Git) |
+| code-quality | sonarqube-db-secret | PostgreSQL password (`SONAR_JDBC_PASSWORD`) |
+| code-quality | sonarqube-monitoring-secret | Liveness probe passcode (`SONAR_WEB_SYSTEMPASSCODE`) |
+| code-quality | sonarqube-saml-secret | Keycloak realm signing certificate for SAML verification |
 
 The setup script does **not** create a bootstrap Grafana secret in the `monitoring` namespace. Refer to the setup script for the exact keys present in each bootstrap secret.
 
