@@ -45,28 +45,40 @@ Add the following to your `/etc/hosts` file (or `C:\Windows\System32\drivers\etc
 nu scripts/local-setup.nu up
 ```
 
-This runs in two phases:
+This runs in three phases:
 
 **Phase 1 (Bootstrap):**
 1. Create a KinD cluster (`digiorg-core-dev`)
-2. Install Gateway API CRDs
-3. Install NGINX Ingress Controller
-4. Configure CoreDNS for `digiorg.local`
-5. Create platform secrets (including shared PostgreSQL credentials)
-6. Install ArgoCD (Helm)
-7. Deploy root-app
+2. Set `vm.max_map_count=262144` on the KinD node via `docker exec` (required by OpenSearch embedded Elasticsearch)
+3. Install Gateway API CRDs
+4. Install NGINX Ingress Controller
+5. Configure CoreDNS for `digiorg.local`
+6. Create platform secrets (including shared PostgreSQL credentials)
+7. Install ArgoCD (Helm)
+8. Deploy root-app
 
 **Phase 2 (App-of-Apps):**
 ArgoCD syncs all platform components via sync waves:
-- Wave 0: cert-manager + ClusterIssuers, PostgreSQL
-- Wave 1: Keycloak, ArgoCD (self-managed) — depends on PostgreSQL
-- Wave 2: Landing Page, Gitea, Backstage, Monitoring — depends on Keycloak and PostgreSQL
-- Wave 3: Crossplane, Kyverno
+- Wave 0: cert-manager, external-secrets, nats, opensearch, postgresql
+- Wave 1: keycloak, argocd (self-managed)
+- Wave 2: landingpage, backstage, gitea, grafana, jaeger, sonarqube
+- Wave 3: crossplane, kyverno
+
+**Phase 3 (Post-Deployment Configuration):**
+After all apps are healthy, the script runs automated post-deployment steps:
+- **configure_gitea**: Registers the self-signed CA in Gitea's trust store, adds Keycloak as an OIDC provider via the `gitea admin auth` CLI, creates `digiorgadmin` and `digiorgdeveloper` users, and creates the `DigiOrg` organisation via the `tea` CLI.
+- **configure_sonarqube**: Waits for SonarQube to report `UP`, sets `serverBaseURL`, pushes all `sonar.auth.saml.*` settings via the Settings API, and enables SAML.
+- **restart_oidc_dependent_pods**: Restarts ArgoCD Server, Grafana, Backstage, and Landing Page to pick up updated OIDC configuration.
+- **patch_argocd_oidc_ca**: Embeds the self-signed CA cert in the ArgoCD Helm release via `helm upgrade --reuse-values`, saves the cert to `./digiorg-local-ca.crt`.
+
+> **Note:** Common `make` shortcuts are available — run `make help` to see them.
 
 ### Trust the Self-Signed CA Certificate
 
 The platform uses a self-signed CA certificate for `digiorg.local`. To avoid browser warnings,
 import the CA cert into your OS trust store:
+
+> **Note:** `nu scripts/local-setup.nu up` automatically saves the cert to `./digiorg-local-ca.crt`. The `kubectl` command below is an alternative if you need to extract it manually.
 
 ```bash
 # Extract CA cert from cluster
@@ -100,13 +112,15 @@ HTTP (`http://`) automatically redirects to HTTPS.
 | Grafana | https://digiorg.local/grafana | Login via Keycloak |
 | Backstage | https://digiorg.local/backstage | Login via Keycloak or Guest |
 | Gitea | https://digiorg.local/gitea | `gitea_admin` (see note below) |
+| SonarQube | https://digiorg.local/sonarqube | admin / admin — change immediately |
+| Jaeger | https://digiorg.local/jaeger | Login via Keycloak |
 
 **Gitea Admin Password:**
 ```bash
 kubectl get secret gitea-admin-secret -n gitea -o jsonpath='{.data.password}' | base64 -d && echo
 ```
 
-> **Note:** Gitea OIDC via Keycloak requires manual configuration in the Gitea Admin UI after first login. See [Gitea README](../../platform/base/gitea/README.md) for details.
+> **Note:** Keycloak OIDC is auto-configured by `local-setup.nu` (Phase 3). Use **Login via Keycloak** or the `gitea_admin` account.
 
 ### Set Kubeconfig
 
@@ -149,13 +163,30 @@ nu scripts/local-setup.nu reset
 │                                                                         │
 │  Root App discovers apps/ directory                                     │
 │      │                                                                  │
-│      ├── apps/platform/keycloak.yaml    → Wave 1                       │
-│      ├── apps/platform/argocd.yaml      → Wave 1 (self-managed)        │
-│      ├── apps/platform/gitea.yaml       → Wave 2                       │
-│      ├── apps/platform/backstage.yaml   → Wave 2                       │
-│      ├── apps/platform/grafana.yaml      → Wave 2                      │
-│      ├── apps/platform/crossplane.yaml  → Wave 3                       │
-│      └── apps/platform/kyverno.yaml     → Wave 3                       │
+│      ├── apps/platform/cert-manager.yaml     → Wave 0                  │
+│      ├── apps/platform/external-secrets.yaml → Wave 0                  │
+│      ├── apps/platform/nats.yaml             → Wave 0                  │
+│      ├── apps/platform/opensearch.yaml       → Wave 0                  │
+│      ├── apps/platform/postgresql.yaml       → Wave 0                  │
+│      ├── apps/platform/keycloak.yaml         → Wave 1                  │
+│      ├── apps/platform/argocd.yaml           → Wave 1 (self-managed)   │
+│      ├── apps/platform/landingpage.yaml      → Wave 2                  │
+│      ├── apps/platform/backstage.yaml        → Wave 2                  │
+│      ├── apps/platform/gitea.yaml            → Wave 2                  │
+│      ├── apps/platform/grafana.yaml          → Wave 2                  │
+│      ├── apps/platform/jaeger.yaml           → Wave 2                  │
+│      ├── apps/platform/sonarqube.yaml        → Wave 2                  │
+│      ├── apps/platform/crossplane.yaml       → Wave 3                  │
+│      └── apps/platform/kyverno.yaml          → Wave 3                  │
+│                                                                         │
+└───────────────────────────────────┬─────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    Post-Deployment (Phase 3)                            │
+│                                                                         │
+│  configure_gitea → configure_sonarqube → restart_oidc_dependent_pods   │
+│  → patch_argocd_oidc_ca                                                 │
 │                                                                         │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
@@ -165,10 +196,21 @@ nu scripts/local-setup.nu reset
 | Wave | Applications | Dependencies |
 |------|--------------|--------------|
 | -1 | root-app | Bootstrap (deployed by script) |
-| 0 | postgresql | Ingress, Secrets (shared DB for platform services) |
-| 1 | keycloak, argocd | keycloak: PostgreSQL, Ingress; argocd: Ingress (self-managed after Helm install) |
-| 2 | gitea, backstage, grafana | gitea: PostgreSQL; backstage: PostgreSQL, Keycloak (OIDC); grafana: None |
-| 3 | crossplane, kyverno | None |
+| 0 | cert-manager, external-secrets, nats, opensearch, postgresql | Ingress, CoreDNS, Secrets (foundational services) |
+| 1 | keycloak, argocd | keycloak: postgresql, cert-manager; argocd: Ingress (self-managed after Helm install) |
+| 2 | landingpage, backstage, gitea, grafana, jaeger, sonarqube | keycloak (OIDC/SAML); backstage, gitea, sonarqube: postgresql; jaeger: opensearch |
+| 3 | crossplane, kyverno | All platform services healthy |
+
+### Phase 3: Post-Deployment Configuration
+
+`local-setup.nu up` automatically runs the following after all ArgoCD apps are healthy:
+
+| Step | Function | What it does |
+|------|----------|--------------|
+| 1 | `configure_gitea` | Registers the self-signed CA in Gitea's trust store; adds Keycloak as an OIDC provider via `gitea admin auth add-oauth`; creates `digiorgadmin` + `digiorgdeveloper` users; creates the `DigiOrg` organisation via the `tea` CLI |
+| 2 | `configure_sonarqube` | Waits for `status: UP`; sets `serverBaseURL`; pushes all `sonar.auth.saml.*` settings via the Settings API; enables SAML |
+| 3 | `restart_oidc_dependent_pods` | Restarts ArgoCD Server, Grafana, Backstage, and Landing Page to pick up the updated OIDC/Keycloak configuration |
+| 4 | `patch_argocd_oidc_ca` | Embeds the self-signed CA cert in the ArgoCD Helm release via `helm upgrade --reuse-values`; saves `./digiorg-local-ca.crt` |
 
 ## Development Workflow
 
@@ -195,7 +237,7 @@ ArgoCD detects the change and syncs automatically (selfHeal enabled).
 kubectl get applications -n argocd
 
 # UI
-open http://digiorg.local/argocd
+open https://digiorg.local/argocd
 ```
 
 ### 5. Manual Sync (if needed)
@@ -238,6 +280,8 @@ spec:
       prune: true
 ```
 
+> **Note:** The example uses an SSH URL (`git@github.com:digiorg/core.git`), which requires SSH key setup. HTTPS alternative: `https://github.com/digiorg/core.git`
+
 ## Troubleshooting
 
 ### Cluster Won't Start
@@ -254,7 +298,7 @@ nu scripts/local-setup.nu reset
 
 ```bash
 # Check ArgoCD UI
-open http://digiorg.local/argocd
+open https://digiorg.local/argocd
 
 # Check app status
 kubectl get applications -n argocd -o wide
@@ -286,7 +330,7 @@ kubectl get ingress -A
 kubectl get pods -n keycloak
 
 # Check realm exists
-curl -s http://digiorg.local/keycloak/realms/digiorg-core-platform | jq .realm
+curl -s https://digiorg.local/keycloak/realms/digiorg-core-platform | jq .realm
 ```
 
 ## Resource Usage
@@ -296,12 +340,18 @@ The local cluster uses approximately:
 | Component | CPU | Memory |
 |-----------|-----|--------|
 | KinD Node | 2 cores | 4 GB |
-| Shared PostgreSQL | 0.3 cores | 512 MB |
+| SonarQube | 200m | 2Gi request (4Gi limit — includes embedded Elasticsearch) |
+| Prometheus + Grafana | 0.5 cores | 1 GB |
 | Keycloak | 0.4 cores | 768 MB |
+| Backstage | 0.4 cores | 768 MB |
+| Shared PostgreSQL | 0.3 cores | 512 MB |
 | ArgoCD | 0.5 cores | 512 MB |
+| OpenSearch | 250m | 512Mi request (1Gi limit) |
 | Crossplane | 0.2 cores | 256 MB |
 | Kyverno | 0.2 cores | 256 MB |
-| Prometheus + Grafana | 0.5 cores | 1 GB |
-| Backstage | 0.4 cores | 768 MB |
+| Jaeger + oauth2-proxy | ~100m | ~256Mi |
+| NATS + Surveyor | ~75m | ~96Mi |
+| External Secrets | ~25m | ~64Mi |
+| Landing Page | 10m | 32Mi |
 
-**Recommended:** At least 8 GB RAM allocated to Docker.
+**Recommended:** At least 16 GB RAM allocated to Docker (SonarQube alone requests 2Gi with a 4Gi limit for its embedded Elasticsearch).
