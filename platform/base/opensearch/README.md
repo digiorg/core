@@ -4,6 +4,14 @@
 
 OpenSearch is an open-source, Apache 2.0-licensed search and analytics engine forked from Elasticsearch 7.10.2. It serves as the **persistent observability storage backend** for the DigiOrg Core Platform.
 
+## Files
+
+| File | Purpose |
+|------|---------|
+| `values.yaml` | OpenSearch Helm Chart values (cluster identity, JVM heap, auth, storage, resource limits). Chart: `opensearch-project/opensearch` v3.6.0, Repo: https://helm.opensearch.org |
+| `servicemonitor.yaml` | Prometheus Operator ServiceMonitor scraping OpenSearch metrics at `/_prometheus/metrics` (port 9200, interval 30s) |
+| `kustomization.yaml` | Kustomize entrypoint — manages only supplementary resources (ServiceMonitor). OpenSearch itself is deployed via Helm by the ArgoCD Application (`apps/platform/opensearch.yaml`). Running `kubectl apply -k platform/base/opensearch/` deploys **only the ServiceMonitor**, not OpenSearch itself. |
+
 ## Role in the Platform
 
 ```
@@ -32,7 +40,9 @@ OpenSearch is an open-source, Apache 2.0-licensed search and analytics engine fo
 
 ## Architecture
 
-This deployment uses the **official OpenSearch Helm chart** (`opensearch-project/opensearch`) in single-node mode for local development.
+This deployment uses the **official OpenSearch Helm chart** (`opensearch-project/opensearch` v3.6.0, repo: https://helm.opensearch.org) in single-node mode for local development.
+
+> **Note:** Running `kubectl apply -k platform/base/opensearch/` deploys **only the ServiceMonitor** — not OpenSearch itself. OpenSearch is deployed by the ArgoCD Application at `apps/platform/opensearch.yaml` via Helm.
 
 ```
 platform-db namespace
@@ -84,6 +94,10 @@ curl http://opensearch-cluster-master.platform-db.svc.cluster.local:9200/_cat/in
 | `DISABLE_SECURITY_PLUGIN` | `true` | Local dev only — remove in production |
 | Storage | 8Gi PVC | Default provisioner (standard on KinD) |
 | `vm.max_map_count` | 262144 | Set at KinD node level via `docker exec` in `local-setup.nu` |
+| CPU | 250m request / 1000m limit | Kubernetes resource limits |
+| Memory | 512Mi request / 1Gi limit | Kubernetes resource limits |
+| `rbac.create` | `false` | No ServiceAccount or RBAC resources created; required if enabling the Security Plugin in production |
+| `discovery.type` | `single-node` | Set in `opensearch.yml`; suppresses cluster bootstrap checks — the actual mechanism behind `singleNode: true` |
 
 ## Jaeger Integration
 
@@ -122,6 +136,48 @@ OpenSearch is deployed in **Wave 0** — same wave as PostgreSQL — to ensure i
 |------|---------|
 | 0 | cert-manager, postgresql, nats, **opensearch** |
 | 2 | jaeger (connects to opensearch), grafana, backstage, landingpage |
+
+## Monitoring
+
+### Prometheus Monitoring
+
+A Prometheus Operator **ServiceMonitor** (`opensearch`, namespace `platform-db`) is deployed alongside OpenSearch to expose cluster metrics to Prometheus.
+
+| Property | Value |
+|----------|-------|
+| ServiceMonitor name | `opensearch` |
+| Namespace | `platform-db` |
+| Scrape endpoint | `/_prometheus/metrics` on port `9200` (HTTP) |
+| Scrape interval | `30s` |
+| Required label | `release: prometheus` |
+
+The `release: prometheus` label on the ServiceMonitor must match the kube-prometheus-stack Helm release name for the Prometheus Operator to discover it — this follows the same pattern used by all other ServiceMonitors in the platform.
+
+**Verify the ServiceMonitor is deployed:**
+
+```bash
+kubectl get servicemonitor -n platform-db
+```
+
+**Verify Prometheus has picked up the target** (port-forward Prometheus and open in browser):
+
+```bash
+kubectl port-forward -n monitoring svc/prometheus-kube-prometheus-prometheus 9090:9090
+# Then open http://localhost:9090/targets and search for opensearch
+```
+
+**Quick scrape test from within the cluster:**
+
+```bash
+kubectl exec -n platform-db opensearch-cluster-master-0 -- \
+  curl -s http://localhost:9200/_prometheus/metrics | head -20
+```
+
+**Example PromQL query to confirm scraping is active:**
+
+```
+opensearch_fs_total_total_in_bytes
+```
 
 ## Production Considerations
 
