@@ -1,74 +1,81 @@
 # Crossplane
 
-This directory contains Crossplane configurations for multi-cloud infrastructure management.
+This directory contains Crossplane configurations for infrastructure automation via Kubernetes-native APIs.
 
 ## Structure
 
 ```
 crossplane/
-├── providers/       # Provider configurations
-│   ├── aws.yaml
-│   ├── azure.yaml
-│   ├── gcp.yaml
-│   └── ionos.yaml
-├── xrds/            # Composite Resource Definitions
-│   ├── database.yaml
-│   ├── kubernetes.yaml
-│   ├── network.yaml
-│   └── storage.yaml
-└── compositions/    # Compositions per provider
-    ├── aws/
-    ├── azure/
-    ├── gcp/
-    └── ionos/
+├── providers/       # Provider installations and ProviderConfigs
+│   ├── provider-kubernetes.yaml
+│   ├── provider-helm.yaml
+│   ├── provider-http.yaml
+│   └── kustomization.yaml
+├── xrds/            # Composite Resource Definitions (add here)
+└── compositions/    # Compositions live in core-app-catalog, not here
 ```
 
-## Concepts
+## Installed Providers
 
-### XRDs (Composite Resource Definitions)
+### provider-kubernetes
 
-XRDs define the **API** that platform users interact with. They are provider-agnostic:
+Manages Kubernetes resources (Deployments, Services, ConfigMaps, etc.) in the local or remote clusters.
+Used to compose higher-level abstractions that create Kubernetes workloads.
+
+- Package: `xpkg.upbound.io/crossplane-contrib/provider-kubernetes:v0.15.0`
+- ProviderConfig: `InjectedIdentity` — uses the `crossplane-provider-kubernetes` ServiceAccount token
+- Permissions: `cluster-admin` ClusterRoleBinding on `crossplane-provider-kubernetes` SA
+
+### provider-helm
+
+Installs and manages Helm releases as Crossplane managed resources.
+Used to compose platform capabilities that are delivered via Helm charts.
+
+- Package: `xpkg.upbound.io/crossplane-contrib/provider-helm:v0.20.3`
+- ProviderConfig: `InjectedIdentity` — uses the `crossplane-provider-helm` ServiceAccount token
+- Permissions: `cluster-admin` ClusterRoleBinding on `crossplane-provider-helm` SA
+
+### provider-http
+
+Makes HTTP requests as Crossplane managed resources.
+Used to integrate with external REST APIs and webhooks as part of compositions.
+
+- Package: `xpkg.upbound.io/crossplane-contrib/provider-http:v0.5.1`
+- ProviderConfig: `None` credentials — no cluster permissions required
+
+## How ProviderConfigs Work
+
+Each provider has a `ProviderConfig` named `default`. Managed resources reference it via:
 
 ```yaml
-apiVersion: platform.digiorg.io/v1alpha1
-kind: Database
-metadata:
-  name: my-database
 spec:
-  engine: postgres
-  size: small
-  provider: aws
+  providerConfigRef:
+    name: default
 ```
 
-### Compositions
+The `InjectedIdentity` source means the provider pod uses its Kubernetes ServiceAccount token,
+which is bound to `cluster-admin` to allow full cluster management. The `None` source (provider-http)
+means no credentials are injected — the provider makes unauthenticated or externally-configured requests.
 
-Compositions define **how** the XRD is implemented for each provider:
+## Adding XRDs
 
-- `aws/database.yaml` → Creates RDS
-- `azure/database.yaml` → Creates Azure Database
-- `gcp/database.yaml` → Creates Cloud SQL
+Define new Composite Resource Definitions in `xrds/`. These declare the platform API that users interact with:
 
-### Providers
-
-Providers are the Crossplane plugins that communicate with cloud APIs:
-
-- `provider-aws`
-- `provider-azure`
-- `provider-gcp`
-- `provider-kubernetes`
-- `provider-helm`
-
-## Adding a New Resource Type
-
-1. Define the XRD in `xrds/`
-2. Create Compositions for each provider in `compositions/<provider>/`
-3. Document the new resource in this README
-4. Update platform documentation
-
-## Testing
-
-Test compositions locally using the Crossplane CLI:
-
-```bash
-crossplane beta validate crossplane/xrds/ crossplane/compositions/
+```yaml
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xapps.platform.digiorg.io
+spec:
+  group: platform.digiorg.io
+  names:
+    kind: XApp
+    plural: xapps
+  ...
 ```
+
+## Adding Compositions
+
+Compositions live in the **core-app-catalog** repository, not here. This keeps application-level
+compositions separate from the platform provider infrastructure. Reference the XRD group and kind
+from this repo when authoring compositions there.
