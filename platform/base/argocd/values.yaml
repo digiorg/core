@@ -26,6 +26,33 @@ configs:
     # Reconciliation timeout
     timeout.reconciliation: 60s
 
+    # Custom health check for Crossplane Provider resources
+    # Fixes: "cannot perform concat operation between string and nil" (issue #175)
+    # The built-in Lua script fails when condition.message is nil during provider initialization.
+    resource.customizations.health.pkg.crossplane.io_Provider: |
+      hs = {}
+      if obj.status == nil or obj.status.conditions == nil then
+        hs.status = "Progressing"
+        hs.message = "Waiting for provider to initialize"
+        return hs
+      end
+      for i, condition in ipairs(obj.status.conditions) do
+        if condition.type == "Healthy" then
+          if condition.status == "True" then
+            hs.status = "Healthy"
+            hs.message = condition.message or "Provider is healthy"
+            return hs
+          else
+            hs.status = "Progressing"
+            hs.message = condition.message or "Provider is not yet healthy"
+            return hs
+          end
+        end
+      end
+      hs.status = "Progressing"
+      hs.message = "Waiting for Healthy condition"
+      return hs
+
     # SSO/OIDC via Keycloak (digiorg-core-platform realm)
     # Using digiorg.local with path-based routing (standard port 80)
     # Requires /etc/hosts: 127.0.0.1 digiorg.local
