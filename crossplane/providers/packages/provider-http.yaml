@@ -4,11 +4,3 @@ metadata:
   name: provider-http
 spec:
   package: xpkg.upbound.io/crossplane-contrib/provider-http:v0.5.1
----
-apiVersion: http.crossplane.io/v1alpha1
-kind: ProviderConfig
-metadata:
-  name: default
-spec:
-  credentials:
-    source: None

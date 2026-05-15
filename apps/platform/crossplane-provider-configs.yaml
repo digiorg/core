@@ -1,20 +1,20 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: crossplane-providers
+  name: crossplane-provider-configs
   namespace: argocd
   finalizers:
     - resources-finalizer.argocd.argoproj.io
   annotations:
-    # Wave 4: Depends on Crossplane (Wave 3) being installed and CRDs being available
-    argocd.argoproj.io/sync-wave: "4"
+    # Wave 6: Depends on crossplane-providers (Wave 4) being installed and CRDs being available
+    argocd.argoproj.io/sync-wave: "6"
 spec:
   project: default
 
   source:
     repoURL: https://github.com/digiorg/core.git
     targetRevision: HEAD
-    path: crossplane/providers/packages
+    path: crossplane/providers/configs
 
   destination:
     server: https://kubernetes.default.svc
@@ -28,8 +28,8 @@ spec:
       - CreateNamespace=true
       - ServerSideApply=true
     retry:
-      limit: 5
+      limit: 10
       backoff:
-        duration: 5s
+        duration: 10s
         factor: 2
         maxDuration: 3m
