@@ -21,8 +21,7 @@ spec:
         spec:
           serviceAccountName: crossplane-provider-helm
           containers:
-            - name: provider-helm
-              image: xpkg.upbound.io/crossplane-contrib/provider-helm:v1.2.0
+            - name: package-runtime
 ---
 apiVersion: v1
 kind: ServiceAccount
