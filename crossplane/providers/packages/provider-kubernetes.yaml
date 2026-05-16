@@ -21,8 +21,7 @@ spec:
         spec:
           serviceAccountName: crossplane-provider-kubernetes
           containers:
-            - name: provider-kubernetes
-              image: xpkg.upbound.io/crossplane-contrib/provider-kubernetes:v1.2.1
+            - name: package-runtime
 ---
 apiVersion: v1
 kind: ServiceAccount
