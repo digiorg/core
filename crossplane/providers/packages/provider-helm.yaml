@@ -3,7 +3,7 @@ kind: Provider
 metadata:
   name: provider-helm
 spec:
-  package: xpkg.upbound.io/crossplane-contrib/provider-helm:v0.20.3
+  package: xpkg.upbound.io/crossplane-contrib/provider-helm:v1.2.0
   runtimeConfigRef:
     apiVersion: pkg.crossplane.io/v1beta1
     kind: DeploymentRuntimeConfig
@@ -22,7 +22,7 @@ spec:
           serviceAccountName: crossplane-provider-helm
           containers:
             - name: provider-helm
-              image: xpkg.upbound.io/crossplane-contrib/provider-helm:v0.22.0
+              image: xpkg.upbound.io/crossplane-contrib/provider-helm:v1.2.0
 ---
 apiVersion: v1
 kind: ServiceAccount

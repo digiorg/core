@@ -3,7 +3,7 @@ kind: Provider
 metadata:
   name: provider-kubernetes
 spec:
-  package: xpkg.upbound.io/crossplane-contrib/provider-kubernetes:v0.15.0
+  package: xpkg.upbound.io/crossplane-contrib/provider-kubernetes:v1.2.1
   runtimeConfigRef:
     apiVersion: pkg.crossplane.io/v1beta1
     kind: DeploymentRuntimeConfig
@@ -22,7 +22,7 @@ spec:
           serviceAccountName: crossplane-provider-kubernetes
           containers:
             - name: provider-kubernetes
-              image: xpkg.upbound.io/crossplane-contrib/provider-kubernetes:v0.22.0
+              image: xpkg.upbound.io/crossplane-contrib/provider-kubernetes:v1.2.1
 ---
 apiVersion: v1
 kind: ServiceAccount

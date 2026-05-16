@@ -3,4 +3,4 @@ kind: Provider
 metadata:
   name: provider-http
 spec:
-  package: xpkg.upbound.io/crossplane-contrib/provider-http:v0.5.1
+  package: xpkg.upbound.io/crossplane-contrib/provider-http:v1.0.14
