@@ -3,5 +3,4 @@ kind: Kustomization
 namespace: tracing
 resources:
   - namespace.yaml
-  - servicemonitor.yaml
   - oauth2-proxy.yaml

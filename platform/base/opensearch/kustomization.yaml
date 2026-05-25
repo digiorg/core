@@ -3,9 +3,5 @@ kind: Kustomization
 
 namespace: platform-db
 
-resources:
-  - servicemonitor.yaml
-
-# Note: OpenSearch itself is deployed via Helm by the ArgoCD Application.
-# See: apps/platform/opensearch.yaml
-# This kustomization provides supplementary resources (ServiceMonitor, etc.)
+# ServiceMonitor moved to platform/base/monitoring-extras/ (deployed in Wave 5)
+# OpenSearch itself is deployed via Helm by apps/platform/opensearch.yaml

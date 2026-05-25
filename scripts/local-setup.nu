@@ -515,6 +515,7 @@ def deploy_root_app [] {
     print "  Wave  2: landingpage, backstage, gitea, grafana, jaeger, sonarqube"
     print "  Wave  3: crossplane, kyverno"
     print "  Wave  4: crossplane-providers"
+    print "  Wave  5: monitoring-extras (ServiceMonitors)"
     print "  Wave  6: crossplane-provider-configs"
     print "  Wave  7: crossplane-xrds"
     print "  Wave  8: core-app-catalog"
@@ -545,6 +546,8 @@ def wait_for_argocd_apps [] {
         "crossplane", "kyverno",
         # Wave 4
         "crossplane-providers",
+        # Wave 5
+        "monitoring-extras",
         # Wave 6
         "crossplane-provider-configs",
         # Wave 7

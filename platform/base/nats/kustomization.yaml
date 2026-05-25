@@ -6,7 +6,6 @@ namespace: messaging
 resources:
   - namespace.yaml
   - surveyor.yaml
-  - servicemonitor.yaml
   - grafana-dashboards.yaml
 
 # Note: NATS server itself is deployed via Helm by the ArgoCD Application (apps/platform/nats.yaml)
