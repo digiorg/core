@@ -124,7 +124,11 @@ def "main bootstrap" [] {
     # 3. Install Gateway API CRDs
     print "1.3 Installing Gateway API CRDs..."
     install_gateway_api
-    
+
+    # 3b. Install Prometheus Operator CRDs (required for ServiceMonitors)
+    print "1.3b Installing Prometheus Operator CRDs..."
+    install_prometheus_crds
+
     # 4. Install Ingress Controller
     print "1.4 Installing NGINX Ingress Controller..."
     install_ingress
@@ -231,6 +235,31 @@ def install_gateway_api [] {
         print $"(ansi green)✓ Gateway API CRDs ($gateway_api_version) installed(ansi reset)"
     } catch {
         print $"(ansi yellow)Warning: Could not install Gateway API CRDs, continuing...(ansi reset)"
+    }
+}
+
+# Install Prometheus Operator CRDs (ServiceMonitor, PodMonitor, PrometheusRule)
+# Required before ArgoCD deploys any ServiceMonitor resources.
+# kube-prometheus-stack (grafana, Wave 2) will later adopt and manage these CRDs.
+def install_prometheus_crds [] {
+    let prom_op_version = "v0.82.2"
+    let base_url = $"https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/($prom_op_version)/example/prometheus-operator-crd"
+
+    let crds = [
+        "monitoring.coreos.com_servicemonitors.yaml"
+        "monitoring.coreos.com_podmonitors.yaml"
+        "monitoring.coreos.com_prometheusrules.yaml"
+    ]
+
+    for crd in $crds {
+        let result = (do -i {
+            kubectl apply --server-side -f $"($base_url)/($crd)"
+        } | complete)
+        if $result.exit_code == 0 {
+            print $"(ansi green)✓ ($crd) installed(ansi reset)"
+        } else {
+            print $"(ansi yellow)⚠ ($crd): ($result.stderr | str trim)(ansi reset)"
+        }
     }
 }
 
