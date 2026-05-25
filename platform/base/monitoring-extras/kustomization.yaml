@@ -1,0 +1,9 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# ServiceMonitors consolidated here — deployed in Wave 5 to ensure
+# kube-prometheus-stack CRDs (from grafana, Wave 2) are fully registered.
+resources:
+  - nats-servicemonitor.yaml
+  - jaeger-servicemonitor.yaml
+  - opensearch-servicemonitor.yaml
