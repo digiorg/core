@@ -376,10 +376,43 @@ def create_platform_namespaces_secrets [] {
         --from-literal=GITHUB_TOKEN=""
         --dry-run=client -o yaml | kubectl apply -f -)
 
-    # Backstage kubernetes-ingestor ServiceAccount token (long-lived)
-    # Pre-created so Backstage deployment can mount it; token populated by K8s once SA exists
-    let backstage_k8s_token_yaml = "apiVersion: v1\nkind: Secret\nmetadata:\n  name: backstage-k8s-token\n  namespace: backstage\n  annotations:\n    kubernetes.io/service-account.name: backstage\ntype: kubernetes.io/service-account-token"
-    $backstage_k8s_token_yaml | kubectl apply -f -
+    # Backstage kubernetes-ingestor: create SA first, then token secret
+    # SA is idempotent — ArgoCD will re-manage it later via platform/base/backstage/rbac.yaml
+    print "Creating Backstage ServiceAccount and kubernetes-ingestor token..."
+    (kubectl create serviceaccount backstage -n backstage
+        --dry-run=client -o yaml | kubectl apply -f -)
+
+    # Create token secret via temp file (reliable Nushell approach)
+    let token_secret_file = (mktemp --suffix=".yaml")
+    "apiVersion: v1
+kind: Secret
+metadata:
+  name: backstage-k8s-token
+  namespace: backstage
+  annotations:
+    kubernetes.io/service-account.name: backstage
+type: kubernetes.io/service-account-token" | save --force $token_secret_file
+    kubectl apply -f $token_secret_file
+    rm -f $token_secret_file
+
+    # Wait for Token Controller to populate the secret (requires SA to exist first)
+    print "Waiting for backstage-k8s-token to be populated by Token Controller..."
+    mut token_ready = false
+    for _ in 1..30 {
+        let result = (do -i {
+            kubectl get secret backstage-k8s-token -n backstage -o jsonpath='{.data.token}'
+        } | complete)
+        if $result.exit_code == 0 and ($result.stdout | str trim) != "" {
+            $token_ready = true
+            break
+        }
+        sleep 1sec
+    }
+    if $token_ready {
+        print $"(ansi green)✓ backstage-k8s-token ready(ansi reset)"
+    } else {
+        print $"(ansi yellow)⚠ backstage-k8s-token not yet populated — Backstage will retry(ansi reset)"
+    }
 
     # Monitoring namespace (Grafana uses Helm values for OAuth secret)
     kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -

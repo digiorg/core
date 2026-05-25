@@ -95,7 +95,7 @@ spec:
                 secretKeyRef:
                   name: backstage-k8s-token
                   key: token
-                  optional: false
+                  optional: true
           resources:
             requests:
               memory: "512Mi"
