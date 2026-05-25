@@ -15,6 +15,7 @@ spec:
       labels:
         app: backstage
     spec:
+      serviceAccountName: backstage
       # Wait for PostgreSQL to be ready before starting Backstage
       initContainers:
         - name: wait-for-postgres
@@ -84,6 +85,17 @@ spec:
                   name: backstage-secrets
                   key: GITHUB_TOKEN
                   optional: true
+            # Kubernetes Ingestor — in-cluster configuration
+            # KUBERNETES_API_URL: internal cluster API server (Backstage runs in-cluster)
+            - name: KUBERNETES_API_URL
+              value: "https://kubernetes.default.svc"
+            # Token from long-lived ServiceAccount secret (created by local-setup.nu)
+            - name: KUBERNETES_SERVICE_ACCOUNT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: backstage-k8s-token
+                  key: token
+                  optional: false
           resources:
             requests:
               memory: "512Mi"

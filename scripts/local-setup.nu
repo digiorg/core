@@ -375,7 +375,12 @@ def create_platform_namespaces_secrets [] {
         --from-literal=AUTH_OIDC_CLIENT_SECRET=($backstage_oidc_secret)
         --from-literal=GITHUB_TOKEN=""
         --dry-run=client -o yaml | kubectl apply -f -)
-    
+
+    # Backstage kubernetes-ingestor ServiceAccount token (long-lived)
+    # Pre-created so Backstage deployment can mount it; token populated by K8s once SA exists
+    let backstage_k8s_token_yaml = "apiVersion: v1\nkind: Secret\nmetadata:\n  name: backstage-k8s-token\n  namespace: backstage\n  annotations:\n    kubernetes.io/service-account.name: backstage\ntype: kubernetes.io/service-account-token"
+    $backstage_k8s_token_yaml | kubectl apply -f -
+
     # Monitoring namespace (Grafana uses Helm values for OAuth secret)
     kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
     
@@ -476,6 +481,10 @@ def deploy_root_app [] {
     print "  Wave  1: keycloak, argocd (self-managed)"
     print "  Wave  2: landingpage, backstage, gitea, grafana, jaeger, sonarqube"
     print "  Wave  3: crossplane, kyverno"
+    print "  Wave  4: crossplane-providers"
+    print "  Wave  6: crossplane-provider-configs"
+    print "  Wave  7: crossplane-xrds"
+    print "  Wave  8: core-app-catalog"
 
     # Wait for apps to sync
     print ""
@@ -500,7 +509,15 @@ def wait_for_argocd_apps [] {
         # Wave 2
         "landingpage", "backstage", "gitea", "grafana", "jaeger", "sonarqube",
         # Wave 3
-        "crossplane", "kyverno"
+        "crossplane", "kyverno",
+        # Wave 4
+        "crossplane-providers",
+        # Wave 6
+        "crossplane-provider-configs",
+        # Wave 7
+        "crossplane-xrds",
+        # Wave 8
+        "core-app-catalog"
     ]
     
     mut all_healthy = false
