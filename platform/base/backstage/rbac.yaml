@@ -1,0 +1,46 @@
+# RBAC for Backstage kubernetes-ingestor
+# Grants Backstage read-only access to Crossplane XRDs, AppClaims, and standard K8s resources
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: backstage
+  namespace: backstage
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: backstage-kubernetes-ingestor
+rules:
+  # Crossplane XRDs and Compositions
+  - apiGroups: ["apiextensions.crossplane.io"]
+    resources: ["compositeresourcedefinitions", "compositions"]
+    verbs: ["get", "list", "watch"]
+  # AppClaims and Applications (platform.digiorg.io)
+  - apiGroups: ["platform.digiorg.io"]
+    resources: ["*"]
+    verbs: ["get", "list", "watch"]
+  # Standard Kubernetes resources for workload ingestion
+  - apiGroups: [""]
+    resources: ["namespaces", "pods", "services", "configmaps", "serviceaccounts"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+    verbs: ["get", "list", "watch"]
+  # CRDs for XRD discovery
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: backstage-kubernetes-ingestor
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: backstage-kubernetes-ingestor
+subjects:
+  - kind: ServiceAccount
+    name: backstage
+    namespace: backstage
