@@ -1,0 +1,104 @@
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: applications.platform.digiorg.io
+spec:
+  group: platform.digiorg.io
+  names:
+    kind: Application
+    plural: applications
+  claimNames:
+    kind: AppClaim
+    plural: appclaims
+  versions:
+    - name: v1alpha1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required:
+                - appName
+                - team
+                - size
+              properties:
+                appName:
+                  type: string
+                  pattern: '^[a-z0-9][a-z0-9-]{0,31}$'
+                  description: "RFC 1123 App-Name, max 32 characters"
+                team:
+                  type: string
+                  description: "Owner team name (e.g. platform-team)"
+                size:
+                  type: string
+                  enum: [S, M, L]
+                  description: "T-shirt size: S=Dev/Sandbox, M=Standard, L=Production"
+                database:
+                  type: object
+                  properties:
+                    enabled:
+                      type: boolean
+                      default: false
+                    engine:
+                      type: string
+                      enum: [postgresql]
+                      default: postgresql
+                services:
+                  type: array
+                  items:
+                    type: object
+                    required: [name, image, port]
+                    properties:
+                      name:
+                        type: string
+                        description: "Service name"
+                      image:
+                        type: string
+                        description: "Container image reference"
+                      port:
+                        type: integer
+                        minimum: 1
+                        maximum: 65535
+                        description: "Container port"
+                      replicas:
+                        type: integer
+                        minimum: 1
+                        default: 1
+                        description: "Override replica count (size preset applies if omitted)"
+                gitea:
+                  type: object
+                  properties:
+                    enabled:
+                      type: boolean
+                      default: false
+                    visibility:
+                      type: string
+                      enum: [private, public]
+                      default: private
+                    cicd:
+                      type: boolean
+                      default: true
+                      description: "Create Gitea Actions pipeline"
+                messaging:
+                  type: object
+                  properties:
+                    enabled:
+                      type: boolean
+                      default: false
+                    subjects:
+                      type: array
+                      items:
+                        type: string
+                      description: "NATS subjects (e.g. my-app.events.>)"
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                  description: "Current provisioning phase"
+                message:
+                  type: string
+                  description: "Human-readable status message"
