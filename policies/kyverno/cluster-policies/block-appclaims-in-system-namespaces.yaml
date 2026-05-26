@@ -1,0 +1,50 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: block-appclaims-in-system-namespaces
+  annotations:
+    policies.kyverno.io/title: Block AppClaims in System Namespaces
+    policies.kyverno.io/category: DigiOrg Platform Governance
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: AppClaim
+    policies.kyverno.io/description: >-
+      Prevents AppClaims from being created or updated in system and platform
+      namespaces. AppClaims are for tenant workloads and must be placed in
+      application or team namespaces to maintain operational isolation between
+      tenant workloads and platform control-plane components.
+spec:
+  validationFailureAction: Enforce
+  background: false
+  rules:
+    - name: block-appclaims-in-system-namespaces
+      match:
+        any:
+          - resources:
+              kinds:
+                - AppClaim
+              namespaces:
+                # Kubernetes system namespaces
+                - kube-system
+                - kube-public
+                - kube-node-lease
+                # DigiOrg platform namespaces
+                - argocd
+                - kyverno
+                - crossplane-system
+                - cert-manager
+                - external-secrets
+                - cnpg-system
+                - keycloak
+                - monitoring
+                - backstage
+                - gitea
+                - tracing
+                - messaging
+                - platform-db
+                - code-quality
+                - platform-apps
+      validate:
+        message: >-
+          AppClaims may not be created or updated in system or platform
+          namespaces. Please use an application or team namespace instead.
+        deny: {}
