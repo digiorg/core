@@ -16,7 +16,7 @@ spec:
   source:
     repoURL: https://github.com/digiorg/core.git
     targetRevision: HEAD
-    path: policies/kyverno/appclaims
+    path: policies/kyverno
 
   destination:
     server: https://kubernetes.default.svc
