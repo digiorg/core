@@ -1,0 +1,27 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: validate-appclaim-size
+  annotations:
+    policies.kyverno.io/title: Validate AppClaim Size
+    policies.kyverno.io/category: AppClaim Validation
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: AppClaim
+    policies.kyverno.io/description: >-
+      Restricts AppClaim spec.size to the supported T-shirt sizes: S, M, or L.
+      Unsupported values cause ambiguous Crossplane composition behavior.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: validate-size
+      match:
+        any:
+          - resources:
+              kinds:
+                - platform.digiorg.io/v1alpha1/AppClaim
+      validate:
+        message: "spec.size must be one of: S, M, L"
+        pattern:
+          spec:
+            size: "S | M | L"
