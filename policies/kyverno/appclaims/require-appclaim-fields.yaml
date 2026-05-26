@@ -1,0 +1,53 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-appclaim-fields
+  annotations:
+    policies.kyverno.io/title: "Require AppClaim Fields"
+    policies.kyverno.io/description: "Requires spec.appName, spec.team, and spec.size on every AppClaim before it enters the cluster."
+    policies.kyverno.io/severity: high
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: require-appname
+      match:
+        any:
+          - resources:
+              kinds:
+                - AppClaim
+              apiGroups:
+                - platform.digiorg.io
+      validate:
+        message: "AppClaim spec.appName is required and must be non-empty"
+        pattern:
+          spec:
+            appName: "?*"
+
+    - name: require-team
+      match:
+        any:
+          - resources:
+              kinds:
+                - AppClaim
+              apiGroups:
+                - platform.digiorg.io
+      validate:
+        message: "AppClaim spec.team is required and must be non-empty"
+        pattern:
+          spec:
+            team: "?*"
+
+    - name: require-size
+      match:
+        any:
+          - resources:
+              kinds:
+                - AppClaim
+              apiGroups:
+                - platform.digiorg.io
+      validate:
+        message: "AppClaim spec.size is required and must be non-empty (valid values: S, M, L)"
+        pattern:
+          spec:
+            size: "?*"
