@@ -25,6 +25,35 @@ Cluster policies apply to all namespaces:
 | `restrict-image-registries` | Allow only approved registries |
 | `require-probes` | Enforce readiness/liveness probes |
 | `disallow-default-namespace` | Block deployments to default namespace |
+| `generate-app-namespace-netpol` | Generate baseline NetworkPolicy for app namespaces |
+
+#### NetworkPolicy Baseline (`generate-app-namespace-netpol`)
+
+**Approach:** generate (not validate).
+
+Validation was rejected because no NetworkPolicies exist yet — validating their
+presence would immediately block all app namespaces. A generate policy instead
+creates a `default-deny-ingress` NetworkPolicy automatically in each app namespace,
+giving a secure-by-default posture without requiring per-app configuration.
+
+**Trigger label:** AppClaim compositions must set the following label on every
+namespace they create:
+
+```yaml
+platform.digiorg.io/type: app
+```
+
+**Effect:** A `default-deny-ingress` NetworkPolicy is created in the namespace,
+blocking all unsolicited inbound traffic. Egress is unrestricted. Applications
+that need inbound traffic (e.g. from an ingress controller) must add their own
+NetworkPolicy allowing it.
+
+**Exclusions:** The following namespaces are excluded by precondition even if they
+accidentally receive the trigger label: `kube-system`, `kube-public`,
+`kube-node-lease`, `default`, `argocd`, `backstage`, `cert-manager`,
+`cnpg-system`, `code-quality`, `crossplane-system`, `external-secrets`, `gitea`,
+`keycloak`, `kyverno`, `messaging`, `monitoring`, `platform-apps`, `platform-db`,
+`tracing`.
 
 ### Policy Exceptions
 

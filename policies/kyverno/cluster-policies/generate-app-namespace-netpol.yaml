@@ -1,0 +1,76 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: generate-app-namespace-netpol
+  annotations:
+    policies.kyverno.io/title: "Generate Baseline NetworkPolicy for App Namespaces"
+    policies.kyverno.io/description: >-
+      Generates a default-deny-ingress NetworkPolicy in DigiOrg application namespaces.
+      Approach: generate (not validate) — no NetworkPolicies exist yet and we want
+      secure-by-default posture without blocking existing resources. AppClaim
+      compositions must label namespaces with platform.digiorg.io/type: app to
+      trigger this policy. System and platform namespaces are excluded via
+      preconditions as a belt-and-suspenders safeguard.
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/category: Network
+spec:
+  rules:
+    - name: generate-default-deny-ingress
+      # Triggered when a Namespace is created or updated with the app label.
+      # AppClaim compositions must set: platform.digiorg.io/type: app
+      match:
+        any:
+          - resources:
+              kinds:
+                - Namespace
+              selector:
+                matchLabels:
+                  platform.digiorg.io/type: app
+      # Belt-and-suspenders: never touch known platform/system namespaces even if
+      # they accidentally receive the app label in future.
+      preconditions:
+        all:
+          - key: "{{request.object.metadata.name}}"
+            operator: NotIn
+            value:
+              - kube-system
+              - kube-public
+              - kube-node-lease
+              - default
+              - argocd
+              - backstage
+              - cert-manager
+              - cnpg-system
+              - code-quality
+              - crossplane-system
+              - external-secrets
+              - gitea
+              - keycloak
+              - kyverno
+              - messaging
+              - monitoring
+              - platform-apps
+              - platform-db
+              - tracing
+      generate:
+        # Re-generate if the policy is updated or the namespace label changes.
+        generateExisting: true
+        synchronize: true
+        apiVersion: networking.k8s.io/v1
+        kind: NetworkPolicy
+        name: default-deny-ingress
+        namespace: "{{request.object.metadata.name}}"
+        data:
+          metadata:
+            labels:
+              app.kubernetes.io/managed-by: kyverno
+              platform.digiorg.io/policy: network-baseline
+          spec:
+            # Match all pods in the namespace.
+            podSelector: {}
+            policyTypes:
+              - Ingress
+            # No ingress rules = deny all unsolicited inbound traffic.
+            # Services that need inbound traffic must define their own NetworkPolicy.
+            # Egress is intentionally unrestricted to preserve DNS, database,
+            # and service-to-service connectivity without further configuration.
