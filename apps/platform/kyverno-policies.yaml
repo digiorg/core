@@ -6,7 +6,9 @@ metadata:
   finalizers:
     - resources-finalizer.argocd.argoproj.io
   annotations:
-    # Wave 4: Deploy after Kyverno (wave 3) is ready
+    # Wave 4: After Kyverno (Wave 3) — policies require Kyverno CRDs to be registered.
+    # AppClaim CRD is registered in Wave 7 (crossplane-xrds); Kyverno 3.x queues
+    # policies for unknown resource types and activates them once the CRD appears.
     argocd.argoproj.io/sync-wave: "4"
 spec:
   project: default
@@ -14,7 +16,7 @@ spec:
   source:
     repoURL: https://github.com/digiorg/core.git
     targetRevision: HEAD
-    path: policies/kyverno
+    path: policies/kyverno/appclaims
 
   destination:
     server: https://kubernetes.default.svc
@@ -28,8 +30,8 @@ spec:
       - CreateNamespace=true
       - ServerSideApply=true
     retry:
-      limit: 10
+      limit: 5
       backoff:
-        duration: 10s
+        duration: 5s
         factor: 2
-        maxDuration: 5m
+        maxDuration: 3m
