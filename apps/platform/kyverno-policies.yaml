@@ -6,7 +6,9 @@ metadata:
   finalizers:
     - resources-finalizer.argocd.argoproj.io
   annotations:
-    # Wave 4: Depends on Kyverno (Wave 3) — kyverno.io/v1 CRD must be registered
+    # Wave 4: After Kyverno (Wave 3) — policies require Kyverno CRDs to be registered.
+    # AppClaim CRD is registered in Wave 7 (crossplane-xrds); Kyverno 3.x queues
+    # policies for unknown resource types and activates them once the CRD appears.
     argocd.argoproj.io/sync-wave: "4"
 spec:
   project: default
@@ -27,7 +29,6 @@ spec:
     syncOptions:
       - CreateNamespace=true
       - ServerSideApply=true
-      - SkipDryRunOnMissingResource=true
     retry:
       limit: 5
       backoff:
