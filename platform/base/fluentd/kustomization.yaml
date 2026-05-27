@@ -9,3 +9,4 @@ resources:
   - configmap.yaml
   - daemonset.yaml
   - service.yaml
+  - grafana-dashboards.yaml
