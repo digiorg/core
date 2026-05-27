@@ -56,6 +56,20 @@ grafana:
       # Index pattern: jaeger-span-YYYY-MM-DD (daily rotation by Jaeger)
       database: "jaeger-span-*"
 
+    # OpenSearch as Elasticsearch-compatible datasource for application and platform logs.
+    # Uses the digiorg-logs-* index pattern written by Fluentd.
+    - name: OpenSearch (Logs)
+      type: elasticsearch
+      url: http://opensearch-cluster-master.platform-db.svc.cluster.local:9200
+      access: proxy
+      isDefault: false
+      jsonData:
+        esVersion: "70"          # OpenSearch is compatible with ES 7.10.2 API
+        timeField: "@timestamp"
+        logMessageField: log
+        logLevelField: level
+      database: "digiorg-logs-*"
+
 prometheus:
   prometheusSpec:
     retention: 1d
