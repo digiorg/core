@@ -7,3 +7,4 @@ resources:
   - nats-servicemonitor.yaml
   - jaeger-servicemonitor.yaml
   - opensearch-servicemonitor.yaml
+  - fluentd-servicemonitor.yaml
