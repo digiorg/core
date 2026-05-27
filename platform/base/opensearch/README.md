@@ -10,7 +10,8 @@ OpenSearch is an open-source, Apache 2.0-licensed search and analytics engine fo
 |------|---------|
 | `values.yaml` | OpenSearch Helm Chart values (cluster identity, JVM heap, auth, storage, resource limits). Chart: `opensearch-project/opensearch` v3.6.0, Repo: https://helm.opensearch.org |
 | `servicemonitor.yaml` | Prometheus Operator ServiceMonitor scraping OpenSearch metrics at `/_prometheus/metrics` (port 9200, interval 30s) |
-| `kustomization.yaml` | Kustomize entrypoint — manages only supplementary resources (ServiceMonitor). OpenSearch itself is deployed via Helm by the ArgoCD Application (`apps/platform/opensearch.yaml`). Running `kubectl apply -k platform/base/opensearch/` deploys **only the ServiceMonitor**, not OpenSearch itself. |
+| `ism-retention-job.yaml` | ArgoCD PostSync Job that bootstraps the `digiorg-logs-retention-7d` ISM policy for 7-day Fluentd log retention. |
+| `kustomization.yaml` | Kustomize entrypoint — manages supplementary resources (ISM bootstrap job). OpenSearch itself is deployed via Helm by the ArgoCD Application (`apps/platform/opensearch.yaml`). Running `kubectl apply -k platform/base/opensearch/` deploys **only supplementary resources**, not OpenSearch itself. |
 
 ## Role in the Platform
 
@@ -36,7 +37,7 @@ OpenSearch is an open-source, Apache 2.0-licensed search and analytics engine fo
 |---------------------|------|---------|
 | **Metrics** | Prometheus + Grafana | In-cluster (Prometheus PVC) |
 | **Traces** | Jaeger v2 | **OpenSearch** (this component) |
-| **Logs** | planned | **OpenSearch** (future) |
+| **Logs** | Fluentd → OpenSearch | **OpenSearch** (this component, `digiorg-logs-*`) |
 
 ## Architecture
 
@@ -47,7 +48,7 @@ This deployment uses the **official OpenSearch Helm chart** (`opensearch-project
 ```
 platform-db namespace
 ├── postgresql (StatefulSet)   ← Keycloak, Backstage, Gitea databases
-└── opensearch (StatefulSet)   ← Jaeger traces, future logs
+└── opensearch (StatefulSet)   ← Jaeger traces + Fluentd logs
     └── Service: opensearch-cluster-master:9200 (ClusterIP)
 ```
 
@@ -98,6 +99,71 @@ curl http://opensearch-cluster-master.platform-db.svc.cluster.local:9200/_cat/in
 | Memory | 512Mi request / 1Gi limit | Kubernetes resource limits |
 | `rbac.create` | `false` | No ServiceAccount or RBAC resources created; required if enabling the Security Plugin in production |
 | `discovery.type` | `single-node` | Set in `opensearch.yml`; suppresses cluster bootstrap checks — the actual mechanism behind `singleNode: true` |
+
+## Fluentd Log Storage and Retention
+
+Fluentd writes daily log indices using the `logstash_format` convention with prefix `digiorg-logs`:
+
+```
+Index pattern:  digiorg-logs-YYYY.MM.DD  (daily rotation)
+Example:        digiorg-logs-2026.05.27
+```
+
+### ISM Retention Policy — `digiorg-logs-retention-7d`
+
+An OpenSearch ISM (Index State Management) policy is bootstrapped automatically by the `opensearch-ism-retention-bootstrap` ArgoCD PostSync Job defined in `ism-retention-job.yaml`.
+
+**Policy behaviour:**
+
+| Setting | Value |
+|---------|-------|
+| Policy name | `digiorg-logs-retention-7d` |
+| Index pattern | `digiorg-logs-*` |
+| Retention | 7 days (`min_index_age: 7d`) |
+| Action after 7 days | delete index |
+| ISM template priority | 100 |
+
+The policy uses an embedded `ism_template` so any new `digiorg-logs-*` index is automatically enrolled at creation time — no manual policy attachment is needed.
+
+**States:**
+
+```
+hot  ──(min_index_age: 7d)──►  delete
+```
+
+**Bootstrap job behaviour:**
+
+- Runs as an ArgoCD `PostSync` hook after the opensearch application syncs.
+- Idempotent: checks whether the policy already exists; skips creation if so.
+- Fails fast if OpenSearch is unreachable so ArgoCD reports degraded status rather than silently continuing.
+- Delete policy: `BeforeHookCreation,HookSucceeded` — cleans up the Job pod after success; removes any stale failed Job before re-creating on the next sync.
+
+**Local/dev endpoint assumption:**
+
+The job targets:
+```
+http://opensearch-cluster-master.platform-db.svc.cluster.local:9200
+```
+
+This is the ClusterIP Service name for the single-node OpenSearch deployed in `platform-db` with the security plugin **disabled** (`DISABLE_SECURITY_PLUGIN=true`). No TLS or credentials are required.
+
+> **Production note:** In production the security plugin must be enabled. The bootstrap job must be updated to use HTTPS, provide credentials (via a Kubernetes Secret), and follow least-privilege RBAC — see [Production Considerations](#production-considerations).
+
+**Verify the policy was applied:**
+
+```bash
+# Check the ISM policy
+kubectl exec -n platform-db opensearch-cluster-master-0 -- \
+  curl -s 'http://localhost:9200/_plugins/_ism/policies/digiorg-logs-retention-7d' | python3 -m json.tool
+
+# List Fluentd log indices with their ages
+kubectl exec -n platform-db opensearch-cluster-master-0 -- \
+  curl -s 'http://localhost:9200/_cat/indices/digiorg-logs-*?v&h=index,creation.date.string,store.size'
+
+# Check ISM policy enforcement on a specific index
+kubectl exec -n platform-db opensearch-cluster-master-0 -- \
+  curl -s 'http://localhost:9200/_plugins/_ism/explain/digiorg-logs-*'
+```
 
 ## Jaeger Integration
 
@@ -184,7 +250,7 @@ opensearch_fs_total_total_in_bytes
 1. **Enable Security Plugin:** Remove `DISABLE_SECURITY_PLUGIN`, configure TLS certificates and RBAC.
 2. **Scale out:** Set `singleNode: false`, `replicas: 3` for HA.
 3. **Heap sizing:** Increase to `-Xmx2G` or higher based on trace ingest volume.
-4. **Index lifecycle:** Configure ISM (Index State Management) for automatic index rollover and deletion (e.g. 30-day retention).
+4. **Index lifecycle:** ISM is configured for `digiorg-logs-*` (7-day retention, local/dev). For production, increase retention period and add ISM rollover policies for Jaeger trace indices. Secure the bootstrap job with TLS, credentials, and least-privilege RBAC.
 5. **Keycloak OIDC:** Enable OpenSearch Dashboards with Keycloak SSO for direct log/trace search UI.
 6. **Persistent volume:** Use a high-performance storage class (SSD-backed).
 7. **vm.max_map_count:** On non-KinD deployments, ensure `vm.max_map_count >= 262144` is set at the host level. Options:
@@ -209,4 +275,16 @@ kubectl exec -n platform-db opensearch-cluster-master-0 -- \
 # List Jaeger indices
 kubectl exec -n platform-db opensearch-cluster-master-0 -- \
   curl -s 'http://localhost:9200/_cat/indices/jaeger-*?v'
+
+# List Fluentd log indices
+kubectl exec -n platform-db opensearch-cluster-master-0 -- \
+  curl -s 'http://localhost:9200/_cat/indices/digiorg-logs-*?v'
+
+# Check ISM retention policy
+kubectl exec -n platform-db opensearch-cluster-master-0 -- \
+  curl -s 'http://localhost:9200/_plugins/_ism/policies/digiorg-logs-retention-7d'
+
+# Check ISM bootstrap Job status
+kubectl get job -n platform-db opensearch-ism-retention-bootstrap
+kubectl logs -n platform-db -l app.kubernetes.io/name=opensearch-ism-bootstrap
 ```
