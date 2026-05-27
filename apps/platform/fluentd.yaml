@@ -1,0 +1,35 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: fluentd
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    # Wave 4: After opensearch (Wave 3) — log collector deployed once storage backend is ready
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/digiorg/core.git
+    targetRevision: HEAD
+    path: platform/base/fluentd
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: logging
+
+  syncPolicy:
+    automated:
+      selfHeal: true
+      prune: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
