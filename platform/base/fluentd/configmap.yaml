@@ -107,7 +107,7 @@ data:
     # OUTPUT: Forward to OpenSearch (Elasticsearch-compatible API)
     # ============================================================
     <match raw.kubernetes.**>
-      @type elasticsearch
+      @type opensearch
       @id out_opensearch
       host "#{ENV['FLUENT_ELASTICSEARCH_HOST']}"
       port "#{ENV['FLUENT_ELASTICSEARCH_PORT']}"
