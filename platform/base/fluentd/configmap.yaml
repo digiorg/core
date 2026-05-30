@@ -80,6 +80,21 @@ data:
     </filter>
 
     # ============================================================
+    # FILTER: De-dot Kubernetes label keys for OpenSearch compatibility
+    # ============================================================
+    # OpenSearch treats dotted field names as nested object paths.
+    # Kubernetes labels like "app.kubernetes.io/component" conflict with "app"
+    # when both are present. This filter replaces dots and slashes in label
+    # keys with underscores to prevent mapping conflicts.
+    <filter raw.kubernetes.**>
+      @type record_transformer
+      enable_ruby true
+      <record>
+        kubernetes ${if record["kubernetes"]; k = record["kubernetes"].dup; if k["labels"].is_a?(Hash); k["labels"] = k["labels"].map{|key,val| [key.gsub(/[.\/]/, '_'), val]}.to_h; end; if k["namespace_labels"].is_a?(Hash); k["namespace_labels"] = k["namespace_labels"].map{|key,val| [key.gsub(/[.\/]/, '_'), val]}.to_h; end; k; else; record["kubernetes"]; end}
+      </record>
+    </filter>
+
+    # ============================================================
     # FILTER: Prometheus metrics counter per namespace/pod/container
     # ============================================================
     <filter raw.kubernetes.**>
@@ -100,6 +115,11 @@ data:
     # MATCH: Drop kube-system logs (high volume, low app value)
     # ============================================================
     <match raw.kubernetes.var.log.containers.**kube-system**.log>
+      @type null
+    </match>
+
+    # Drop Fluentd's own logs from the logging namespace to prevent feedback loops
+    <match raw.kubernetes.var.log.containers.**_logging_**.log>
       @type null
     </match>
 
