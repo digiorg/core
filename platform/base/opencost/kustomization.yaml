@@ -3,8 +3,8 @@ kind: Kustomization
 resources:
   - oauth2-proxy.yaml
   - servicemonitor.yaml
-  # NOTE: Ingress resources for OpenCost are in platform/base/ingress/
-  # (opencost-portal-ingress.yaml, opencost-assets-ingress.yaml)
-  # and are applied during cluster bootstrap by local-setup.nu.
-  # Do NOT add ingress-nginx resources here — this kustomization is
-  # managed by the ArgoCD 'opencost' Application (namespace: cost-monitoring).
+  - ui-proxy.yaml
+  # NOTE: Ingress resources (opencost-portal-ingress, opencost-assets-ingress)
+  # are in platform/base/ingress/ and applied during bootstrap by local-setup.nu.
+  # Do NOT add ingress-nginx resources here — this kustomization is managed by
+  # the ArgoCD 'opencost' Application (destination.namespace: cost-monitoring).
