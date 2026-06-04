@@ -85,6 +85,15 @@ data:
           # Disable upstream compression so sub_filter can work on plain HTML
           proxy_set_header   Accept-Encoding   "";
 
+          # Prevent nginx default proxy_redirect from rewriting Location headers
+          # with the internal listen port (9091), which would produce
+          # "http://digiorg.local:9091/opencost/" in browser redirects.
+          # The explicit rule below correctly rewrites any upstream-absolute
+          # redirect to the public HTTPS URL instead.
+          proxy_redirect off;
+          proxy_redirect http://opencost.cost-monitoring.svc.cluster.local:9090/
+                         https://digiorg.local/opencost/;
+
           # Rewrite root-absolute Vite SPA asset paths to /opencost/ prefix
           # OpenCost UI compiles with base '/' — assets referenced as /index.*.{js,css}
           sub_filter_once off;
