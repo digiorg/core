@@ -7,11 +7,19 @@
 clusterName: digiorg-core-dev
 
 opencost:
+  # -- Prometheus configuration (chart resolves PROMETHEUS_SERVER_ENDPOINT from here;
+  #    do NOT also set it in exporter.extraEnv — that causes a duplicate env var error)
+  prometheus:
+    internal:
+      enabled: true
+      serviceName: prometheus-server
+      namespaceName: monitoring
+      port: 80
+      scheme: http
+
   exporter:
     defaultClusterId: digiorg-core-dev
     apiPort: 9003
-    extraEnv:
-      PROMETHEUS_SERVER_ENDPOINT: http://prometheus-server.monitoring.svc.cluster.local:80
     resources:
       requests:
         cpu: 10m

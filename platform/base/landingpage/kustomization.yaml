@@ -7,7 +7,21 @@ resources:
   - deployment.yaml
   - service.yaml
   - configmap.yaml
-  - services-configmap.yaml
+  # services-configmap.yaml replaced by configMapGenerator below.
+  # configMapGenerator appends a content-hash suffix to the ConfigMap name.
+  # When services.json changes, ArgoCD detects the new name, updates the
+  # Deployment's volume reference, and triggers an automatic rolling restart —
+  # solving the subPath + no-restart limitation.
+
+configMapGenerator:
+  - name: landingpage-services
+    files:
+      - services.json
+    options:
+      labels:
+        app.kubernetes.io/name: landingpage
+        app.kubernetes.io/component: frontend
+        app.kubernetes.io/part-of: digiorg-core-platform
 
 commonLabels:
   app.kubernetes.io/managed-by: kustomize
