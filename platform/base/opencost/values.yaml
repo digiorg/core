@@ -1,0 +1,51 @@
+# =========================================================
+# OpenCost — Helm Values
+# Chart: https://github.com/opencost/opencost-helm-chart
+# Issue: #224
+# =========================================================
+
+clusterName: digiorg-core-dev
+
+opencost:
+  exporter:
+    defaultClusterId: digiorg-core-dev
+    apiPort: 9003
+    extraEnv:
+      PROMETHEUS_SERVER_ENDPOINT: http://prometheus-server.monitoring.svc.cluster.local:80
+    resources:
+      requests:
+        cpu: 10m
+        memory: 55Mi
+      limits:
+        memory: 512Mi
+
+  customPricing:
+    enabled: true
+    provider: custom
+    costModel:
+      description: DigiOrg local dev pricing
+      CPU: 0.031611
+      spotCPU: 0.006655
+      RAM: 0.004237
+      spotRAM: 0.000892
+      storage: 0.00005479452
+      zoneNetworkEgress: 0.01
+      regionNetworkEgress: 0.01
+      internetNetworkEgress: 0.12
+
+  mcp:
+    enabled: true
+    port: 8081
+
+  ui:
+    enabled: true
+
+# Disable built-in ingress — DigiOrg uses unified NGINX ingress
+# oauth-proxy sidecar port registered in service for cross-namespace routing
+service:
+  enabled: true
+  type: ClusterIP
+  extraPorts:
+    - name: oauth-proxy
+      port: 4180
+      targetPort: 4180

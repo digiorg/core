@@ -1,0 +1,22 @@
+# =========================================================
+# ServiceMonitor — Prometheus scrapes OpenCost metrics
+# Issue: #224
+# =========================================================
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: opencost
+  namespace: cost-monitoring
+  labels:
+    app.kubernetes.io/name: opencost
+    app.kubernetes.io/part-of: digiorg-core-platform
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: opencost
+  endpoints:
+    - port: http-api
+      path: /metrics
+      interval: 1m
+      honorLabels: true
