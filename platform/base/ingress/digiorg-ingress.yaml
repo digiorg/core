@@ -85,15 +85,6 @@ spec:
                 name: sonarqube
                 port:
                   number: 9000
-          # OpenCost Cost Monitoring — routed via oauth2-proxy for Keycloak SSO
-          # oauth2-proxy handles /opencost and /opencost/oauth2/callback (proxy-prefix)
-          - path: /opencost(/|$)(.*)
-            pathType: ImplementationSpecific
-            backend:
-              service:
-                name: opencost-oauth2-proxy
-                port:
-                  number: 4180
           # Landing Page (root path - must be last due to catch-all)
           - path: /
             pathType: Prefix
@@ -260,19 +251,3 @@ spec:
   externalName: landingpage.platform-apps.svc.cluster.local
   ports:
     - port: 8080
----
-# ExternalName Service: routes ingress-nginx → opencost-oauth2-proxy in cost-monitoring namespace
-apiVersion: v1
-kind: Service
-metadata:
-  name: opencost-oauth2-proxy
-  namespace: ingress-nginx
-  labels:
-    app.kubernetes.io/name: opencost-oauth2-proxy
-    app.kubernetes.io/part-of: digiorg-core-platform
-spec:
-  type: ExternalName
-  externalName: opencost-oauth2-proxy.cost-monitoring.svc.cluster.local
-  ports:
-    - port: 4180
-      protocol: TCP
