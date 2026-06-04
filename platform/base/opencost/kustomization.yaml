@@ -3,3 +3,4 @@ kind: Kustomization
 resources:
   - oauth2-proxy.yaml
   - servicemonitor.yaml
+  - opencost-ingress.yaml
