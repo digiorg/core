@@ -1,17 +1,15 @@
 # =============================================================================
-# OpenCost Portal Ingress (with sub_filter for Vite SPA subpath fix)
+# OpenCost Portal Ingress
 #
-# Replaces the /opencost route in the main digiorg-platform Ingress.
-# A dedicated Ingress is required to scope the configuration-snippet
-# (sub_filter) only to the /opencost location without affecting other routes.
+# Routes /opencost → oauth2-proxy → opencost-ui-proxy (nginx, port 9091).
+# The ui-proxy handles HTML sub_filter rewriting internally (at nginx level)
+# because configuration-snippet is disabled on this NGINX Ingress Controller.
 #
-# The OpenCost Vite SPA compiles with base '/' (root-absolute asset paths).
-# sub_filter rewrites href="/index. and src="/index. in HTML responses so the
-# browser requests /opencost/index.*.{js,css} instead of /index.*.{js,css}.
-# Those requests are then served by opencost-assets-ingress (strip prefix).
+# Asset requests (/opencost/index.*.{js,css}) are handled separately by
+# opencost-assets-ingress (rewrite-target: /$1 → directly to opencost:9090).
 #
 # Boot: applied by local-setup.nu bootstrap (not managed by ArgoCD).
-# Issue: #229 #231
+# Issue: #229 #231 #233
 # =============================================================================
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -25,14 +23,6 @@ metadata:
     cert-manager.io/cluster-issuer: "digiorg-local-ca-issuer"
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
     nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
-    # Rewrite root-absolute Vite asset paths in HTML responses.
-    # After rewrite the browser requests /opencost/index.*.{js,css},
-    # handled by opencost-assets-ingress → opencost:9090.
-    nginx.ingress.kubernetes.io/configuration-snippet: |
-      sub_filter_once off;
-      sub_filter_types text/html;
-      sub_filter 'href="/index.' 'href="/opencost/index.';
-      sub_filter 'src="/index.'  'src="/opencost/index.';
 spec:
   ingressClassName: nginx
   tls:

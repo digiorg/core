@@ -1,0 +1,167 @@
+# =============================================================================
+# OpenCost UI Proxy
+#
+# Lightweight nginx reverse proxy that rewrites the OpenCost Vite SPA HTML
+# responses at the application level, avoiding the NGINX Ingress Controller's
+# configuration-snippet restriction (snippet annotations are disabled for
+# security reasons on this cluster).
+#
+# Responsibilities:
+#   1. Strip the /opencost prefix when forwarding to opencost:9090
+#      (standard nginx proxy_pass with trailing / on location and upstream)
+#   2. Apply sub_filter to HTML responses:
+#        href="/index.  →  href="/opencost/index.
+#        src="/index.   →  src="/opencost/index.
+#      This ensures the Vite SPA's root-absolute asset paths are rewritten
+#      to the /opencost/ subpath so the browser fetches them correctly.
+#   3. Disable upstream gzip so sub_filter can operate on uncompressed HTML.
+#
+# The oauth2-proxy --upstream points to this service (port 9091).
+# Static assets (/opencost/index.*.{js,css}) bypass this proxy entirely and
+# are served directly by opencost:9090 via the opencost-assets-ingress
+# (rewrite-target: /$1 strips the /opencost prefix at the NGINX ingress level).
+#
+# Issue: #233
+# =============================================================================
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: opencost-ui-proxy-config
+  namespace: cost-monitoring
+  labels:
+    app.kubernetes.io/name: opencost-ui-proxy
+    app.kubernetes.io/component: proxy
+    app.kubernetes.io/part-of: digiorg-core-platform
+data:
+  nginx.conf: |
+    worker_processes  1;
+    error_log /dev/stderr warn;
+    pid /tmp/nginx.pid;
+
+    events {
+      worker_connections 64;
+    }
+
+    http {
+      include       /etc/nginx/mime.types;
+      default_type  application/octet-stream;
+      access_log    /dev/stdout;
+
+      # Required temp dirs for non-root nginx
+      client_body_temp_path /tmp/client_body;
+      proxy_temp_path       /tmp/proxy;
+      fastcgi_temp_path     /tmp/fastcgi;
+      uwsgi_temp_path       /tmp/uwsgi;
+      scgi_temp_path        /tmp/scgi;
+
+      server {
+        listen 9091;
+        server_name _;
+
+        # Proxy to OpenCost UI: strip /opencost prefix + rewrite HTML asset paths.
+        # proxy_pass with trailing / on both location and upstream strips the prefix:
+        #   GET /opencost/      → GET /      at opencost:9090
+        #   GET /opencost/foo   → GET /foo   at opencost:9090
+        location /opencost/ {
+          proxy_pass         http://opencost.cost-monitoring.svc.cluster.local:9090/;
+          proxy_http_version 1.1;
+          proxy_set_header   Host              $host;
+          proxy_set_header   X-Real-IP         $remote_addr;
+          proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+          proxy_set_header   X-Forwarded-Proto $scheme;
+
+          # Disable upstream compression so sub_filter can work on plain HTML
+          proxy_set_header   Accept-Encoding   "";
+
+          # Rewrite root-absolute Vite SPA asset paths to /opencost/ prefix
+          # OpenCost UI compiles with base '/' — assets referenced as /index.*.{js,css}
+          sub_filter_once off;
+          sub_filter_types  text/html;
+          sub_filter 'href="/index.' 'href="/opencost/index.';
+          sub_filter 'src="/index.'  'src="/opencost/index.';
+        }
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opencost-ui-proxy
+  namespace: cost-monitoring
+  labels:
+    app.kubernetes.io/name: opencost-ui-proxy
+    app.kubernetes.io/component: proxy
+    app.kubernetes.io/part-of: digiorg-core-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: opencost-ui-proxy
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: opencost-ui-proxy
+        app.kubernetes.io/component: proxy
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.27-alpine
+          ports:
+            - name: http
+              containerPort: 9091
+              protocol: TCP
+          volumeMounts:
+            - name: nginx-config
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          livenessProbe:
+            httpGet:
+              path: /opencost/
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /opencost/
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 101
+            capabilities:
+              drop:
+                - ALL
+      volumes:
+        - name: nginx-config
+          configMap:
+            name: opencost-ui-proxy-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: opencost-ui-proxy
+  namespace: cost-monitoring
+  labels:
+    app.kubernetes.io/name: opencost-ui-proxy
+    app.kubernetes.io/component: proxy
+    app.kubernetes.io/part-of: digiorg-core-platform
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: opencost-ui-proxy
+  ports:
+    - name: http
+      port: 9091
+      targetPort: http
+      protocol: TCP
