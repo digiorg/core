@@ -85,12 +85,10 @@ data:
           # Disable upstream compression so sub_filter can work on plain HTML
           proxy_set_header   Accept-Encoding   "";
 
-          # Prevent nginx default proxy_redirect from rewriting Location headers
-          # with the internal listen port (9091), which would produce
-          # "http://digiorg.local:9091/opencost/" in browser redirects.
-          # The explicit rule below correctly rewrites any upstream-absolute
-          # redirect to the public HTTPS URL instead.
-          proxy_redirect off;
+          # Rewrite upstream-absolute Location headers to the public HTTPS URL.
+          # An explicit proxy_redirect rule implicitly disables the nginx default
+          # rewriting (which would leak the internal port 9091). Do NOT combine
+          # with 'proxy_redirect off;' — that causes a duplicate-directive crash.
           proxy_redirect http://opencost.cost-monitoring.svc.cluster.local:9090/
                          https://digiorg.local/opencost/;
 
