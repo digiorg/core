@@ -1,0 +1,45 @@
+# =============================================================================
+# OpenCost Static Asset Ingress
+#
+# Separate Ingress required because rewrite-target and configuration-snippet
+# cannot coexist on the same Ingress in NGINX Ingress Controller.
+#
+# This ingress strips the /opencost prefix when serving static JS/CSS assets:
+#   GET /opencost/index.abc.js → opencost:9090 at /index.abc.js
+#
+# The matching HTML sub_filter (href="/index. → href="/opencost/index.) is
+# applied via configuration-snippet on the main digiorg-platform Ingress path
+# /opencost(/|$)(.*) — which uses the opencost-oauth2-proxy as backend.
+#
+# Boot: applied by local-setup.nu bootstrap (not managed by ArgoCD).
+# Issue: #229 #231
+# =============================================================================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: opencost-assets-ingress
+  namespace: ingress-nginx
+  annotations:
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/rewrite-target: /$1
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - digiorg.local
+      secretName: digiorg-local-tls
+  rules:
+    - host: digiorg.local
+      http:
+        paths:
+          # Routes /opencost/index.*.{js,css} → opencost:9090 at /index.*.{js,css}
+          # Static assets contain no sensitive data — bypass auth proxy intentionally.
+          - path: /opencost/(index\..+)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: opencost
+                port:
+                  number: 9090

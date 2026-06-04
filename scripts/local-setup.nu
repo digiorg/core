@@ -1030,7 +1030,7 @@ def patch_argocd_oidc_ca [] {
         if $secret_result.exit_code == 0 and ($secret_result.stdout | str trim | is-not-empty) {
             break
         }
-        print $"  Waiting for CA cert... (attempt ($attempts)/30)"
+        print $"  Waiting for CA cert... attempt ($attempts)/30"
         sleep 10sec
     }
 

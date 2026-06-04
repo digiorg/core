@@ -3,3 +3,8 @@ kind: Kustomization
 
 resources:
   - digiorg-ingress.yaml
+  # OpenCost: two dedicated Ingress objects required because rewrite-target
+  # and configuration-snippet cannot coexist on the same Ingress path.
+  # Both are bootstrap-managed (applied by local-setup.nu), NOT by ArgoCD.
+  - opencost-portal-ingress.yaml
+  - opencost-assets-ingress.yaml

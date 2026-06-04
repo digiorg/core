@@ -251,3 +251,36 @@ spec:
   externalName: landingpage.platform-apps.svc.cluster.local
   ports:
     - port: 8080
+---
+# ExternalName Service: routes ingress-nginx → opencost-oauth2-proxy in cost-monitoring namespace
+apiVersion: v1
+kind: Service
+metadata:
+  name: opencost-oauth2-proxy
+  namespace: ingress-nginx
+  labels:
+    app.kubernetes.io/name: opencost-oauth2-proxy
+    app.kubernetes.io/part-of: digiorg-core-platform
+spec:
+  type: ExternalName
+  externalName: opencost-oauth2-proxy.cost-monitoring.svc.cluster.local
+  ports:
+    - port: 4180
+      protocol: TCP
+---
+# ExternalName Service: routes ingress-nginx → opencost UI (cost-monitoring ns)
+# Used by the opencost-assets-ingress to serve /index.*.{js,css} directly.
+apiVersion: v1
+kind: Service
+metadata:
+  name: opencost
+  namespace: ingress-nginx
+  labels:
+    app.kubernetes.io/name: opencost
+    app.kubernetes.io/part-of: digiorg-core-platform
+spec:
+  type: ExternalName
+  externalName: opencost.cost-monitoring.svc.cluster.local
+  ports:
+    - port: 9090
+      protocol: TCP
