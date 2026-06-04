@@ -44,7 +44,9 @@ data:
     }
 
     http {
-      include       /etc/nginx/mime.types;
+      # No mime.types include needed for a pure reverse-proxy:
+      # Content-Type is determined by upstream response headers, not nginx.
+      # Including mime.types caused a duplicate 'text/html' warning on nginx:alpine.
       default_type  application/octet-stream;
       access_log    /dev/stdout;
 
@@ -63,6 +65,15 @@ data:
         # proxy_pass with trailing / on both location and upstream strips the prefix:
         #   GET /opencost/      → GET /      at opencost:9090
         #   GET /opencost/foo   → GET /foo   at opencost:9090
+        # Health endpoint: checks nginx is alive WITHOUT touching the upstream.
+        # Used by liveness + readiness probes so a slow-starting opencost pod
+        # (1-3 min for Prometheus init) does not cause CrashLoopBackOff.
+        location /healthz {
+          access_log off;
+          return 200 "ok";
+          add_header Content-Type text/plain;
+        }
+
         location /opencost/ {
           proxy_pass         http://opencost.cost-monitoring.svc.cluster.local:9090/;
           proxy_http_version 1.1;
@@ -124,17 +135,20 @@ spec:
               memory: 64Mi
           livenessProbe:
             httpGet:
-              path: /opencost/
+              # /healthz returns 200 from nginx itself — no upstream dependency.
+              # Avoids CrashLoopBackOff while opencost is still starting up.
+              path: /healthz
               port: http
-            initialDelaySeconds: 5
+            initialDelaySeconds: 3
             periodSeconds: 10
             failureThreshold: 3
           readinessProbe:
             httpGet:
-              path: /opencost/
+              path: /healthz
               port: http
-            initialDelaySeconds: 3
+            initialDelaySeconds: 2
             periodSeconds: 5
+            failureThreshold: 3
           securityContext:
             allowPrivilegeEscalation: false
             runAsNonRoot: true
