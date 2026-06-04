@@ -313,6 +313,30 @@
           }
         }
       ]
+    },
+    {
+      "clientId": "opencost",
+      "name": "OpenCost",
+      "description": "OpenCost Cost Monitoring UI — Keycloak SSO via oauth2-proxy",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "opencost-client-secret",
+      "redirectUris": [
+        "https://digiorg.local/opencost/oauth2/callback"
+      ],
+      "webOrigins": [
+        "https://digiorg.local"
+      ],
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "frontchannelLogout": true,
+      "attributes": {
+        "post.logout.redirect.uris": "https://digiorg.local/opencost/*"
+      }
     }
   ],
   "roles": {

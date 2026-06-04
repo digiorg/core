@@ -90,6 +90,7 @@ def "main up" [] {
     print "  ArgoCD:       https://digiorg.local/argocd    (Login via Keycloak)"
     print "  Grafana:      https://digiorg.local/grafana   (Login via Keycloak)"
     print "  Jaeger:       https://digiorg.local/jaeger    (Login via Keycloak)"
+    print "  OpenCost:    https://digiorg.local/opencost  (Login via Keycloak)"
     print ""
     print $"(ansi yellow)Prerequisites:(ansi reset)"
     print $"  1. Add to /etc/hosts: 127.0.0.1 digiorg.local"
@@ -201,7 +202,7 @@ def "main status" [] {
         print $"(ansi cyan_bold)Platform Pods(ansi reset)"
         print "============="
         
-        let namespaces = ["kube-system", "platform-db", "argocd", "keycloak", "messaging", "crossplane-system", "kyverno", "monitoring", "backstage", "gitea", "platform-apps", "cert-manager", "code-quality", "tracing", "external-secrets"]
+        let namespaces = ["kube-system", "platform-db", "argocd", "keycloak", "messaging", "crossplane-system", "kyverno", "monitoring", "backstage", "gitea", "platform-apps", "cert-manager", "code-quality", "tracing", "external-secrets", "cost-monitoring"]
         for ns in $namespaces {
             let status = try {
                 let pods = (kubectl get pods -n $ns --no-headers | lines | length)
@@ -493,6 +494,15 @@ type: kubernetes.io/service-account-token" | save --force $token_secret_file
         --from-literal=cookie-secret=($jaeger_cookie_secret)
         --dry-run=client -o yaml | kubectl apply -f -)
 
+    # cost-monitoring namespace + OpenCost oauth2-proxy secrets
+    kubectl create namespace cost-monitoring --dry-run=client -o yaml | kubectl apply -f -
+    let opencost_oidc_secret = ($env.OPENCOST_OIDC_CLIENT_SECRET? | default "opencost-client-secret")
+    let opencost_cookie_secret = ($env.OPENCOST_COOKIE_SECRET? | default (generate_password | str substring 0..31 | encode base64))
+    (kubectl create secret generic opencost-oauth2-proxy-secrets -n cost-monitoring
+        --from-literal=client-secret=($opencost_oidc_secret)
+        --from-literal=cookie-secret=($opencost_cookie_secret)
+        --dry-run=client -o yaml | kubectl apply -f -)
+
     # OpenSearch secret (admin password for observability backend)
     let opensearch_admin_password = ($env.OPENSEARCH_ADMIN_PASSWORD? | default (generate_password))
     # Secret in platform-db namespace (for OpenSearch itself)
@@ -541,7 +551,7 @@ def deploy_root_app [] {
     print "  Wave -1: root-app (just deployed)"
     print "  Wave  0: cert-manager, external-secrets, postgresql, opensearch, nats"
     print "  Wave  1: keycloak, argocd (self-managed)"
-    print "  Wave  2: landingpage, backstage, gitea, grafana, jaeger, sonarqube"
+    print "  Wave  2: landingpage, backstage, gitea, grafana, jaeger, sonarqube, opencost"
     print "  Wave  3: crossplane, kyverno"
     print "  Wave  4: crossplane-providers"
     print "  Wave  5: monitoring-extras (ServiceMonitors)"
@@ -570,7 +580,7 @@ def wait_for_argocd_apps [] {
         # Wave 1
         "keycloak", "argocd",
         # Wave 2
-        "landingpage", "backstage", "gitea", "grafana", "jaeger", "sonarqube",
+        "landingpage", "backstage", "gitea", "grafana", "jaeger", "sonarqube", "opencost",
         # Wave 3
         "crossplane", "kyverno",
         # Wave 4
