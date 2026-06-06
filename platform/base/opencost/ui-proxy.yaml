@@ -95,6 +95,7 @@ data:
           sub_filter_types  text/html;
           sub_filter 'href="/index.' 'href="/opencost/index.';
           sub_filter 'src="/index.'  'src="/opencost/index.';
+          sub_filter 'href="/favicon.' 'href="/opencost/favicon.';
         }
 
         location /opencost/ {
@@ -121,6 +122,7 @@ data:
           sub_filter_types  text/html;
           sub_filter 'href="/index.' 'href="/opencost/index.';
           sub_filter 'src="/index.'  'src="/opencost/index.';
+          sub_filter 'href="/favicon.' 'href="/opencost/favicon.';
         }
       }
     }

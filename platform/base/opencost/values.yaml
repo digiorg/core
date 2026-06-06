@@ -47,6 +47,9 @@ opencost:
 
   ui:
     enabled: true
+    extraEnv:
+      - name: BASE_URL_OVERRIDE
+        value: /opencost/model
 
 # Disable built-in ingress — DigiOrg uses unified NGINX ingress
 # oauth-proxy sidecar port registered in service for cross-namespace routing
