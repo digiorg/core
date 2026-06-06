@@ -10,12 +10,13 @@ opencost:
   # -- Prometheus configuration (chart resolves PROMETHEUS_SERVER_ENDPOINT from here;
   #    do NOT also set it in exporter.extraEnv — that causes a duplicate env var error)
   prometheus:
+    # Use external URL with explicit cluster.local suffix — the Helm chart builds the
+    # internal URL as svc.<clusterName>, which resolves to svc.digiorg-core-dev (invalid DNS).
     internal:
+      enabled: false
+    external:
       enabled: true
-      serviceName: prometheus-server
-      namespaceName: monitoring
-      port: 80
-      scheme: http
+      url: "http://prometheus-server.monitoring.svc.cluster.local:80"
 
   exporter:
     defaultClusterId: digiorg-core-dev
