@@ -60,6 +60,11 @@ The script installs only the minimal infrastructure needed to run ArgoCD:
    - `tracing/jaeger-oauth2-proxy-secrets`: `client-secret`, `cookie-secret`
    - `platform-db/opensearch-secrets`: `OPENSEARCH_ADMIN_PASSWORD`
    - `tracing/jaeger-opensearch-credentials`: `password` (Jaeger → OpenSearch auth)
+   - `cost-monitoring/opencost-oauth2-proxy-secrets`: `client-secret`, `cookie-secret`
+   - `harbor/harbor-admin-secret`: `HARBOR_ADMIN_PASSWORD`
+   - `harbor/harbor-secret-key`: `secretKey` (16-char internal encryption key)
+   - `harbor/harbor-db-secret`: `password` (shared PostgreSQL)
+   - `harbor/harbor-oidc-secret`: `client-secret` (Keycloak OIDC)
 8. **ArgoCD** (Helm install)
 9. **Root App** (triggers App-of-Apps)
 
@@ -70,10 +75,15 @@ ArgoCD takes over and deploys all platform components via sync waves:
 | Wave | Applications | Description |
 |------|--------------|-------------|
 | -1 | root-app | Bootstrap (deployed by script) |
-| 0 | cert-manager, external-secrets, postgresql, opensearch, nats | Foundation services |
+| 0 | cert-manager, cnpg, external-secrets, nats, postgresql | Foundation infrastructure |
 | 1 | keycloak, argocd | Identity + self-managed ArgoCD |
-| 2 | landingpage, backstage, gitea, grafana, jaeger, sonarqube | Platform services |
-| 3 | crossplane, kyverno | Extensions and policy |
+| 2 | backstage, gitea, grafana, harbor, jaeger, landingpage, opencost, sonarqube | Platform services |
+| 3 | crossplane, kyverno, opensearch | Extensions, policy, observability backend |
+| 4 | crossplane-providers, fluentd, kyverno-policies | Provider plugins, log shipping, policies |
+| 5 | monitoring-extras | ServiceMonitors (requires monitoring stack) |
+| 6 | crossplane-provider-configs | Provider configurations |
+| 7 | crossplane-xrds | Composite Resource Definitions |
+| 8 | core-app-catalog | Core app catalog |
 
 ArgoCD deploys platform components as individual Application resources defined in `apps/platform/*.yaml`, not via an ApplicationSet CRD.
 
@@ -117,6 +127,8 @@ After `up` completes, access services via:
 | Gitea | https://digiorg.local/gitea | `gitea_admin` / password from `gitea/gitea-admin-secret` |
 | SonarQube | https://digiorg.local/sonarqube | admin / admin — change immediately |
 | Jaeger | https://digiorg.local/jaeger | Login via Keycloak |
+| OpenCost | https://digiorg.local/opencost | Login via Keycloak |
+| Harbor | https://digiorg.local/harbor | Login via Keycloak (OIDC post-setup required) |
 
 **Note:** Requires `/etc/hosts` entry: `127.0.0.1 digiorg.local`
 
@@ -160,7 +172,14 @@ All passwords and secrets used by the bootstrap script can be overridden by sett
 | `SONARQUBE_DB_PASSWORD` | random | SonarQube PostgreSQL database password |
 | `SONARQUBE_MONITORING_PASSCODE` | random | SonarQube monitoring passcode |
 | `JAEGER_OIDC_CLIENT_SECRET` | `jaeger-client-secret` | Jaeger OAuth2 proxy OIDC client secret |
+| `JAEGER_COOKIE_SECRET` | random (base64) | Jaeger oauth2-proxy cookie encryption secret |
 | `OPENSEARCH_ADMIN_PASSWORD` | random | OpenSearch admin password |
+| `OPENCOST_OIDC_CLIENT_SECRET` | `opencost-client-secret` | OpenCost OAuth2 proxy OIDC client secret |
+| `OPENCOST_COOKIE_SECRET` | random (base64) | OpenCost oauth2-proxy cookie encryption secret |
+| `HARBOR_ADMIN_PASSWORD` | `Harbor12345` | Harbor initial admin password |
+| `HARBOR_SECRET_KEY` | `not-a-secure-key` | Harbor 16-char internal encryption key |
+| `HARBOR_DB_PASSWORD` | random | Harbor PostgreSQL database password |
+| `HARBOR_OIDC_CLIENT_SECRET` | `harbor-client-secret` | Harbor Keycloak OIDC client secret |
 
 ## Cluster Name
 
