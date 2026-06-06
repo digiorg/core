@@ -1,0 +1,73 @@
+expose:
+  type: clusterIP
+  tls:
+    enabled: false
+  clusterIP:
+    name: harbor
+    ports:
+      httpPort: 80
+      httpsPort: 443
+
+# Docker CLI uses this as the registry hostname
+# externalURL must be the root domain (not a subpath) — Harbor requirement
+externalURL: https://digiorg.local
+
+existingSecretAdminPassword: harbor-admin-secret
+existingSecretAdminPasswordKey: HARBOR_ADMIN_PASSWORD
+existingSecretSecretKey: harbor-secret-key
+
+# External PostgreSQL — reuse platform shared instance (platform-db namespace)
+# Harbor's built-in PostgreSQL disabled to reduce resource usage
+database:
+  type: external
+  external:
+    host: postgresql.platform-db.svc.cluster.local
+    port: "5432"
+    username: harbor
+    coreDatabase: registry
+    existingSecret: harbor-db-secret
+    sslmode: disable
+
+# Built-in Redis — no shared Redis in the platform
+redis:
+  type: internal
+
+persistence:
+  enabled: true
+  resourcePolicy: "keep"
+  persistentVolumeClaim:
+    registry:
+      size: 10Gi
+      accessMode: ReadWriteOnce
+    jobservice:
+      jobLog:
+        size: 1Gi
+    trivy:
+      size: 5Gi
+
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    additionalLabels:
+      release: prometheus
+
+trace:
+  enabled: true
+  provider: otel
+  sample_rate: 0.1
+  otel:
+    endpoint: jaeger-collector.tracing.svc.cluster.local:4318
+    url_path: /v1/traces
+    compression: false
+    insecure: true
+    timeout: 10
+
+trivy:
+  enabled: true
+
+cache:
+  enabled: true
+  expireHours: 24
+
+logLevel: info

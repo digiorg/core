@@ -91,6 +91,7 @@ def "main up" [] {
     print "  Grafana:      https://digiorg.local/grafana   (Login via Keycloak)"
     print "  Jaeger:       https://digiorg.local/jaeger    (Login via Keycloak)"
     print "  OpenCost:    https://digiorg.local/opencost  (Login via Keycloak)"
+    print "  Harbor:       https://digiorg.local/harbor   (Login via Keycloak)"
     print ""
     print $"(ansi yellow)Prerequisites:(ansi reset)"
     print $"  1. Add to /etc/hosts: 127.0.0.1 digiorg.local"
@@ -380,6 +381,10 @@ def create_platform_namespaces_secrets [] {
     let gitea_oidc_secret = ($env.GITEA_OIDC_CLIENT_SECRET? | default "gitea-client-secret")
     let sonarqube_db_password = ($env.SONARQUBE_DB_PASSWORD? | default (generate_password))
     let sonarqube_monitoring_passcode = ($env.SONARQUBE_MONITORING_PASSCODE? | default (generate_password))
+    let harbor_admin_password = ($env.HARBOR_ADMIN_PASSWORD? | default "Harbor12345")
+    let harbor_secret_key = ($env.HARBOR_SECRET_KEY? | default "not-a-secure-key")
+    let harbor_db_password = ($env.HARBOR_DB_PASSWORD? | default (generate_password))
+    let harbor_oidc_secret = ($env.HARBOR_OIDC_CLIENT_SECRET? | default "harbor-client-secret")
     
     # Platform-db namespace and PostgreSQL secrets (shared database for Keycloak + Backstage + Gitea)
     kubectl create namespace platform-db --dry-run=client -o yaml | kubectl apply -f -
@@ -389,6 +394,7 @@ def create_platform_namespaces_secrets [] {
         --from-literal=BACKSTAGE_DB_PASSWORD=($backstage_db_password)
         --from-literal=GITEA_DB_PASSWORD=($gitea_db_password)
         --from-literal=SONARQUBE_DB_PASSWORD=($sonarqube_db_password)
+        --from-literal=HARBOR_DB_PASSWORD=($harbor_db_password)
         --dry-run=client -o yaml | kubectl apply -f -)
     
     # Keycloak namespace and DB credentials secret
@@ -479,6 +485,21 @@ type: kubernetes.io/service-account-token" | save --force $token_secret_file
         --dry-run=client -o yaml | kubectl apply -f -)
     (kubectl create secret generic sonarqube-monitoring-secret -n code-quality
         --from-literal=SONAR_WEB_SYSTEMPASSCODE=($sonarqube_monitoring_passcode)
+        --dry-run=client -o yaml | kubectl apply -f -)
+
+    # Harbor namespace and secrets
+    kubectl create namespace harbor --dry-run=client -o yaml | kubectl apply -f -
+    (kubectl create secret generic harbor-admin-secret -n harbor
+        --from-literal=HARBOR_ADMIN_PASSWORD=($harbor_admin_password)
+        --dry-run=client -o yaml | kubectl apply -f -)
+    (kubectl create secret generic harbor-secret-key -n harbor
+        --from-literal=secretKey=($harbor_secret_key)
+        --dry-run=client -o yaml | kubectl apply -f -)
+    (kubectl create secret generic harbor-db-secret -n harbor
+        --from-literal=password=($harbor_db_password)
+        --dry-run=client -o yaml | kubectl apply -f -)
+    (kubectl create secret generic harbor-oidc-secret -n harbor
+        --from-literal=client-secret=($harbor_oidc_secret)
         --dry-run=client -o yaml | kubectl apply -f -)
 
     # Messaging namespace (for NATS server + Surveyor)

@@ -8,3 +8,4 @@ resources:
   # Both are bootstrap-managed (applied by local-setup.nu), NOT by ArgoCD.
   - opencost-portal-ingress.yaml
   - opencost-assets-ingress.yaml
+  - harbor-ingress.yaml

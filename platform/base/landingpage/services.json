@@ -78,5 +78,15 @@
     "category": "monitoring",
     "requiresAuth": true,
     "displayOrder": 8
+  },
+  {
+    "id": "harbor",
+    "name": "Harbor Registry",
+    "description": "OCI container registry with vulnerability scanning",
+    "path": "/harbor",
+    "icon": "server",
+    "category": "infrastructure",
+    "requiresAuth": true,
+    "displayOrder": 9
   }
 ]
