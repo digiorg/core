@@ -1,0 +1,194 @@
+# =============================================================================
+# Harbor UI Proxy
+#
+# Lightweight nginx reverse proxy that rewrites the Harbor Angular SPA HTML
+# responses at the application level, avoiding the NGINX Ingress Controller's
+# configuration-snippet restriction (snippet annotations are disabled for
+# security reasons on this cluster).
+#
+# Responsibilities:
+#   1. Strip the /harbor prefix when forwarding to harbor:80
+#      (standard nginx proxy_pass with trailing / on location and upstream)
+#   2. Apply sub_filter to HTML responses:
+#        <base href="/">  →  <base href="/harbor/">
+#      This ensures the Angular SPA's root-absolute asset paths are rewritten
+#      to the /harbor/ subpath so the browser fetches them correctly.
+#   3. Disable upstream gzip so sub_filter can operate on uncompressed HTML.
+#
+# Issue: #225
+# =============================================================================
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: harbor-ui-proxy-config
+  namespace: harbor
+  labels:
+    app.kubernetes.io/name: harbor-ui-proxy
+    app.kubernetes.io/component: proxy
+    app.kubernetes.io/part-of: digiorg-core-platform
+data:
+  nginx.conf: |
+    worker_processes  1;
+    error_log /dev/stderr warn;
+    pid /tmp/nginx.pid;
+
+    events {
+      worker_connections 64;
+    }
+
+    http {
+      # No mime.types include needed for a pure reverse-proxy:
+      # Content-Type is determined by upstream response headers, not nginx.
+      # Including mime.types caused a duplicate 'text/html' warning on nginx:alpine.
+      default_type  application/octet-stream;
+      access_log    /dev/stdout;
+
+      # Required temp dirs for non-root nginx
+      client_body_temp_path /tmp/client_body;
+      proxy_temp_path       /tmp/proxy;
+      fastcgi_temp_path     /tmp/fastcgi;
+      uwsgi_temp_path       /tmp/uwsgi;
+      scgi_temp_path        /tmp/scgi;
+
+      server {
+        listen 9091;
+        server_name _;
+
+        # Health endpoint: checks nginx is alive WITHOUT touching the upstream.
+        # Used by liveness + readiness probes independent of Harbor's state.
+        location /healthz {
+          access_log off;
+          return 200 "ok";
+          add_header Content-Type text/plain;
+        }
+
+        # Exact match for the bare /harbor path (no trailing slash).
+        # Without this, nginx auto-redirects /harbor → /harbor/ using an
+        # absolute Location that includes the internal port 9091 (non-standard,
+        # so nginx appends it). This block proxies the root directly — no redirect,
+        # no port leak.
+        # Issue: #225
+        location = /harbor {
+          proxy_pass         http://harbor.harbor.svc.cluster.local:80/;
+          proxy_http_version 1.1;
+          proxy_set_header   Host              $host;
+          proxy_set_header   X-Real-IP         $remote_addr;
+          proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+          proxy_set_header   X-Forwarded-Proto $scheme;
+          proxy_set_header   Accept-Encoding   "";
+          proxy_redirect http://harbor.harbor.svc.cluster.local:80/
+                         https://digiorg.local/harbor/;
+          sub_filter_once off;
+          sub_filter_types  text/html;
+          sub_filter '<base href="/">' '<base href="/harbor/">';
+        }
+
+        location /harbor/ {
+          proxy_pass         http://harbor.harbor.svc.cluster.local:80/;
+          proxy_http_version 1.1;
+          proxy_set_header   Host              $host;
+          proxy_set_header   X-Real-IP         $remote_addr;
+          proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+          proxy_set_header   X-Forwarded-Proto $scheme;
+
+          # Disable upstream compression so sub_filter can work on plain HTML
+          proxy_set_header   Accept-Encoding   "";
+
+          # Rewrite upstream-absolute Location headers to the public HTTPS URL.
+          # An explicit proxy_redirect rule implicitly disables the nginx default
+          # rewriting (which would leak the internal port 9091). Do NOT combine
+          # with 'proxy_redirect off;' — that causes a duplicate-directive crash.
+          proxy_redirect http://harbor.harbor.svc.cluster.local:80/
+                         https://digiorg.local/harbor/;
+
+          # Rewrite Angular SPA base href for subpath deployment
+          sub_filter_once off;
+          sub_filter_types  text/html;
+          sub_filter '<base href="/">' '<base href="/harbor/">';
+        }
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: harbor-ui-proxy
+  namespace: harbor
+  labels:
+    app.kubernetes.io/name: harbor-ui-proxy
+    app.kubernetes.io/component: proxy
+    app.kubernetes.io/part-of: digiorg-core-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: harbor-ui-proxy
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: harbor-ui-proxy
+        app.kubernetes.io/component: proxy
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.27-alpine
+          ports:
+            - name: http
+              containerPort: 9091
+              protocol: TCP
+          volumeMounts:
+            - name: nginx-config
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 101
+            capabilities:
+              drop:
+                - ALL
+      volumes:
+        - name: nginx-config
+          configMap:
+            name: harbor-ui-proxy-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: harbor-ui-proxy
+  namespace: harbor
+  labels:
+    app.kubernetes.io/name: harbor-ui-proxy
+    app.kubernetes.io/component: proxy
+    app.kubernetes.io/part-of: digiorg-core-platform
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: harbor-ui-proxy
+  ports:
+    - name: http
+      port: 9091
+      targetPort: http
+      protocol: TCP

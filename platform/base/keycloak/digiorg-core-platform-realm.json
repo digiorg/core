@@ -337,6 +337,42 @@
       "attributes": {
         "post.logout.redirect.uris": "https://digiorg.local/opencost/*"
       }
+    },
+    {
+      "clientId": "harbor",
+      "name": "Harbor Registry",
+      "description": "Harbor OCI Registry — native Keycloak OIDC SSO",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "harbor-client-secret",
+      "redirectUris": ["https://digiorg.local/c/oidc/callback"],
+      "webOrigins": ["https://digiorg.local"],
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": true,
+      "frontchannelLogout": true,
+      "attributes": {
+        "post.logout.redirect.uris": "https://digiorg.local/harbor/*"
+      },
+      "protocolMappers": [
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "full.path": "false",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "groups",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
     }
   ],
   "roles": {

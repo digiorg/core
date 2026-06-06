@@ -28,6 +28,10 @@ data:
         CREATE USER sonarqube WITH PASSWORD '${SONARQUBE_DB_PASSWORD}';
         CREATE DATABASE sonarqube OWNER sonarqube;
         GRANT ALL PRIVILEGES ON DATABASE sonarqube TO sonarqube;
+
+        CREATE USER harbor WITH PASSWORD '${HARBOR_DB_PASSWORD}';
+        CREATE DATABASE registry OWNER harbor;
+        GRANT ALL PRIVILEGES ON DATABASE registry TO harbor;
     EOSQL
 
     psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname keycloak <<-EOSQL
@@ -44,6 +48,10 @@ data:
 
     psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname sonarqube <<-EOSQL
         GRANT ALL ON SCHEMA public TO sonarqube;
+    EOSQL
+
+    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname registry <<-EOSQL
+        GRANT ALL ON SCHEMA public TO harbor;
     EOSQL
 ---
 apiVersion: apps/v1
@@ -98,6 +106,11 @@ spec:
                 secretKeyRef:
                   name: postgresql-secrets
                   key: SONARQUBE_DB_PASSWORD
+            - name: HARBOR_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgresql-secrets
+                  key: HARBOR_DB_PASSWORD
             # Set PGDATA to a subdirectory to avoid "lost+found" issues
             - name: PGDATA
               value: /var/lib/postgresql/data/pgdata
