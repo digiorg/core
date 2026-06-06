@@ -81,7 +81,7 @@ data:
                          https://digiorg.local/harbor/;
           sub_filter_once off;
           sub_filter_types  text/html;
-          sub_filter '<base href="/">' '<base href="/harbor/">';
+          sub_filter '<base href="/"/>' '<base href="/harbor/"/>';
         }
 
         location /harbor/ {
@@ -105,7 +105,7 @@ data:
           # Rewrite Angular SPA base href for subpath deployment
           sub_filter_once off;
           sub_filter_types  text/html;
-          sub_filter '<base href="/">' '<base href="/harbor/">';
+          sub_filter '<base href="/"/>' '<base href="/harbor/"/>';
         }
       }
     }
