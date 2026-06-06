@@ -34,9 +34,9 @@ spec:
     - host: digiorg.local
       http:
         paths:
-          # Routes /opencost/index.*.{js,css} → opencost:9090 at /index.*.{js,css}
+          # Routes /opencost/index.*.{js,css} and /opencost/favicon.* → opencost:9090
           # Static assets contain no sensitive data — bypass auth proxy intentionally.
-          - path: /opencost/(index\..+)
+          - path: /opencost/((?:index|favicon)\..+)
             pathType: ImplementationSpecific
             backend:
               service:
