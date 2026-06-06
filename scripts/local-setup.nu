@@ -63,13 +63,13 @@ def "main up" [] {
 
     # Configure SonarQube (SAML + base URL)
     print ""
-    print $"(ansi cyan_bold)Phase 3: Configure SonarQube(ansi reset)"
+    print $"(ansi cyan_bold)Phase 4: Configure SonarQube(ansi reset)"
     print "────────────────────────────────────"
     configure_sonarqube
 
     # Restart OIDC-dependent pods after Keycloak is ready
     print ""
-    print $"(ansi cyan_bold)Phase 3: Restart OIDC dependent PODs(ansi reset)"
+    print $"(ansi cyan_bold)Phase 5: Restart OIDC dependent PODs(ansi reset)"
     print "────────────────────────────────────"
     restart_oidc_dependent_pods
     
@@ -203,7 +203,7 @@ def "main status" [] {
         print $"(ansi cyan_bold)Platform Pods(ansi reset)"
         print "============="
         
-        let namespaces = ["kube-system", "platform-db", "argocd", "keycloak", "messaging", "crossplane-system", "kyverno", "monitoring", "backstage", "gitea", "platform-apps", "cert-manager", "code-quality", "tracing", "external-secrets", "cost-monitoring"]
+        let namespaces = ["kube-system", "platform-db", "argocd", "keycloak", "messaging", "crossplane-system", "kyverno", "monitoring", "backstage", "gitea", "platform-apps", "cert-manager", "code-quality", "tracing", "external-secrets", "cost-monitoring", "harbor", "opensearch"]
         for ns in $namespaces {
             let status = try {
                 let pods = (kubectl get pods -n $ns --no-headers | lines | length)
@@ -570,11 +570,11 @@ def deploy_root_app [] {
     print ""
     print "ArgoCD Sync Waves:"
     print "  Wave -1: root-app (just deployed)"
-    print "  Wave  0: cert-manager, external-secrets, postgresql, opensearch, nats"
+    print "  Wave  0: cert-manager, cnpg, external-secrets, nats, postgresql"
     print "  Wave  1: keycloak, argocd (self-managed)"
-    print "  Wave  2: landingpage, backstage, gitea, grafana, jaeger, sonarqube, opencost"
-    print "  Wave  3: crossplane, kyverno"
-    print "  Wave  4: crossplane-providers"
+    print "  Wave  2: backstage, gitea, grafana, harbor, jaeger, landingpage, opencost, sonarqube"
+    print "  Wave  3: crossplane, kyverno, opensearch"
+    print "  Wave  4: crossplane-providers, fluentd, kyverno-policies"
     print "  Wave  5: monitoring-extras (ServiceMonitors)"
     print "  Wave  6: crossplane-provider-configs"
     print "  Wave  7: crossplane-xrds"
@@ -597,15 +597,15 @@ def wait_for_argocd_apps [] {
     # Apps to wait for (in wave order) — must match apps/platform/*.yaml exactly
     let apps = [
         # Wave 0
-        "cert-manager", "external-secrets", "postgresql", "opensearch", "nats",
+        "cert-manager", "cnpg", "external-secrets", "nats", "postgresql",
         # Wave 1
         "keycloak", "argocd",
         # Wave 2
-        "landingpage", "backstage", "gitea", "grafana", "jaeger", "sonarqube", "opencost",
+        "backstage", "gitea", "grafana", "harbor", "jaeger", "landingpage", "opencost", "sonarqube",
         # Wave 3
-        "crossplane", "kyverno",
+        "crossplane", "kyverno", "opensearch",
         # Wave 4
-        "crossplane-providers",
+        "crossplane-providers", "fluentd", "kyverno-policies",
         # Wave 5
         "monitoring-extras",
         # Wave 6
@@ -618,7 +618,7 @@ def wait_for_argocd_apps [] {
     
     mut all_healthy = false
     mut attempts = 0
-    let max_attempts = 120  # 20 minutes with 10sec intervals
+    let max_attempts = 150  # 25 minutes with 10sec intervals — platform has grown
     
     loop {
         $attempts = $attempts + 1
