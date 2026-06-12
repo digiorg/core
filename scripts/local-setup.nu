@@ -578,7 +578,7 @@ def deploy_root_app [] {
     print "  Wave  5: monitoring-extras (ServiceMonitors)"
     print "  Wave  6: crossplane-provider-configs"
     print "  Wave  7: crossplane-xrds"
-    print "  Wave  8: core-app-catalog"
+    print "  Wave  8: core-catalog"
 
     # Wait for apps to sync
     print ""
@@ -613,7 +613,7 @@ def wait_for_argocd_apps [] {
         # Wave 7
         "crossplane-xrds",
         # Wave 8
-        "core-app-catalog"
+        "core-catalog"
     ]
     
     mut all_healthy = false

@@ -12,7 +12,7 @@ crossplane/
 │   ├── provider-http.yaml
 │   └── kustomization.yaml
 ├── xrds/            # Composite Resource Definitions (add here)
-└── compositions/    # Compositions live in core-app-catalog, not here
+└── compositions/    # Compositions live in core-catalog, not here
 ```
 
 ## Installed Providers
@@ -76,6 +76,6 @@ spec:
 
 ## Adding Compositions
 
-Compositions live in the **core-app-catalog** repository, not here. This keeps application-level
+Compositions live in the **core-catalog** repository, not here. This keeps application-level
 compositions separate from the platform provider infrastructure. Reference the XRD group and kind
 from this repo when authoring compositions there.

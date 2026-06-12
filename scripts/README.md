@@ -83,7 +83,7 @@ ArgoCD takes over and deploys all platform components via sync waves:
 | 5 | monitoring-extras | ServiceMonitors (requires monitoring stack) |
 | 6 | crossplane-provider-configs | Provider configurations |
 | 7 | crossplane-xrds | Composite Resource Definitions |
-| 8 | core-app-catalog | Core app catalog |
+| 8 | core-catalog | Core catalog |
 
 ArgoCD deploys platform components as individual Application resources defined in `apps/platform/*.yaml`, not via an ApplicationSet CRD.
 
