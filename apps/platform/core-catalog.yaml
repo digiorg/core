@@ -1,7 +1,7 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: core-app-catalog
+  name: core-catalog
   namespace: argocd
   finalizers:
     - resources-finalizer.argocd.argoproj.io
@@ -12,7 +12,7 @@ spec:
   project: default
 
   source:
-    repoURL: https://github.com/digiorg/core-app-catalog.git
+    repoURL: https://github.com/digiorg/core-catalog.git
     targetRevision: HEAD
     path: compositions/local
 
