@@ -19,7 +19,11 @@
 #   KC_BOOTSTRAP_ADMIN_PASSWORD=admin
 #
 # HTTP / Hostname (dev mode):
-#   KC_HOSTNAME_STRICT=false
+#   NOTE: Hostname v1 options (KC_HOSTNAME_STRICT, KC_HOSTNAME_URL, KC_HOSTNAME_ADMIN_URL,
+#         KC_HOSTNAME_STRICT_BACKCHANNEL) were removed in Keycloak 26. Use v2 vars below.
+#   KC_HOSTNAME=https://digiorg.local/keycloak
+#   KC_HOSTNAME_ADMIN=https://digiorg.local/keycloak
+#   KC_HOSTNAME_BACKCHANNEL_DYNAMIC=true
 #   KC_HTTP_ENABLED=true
 #
 # Startup Command:
