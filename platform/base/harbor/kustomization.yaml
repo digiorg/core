@@ -3,3 +3,5 @@ kind: Kustomization
 resources:
   - harbor-ui-proxy.yaml
   - harbor-oidc-secret.yaml
+  - harbor-admin-secret.yaml
+  - harbor-oidc-config-job.yaml
