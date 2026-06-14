@@ -1,0 +1,79 @@
+# =============================================================================
+# Harbor OIDC Configuration Job
+#
+# ArgoCD PostSync hook: runs after every Harbor deployment and configures
+# OIDC authentication via Harbor's REST API (PUT /api/v2.0/configurations).
+#
+# Harbor stores auth configuration in PostgreSQL — it cannot be set via
+# environment variables. This Job is the only GitOps-compatible approach.
+#
+# BeforeHookCreation: deletes the previous Job on re-sync so it always re-runs.
+# This ensures OIDC is configured on every fresh Kind cluster build.
+#
+# Issue: #262
+# =============================================================================
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: harbor-oidc-config
+  namespace: harbor
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: configure-oidc
+          image: curlimages/curl:8.7.1
+          env:
+            - name: HARBOR_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: harbor-admin-secret
+                  key: HARBOR_ADMIN_PASSWORD
+            - name: OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: harbor-oidc-secret
+                  key: OIDC_CLIENT_SECRET
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              HARBOR_API="http://harbor.harbor.svc.cluster.local/api/v2.0"
+
+              echo "Waiting for Harbor API to be ready..."
+              until curl -sf "${HARBOR_API}/ping" > /dev/null 2>&1; do
+                echo "  Harbor not ready yet, retrying in 5s..."
+                sleep 5
+              done
+              echo "Harbor API is ready."
+
+              echo "Configuring OIDC authentication..."
+              HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
+                -u "admin:${HARBOR_ADMIN_PASSWORD}" \
+                -H "Content-Type: application/json" \
+                -d "{
+                  \"auth_mode\": \"oidc_auth\",
+                  \"oidc_name\": \"Keycloak\",
+                  \"oidc_endpoint\": \"https://digiorg.local/keycloak/realms/digiorg-core-platform\",
+                  \"oidc_client_id\": \"harbor\",
+                  \"oidc_client_secret\": \"${OIDC_CLIENT_SECRET}\",
+                  \"oidc_scope\": \"openid,profile,email,groups\",
+                  \"oidc_verify_cert\": false,
+                  \"oidc_auto_onboard\": true,
+                  \"oidc_user_claim\": \"preferred_username\",
+                  \"oidc_groups_claim\": \"groups\"
+                }" \
+                "${HARBOR_API}/configurations")
+
+              if [ "$HTTP_STATUS" = "200" ]; then
+                echo "OIDC configuration applied successfully (HTTP 200)."
+              else
+                echo "ERROR: Harbor API returned HTTP ${HTTP_STATUS}. OIDC configuration failed."
+                exit 1
+              fi

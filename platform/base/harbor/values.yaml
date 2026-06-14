@@ -71,33 +71,3 @@ cache:
   expireHours: 24
 
 logLevel: info
-
-# OIDC SSO via Keycloak
-# AUTH_MODE env vars are read by Harbor core on startup and written to the DB on first run.
-# On a fresh Kind cluster (DB always empty), these are applied on every deployment.
-# Harbor helm chart supports this via core.extraEnvVars (confirmed in templates/core/core-dpl.yaml).
-core:
-  extraEnvVars:
-    - name: AUTH_MODE
-      value: "oidc_auth"
-    - name: OIDC_NAME
-      value: "Keycloak"
-    - name: OIDC_ENDPOINT
-      value: "https://digiorg.local/keycloak/realms/digiorg-core-platform"
-    - name: OIDC_CLIENT_ID
-      value: "harbor"
-    - name: OIDC_CLIENT_SECRET
-      valueFrom:
-        secretKeyRef:
-          name: harbor-oidc-secret
-          key: OIDC_CLIENT_SECRET
-    - name: OIDC_SCOPE
-      value: "openid,profile,email,groups"
-    - name: OIDC_VERIFY_CERT
-      value: "false"
-    - name: OIDC_AUTO_ONBOARD
-      value: "true"
-    - name: OIDC_USER_CLAIM
-      value: "preferred_username"
-    - name: OIDC_GROUPS_CLAIM
-      value: "groups"
