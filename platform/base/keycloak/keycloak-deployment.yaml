@@ -80,6 +80,10 @@ spec:
             # Management interface must use root path, not the HTTP relative path
             - name: KC_HTTP_MANAGEMENT_RELATIVE_PATH
               value: "/"
+            # JVM heap ceiling — must stay below container memory limit (2Gi)
+            # Without this, JVM estimates available RAM from host instead of container limits → OOMKill
+            - name: JAVA_OPTS_KC_HEAP
+              value: "-XX:MaxRAMPercentage=70 -XX:InitialRAMPercentage=50 -XX:MaxRAM=1536m"
           ports:
             - containerPort: 8080
               name: http
@@ -92,10 +96,10 @@ spec:
           resources:
             requests:
               cpu: 200m
-              memory: 384Mi
+              memory: 1Gi
             limits:
               cpu: 1000m
-              memory: 768Mi
+              memory: 2Gi
           startupProbe:
             httpGet:
               path: /health/ready
