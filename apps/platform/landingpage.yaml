@@ -13,7 +13,7 @@ spec:
   project: default
   source:
     repoURL: https://github.com/digiorg/core.git
-    targetRevision: HEAD
+    targetRevision: main
     path: platform/base/landingpage
   destination:
     server: https://kubernetes.default.svc

@@ -20,7 +20,7 @@ spec:
         valueFiles:
           - $values/platform/base/grafana/values.yaml
     - repoURL: https://github.com/digiorg/core.git
-      targetRevision: HEAD
+      targetRevision: main
       ref: values
 
   destination:

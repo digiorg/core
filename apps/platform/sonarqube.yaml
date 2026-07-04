@@ -15,7 +15,7 @@ spec:
     # SonarQube Community Build Helm chart
     - repoURL: https://SonarSource.github.io/helm-chart-sonarqube
       chart: sonarqube
-      targetRevision: "10.*"
+      targetRevision: "10.8.1"
       helm:
         releaseName: sonarqube
         valueFiles:
@@ -23,12 +23,12 @@ spec:
 
     # Reference to values file in Git repo
     - repoURL: https://github.com/digiorg/core.git
-      targetRevision: HEAD
+      targetRevision: main
       ref: values
 
     # Namespace + additional manifests via Kustomize
     - repoURL: https://github.com/digiorg/core.git
-      targetRevision: HEAD
+      targetRevision: main
       path: platform/base/sonarqube
 
   destination:

@@ -16,7 +16,7 @@ spec:
     # NATS Server via Helm chart
     - repoURL: https://nats-io.github.io/k8s/helm/charts
       chart: nats
-      targetRevision: "1.2.x"
+      targetRevision: "1.2.11"
       helm:
         releaseName: nats
         valueFiles:
@@ -24,12 +24,12 @@ spec:
 
     # Reference to values file in Git repo
     - repoURL: https://github.com/digiorg/core.git
-      targetRevision: HEAD
+      targetRevision: main
       ref: values
 
     # Surveyor, oauth2-proxy, namespace via Kustomize
     - repoURL: https://github.com/digiorg/core.git
-      targetRevision: HEAD
+      targetRevision: main
       path: platform/base/nats
 
   destination:
