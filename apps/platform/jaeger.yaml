@@ -12,16 +12,16 @@ spec:
   sources:
     - repoURL: https://jaegertracing.github.io/helm-charts
       chart: jaeger
-      targetRevision: "4.x"
+      targetRevision: "4.11.1"
       helm:
         releaseName: jaeger
         valueFiles:
           - $values/platform/base/jaeger/values.yaml
     - repoURL: https://github.com/digiorg/core.git
-      targetRevision: HEAD
+      targetRevision: main
       ref: values
     - repoURL: https://github.com/digiorg/core.git
-      targetRevision: HEAD
+      targetRevision: main
       path: platform/base/jaeger
   destination:
     server: https://kubernetes.default.svc

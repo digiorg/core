@@ -1,33 +1,32 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: monitoring-extras
+  name: namespaces
   namespace: argocd
   finalizers:
     - resources-finalizer.argocd.argoproj.io
   annotations:
-    # Wave 5: After grafana/kube-prometheus-stack (Wave 2) — ensures ServiceMonitor CRD is registered
-    argocd.argoproj.io/sync-wave: "5"
+    # Wave -1: Pre-create all platform namespaces before any workload app runs.
+    # This eliminates 409 Conflict races when multiple Wave 2 apps target the same namespace.
+    argocd.argoproj.io/sync-wave: "-1"
 spec:
   project: default
 
   source:
     repoURL: https://github.com/digiorg/core.git
     targetRevision: main
-    path: platform/base/monitoring-extras
+    path: platform/base/namespaces
 
   destination:
     server: https://kubernetes.default.svc
-    namespace: monitoring
+    namespace: argocd
 
   syncPolicy:
     automated:
       selfHeal: true
-      prune: true
+      prune: false  # Never prune namespaces — workloads may still be running
     syncOptions:
-      - CreateNamespace=true
       - ServerSideApply=true
-      - SkipDryRunOnMissingResource=true
     retry:
       limit: 5
       backoff:

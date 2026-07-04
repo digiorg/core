@@ -89,6 +89,34 @@ Drei-Säulen-System: **Metriken** (Prometheus + Grafana) + **Traces** (Jaeger + 
 - **ArgoCD** — GitOps Continuous Delivery (mit Keycloak SSO)
 - **Crossplane** — Infrastructure-as-Code
 
+## Wellen-Abhängigkeitsgraph & Versions-Pinning-Policy
+
+### Sync-Wave-Reihenfolge
+
+| Wave | Anwendungen | Abhängigkeiten |
+|------|-------------|----------------|
+| -1 | **namespaces** | Keine — erstellt alle Platform-Namespaces vor |
+| 0 | cert-manager, cnpg, external-secrets, nats, postgresql | Namespaces (Wave -1) |
+| 1 | argocd, keycloak | Wave-0-Komponenten bereit |
+| 2 | backstage, gitea, grafana, harbor, jaeger, landingpage, opencost, sonarqube | Keycloak SSO (Wave 1), PostgreSQL (Wave 0) |
+| 3 | crossplane, kyverno, opensearch | Wave-2-Apps laufen |
+| 4 | crossplane-providers, fluentd, kyverno-policies | Crossplane/Kyverno (Wave 3) |
+| 5 | monitoring-extras | ServiceMonitor-CRD aus kube-prometheus-stack (Wave 2) |
+| 6 | crossplane-provider-configs | Crossplane-Provider (Wave 4) |
+| 7 | crossplane-xrds | Provider-Configs (Wave 6) |
+| 8 | core-catalog | XRDs registriert (Wave 7) |
+
+### Versions-Pinning-Policy
+
+**Helm-Charts** — Immer auf exakte Versionen pinnen (z.B. `1.43.2`), keine Floating Ranges (`1.*`, `1.2.x`).
+Gepinnte Versionen bewusst nach Tests aktualisieren und die Änderung in der PR-Beschreibung dokumentieren.
+
+**Git-Referenzen** — Immer `targetRevision: main` verwenden (niemals `HEAD`). Für Cross-Repository-Referenzen
+(z.B. core-catalog) auf einen spezifischen Commit-SHA pinnen und bewusst aktualisieren.
+
+**Cross-Repository-Abhängigkeiten** — `core-catalog.git` ist auf einen spezifischen Commit-SHA gepinnt.
+Bei Updates zuerst API/CRD-Kompatibilität mit dem core Wave 0–7 Stack validieren.
+
 ### Quick Start (Lokale Entwicklung)
 
 ```bash
@@ -261,6 +289,34 @@ Three-pillar system: **Metrics** (Prometheus + Grafana) + **Traces** (Jaeger + O
 #### 🚀 GitOps Engine
 - **ArgoCD** — GitOps Continuous Delivery (with Keycloak SSO)
 - **Crossplane** — Infrastructure-as-Code
+
+## Wave Dependency Graph & Version Pinning Policy
+
+### Sync Wave Order
+
+| Wave | Applications | Dependencies |
+|------|-------------|--------------|
+| -1 | **namespaces** | None — pre-creates all platform namespaces |
+| 0 | cert-manager, cnpg, external-secrets, nats, postgresql | Namespaces (wave -1) |
+| 1 | argocd, keycloak | Wave 0 components ready |
+| 2 | backstage, gitea, grafana, harbor, jaeger, landingpage, opencost, sonarqube | Keycloak SSO (wave 1), PostgreSQL (wave 0) |
+| 3 | crossplane, kyverno, opensearch | Wave 2 apps running |
+| 4 | crossplane-providers, fluentd, kyverno-policies | Crossplane/Kyverno (wave 3) |
+| 5 | monitoring-extras | ServiceMonitor CRD from kube-prometheus-stack (wave 2) |
+| 6 | crossplane-provider-configs | Crossplane providers (wave 4) |
+| 7 | crossplane-xrds | Provider configs (wave 6) |
+| 8 | core-catalog | XRDs registered (wave 7) |
+
+### Version Pinning Policy
+
+**Helm Charts** — Always pin to exact versions (e.g., `1.43.2`), never floating ranges (`1.*`, `1.2.x`).
+Update pinned versions deliberately after testing; document the change in the PR description.
+
+**Git References** — Always use `targetRevision: main` (never `HEAD`). For cross-repository
+references (e.g., core-catalog), pin to a specific commit SHA and update it consciously.
+
+**Cross-Repository Dependencies** — `core-catalog.git` is pinned to a specific commit SHA.
+When updating, validate API/CRD compatibility with the core wave 0–7 stack first.
 
 ### Quick Start (Local Development)
 

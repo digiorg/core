@@ -14,7 +14,7 @@ spec:
 
   source:
     repoURL: https://github.com/digiorg/core.git
-    targetRevision: HEAD
+    targetRevision: main
     # Point to the apps/ directory — ArgoCD will discover all Application manifests here
     path: apps
     directory:

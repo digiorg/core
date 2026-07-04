@@ -12,16 +12,16 @@ spec:
   sources:
     - repoURL: https://opencost.github.io/opencost-helm-chart
       chart: opencost
-      targetRevision: "1.*"
+      targetRevision: "1.43.2"
       helm:
         releaseName: opencost
         valueFiles:
           - $values/platform/base/opencost/values.yaml
     - repoURL: https://github.com/digiorg/core.git
-      targetRevision: HEAD
+      targetRevision: main
       ref: values
     - repoURL: https://github.com/digiorg/core.git
-      targetRevision: HEAD
+      targetRevision: main
       path: platform/base/opencost
   destination:
     server: https://kubernetes.default.svc

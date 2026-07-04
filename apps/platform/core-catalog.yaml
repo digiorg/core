@@ -13,7 +13,9 @@ spec:
 
   source:
     repoURL: https://github.com/digiorg/core-catalog.git
-    targetRevision: HEAD
+    # Pinned to specific commit to prevent silent breaking changes from HEAD.
+    # Update this SHA deliberately after validating compatibility with the core wave 0-7 stack.
+    targetRevision: 0ced57eb40a50ec170352ce4a59bffedd4a16a6c
     path: compositions/local
 
   destination:
