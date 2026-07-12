@@ -3,8 +3,9 @@ kind: Kustomization
 resources:
   - oauth2-proxy.yaml
   - servicemonitor.yaml
-  - ui-proxy.yaml
-  # NOTE: Ingress resources (opencost-portal-ingress, opencost-assets-ingress)
-  # are in platform/base/ingress/ and applied during bootstrap by local-setup.nu.
+  # NOTE: the custom v1.120.4 UI image (ui-image/) serves /opencost natively, so
+  # the old ui-proxy (HTML sub_filter) has been removed (Issue #272 Option B).
+  # NOTE: the opencost-portal-ingress is in platform/base/ingress/ and applied
+  # during bootstrap by local-setup.nu.
   # Do NOT add ingress-nginx resources here — this kustomization is managed by
   # the ArgoCD 'opencost' Application (destination.namespace: cost-monitoring).

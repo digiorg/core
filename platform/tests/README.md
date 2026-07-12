@@ -1,8 +1,9 @@
 # Platform manifest regression tests
 
-Deterministic tests that parse the platform manifests and assert their
-**behaviour** (not just the presence of a string), so subpath/proxy regressions
-are caught in review rather than in the cluster.
+Deterministic tests that parse/render the platform manifests and the pinned
+upstream serving config, and assert their **behaviour** (not just the presence
+of a string), so subpath/proxy regressions are caught in review rather than in
+the cluster.
 
 ## Requirements
 
@@ -11,23 +12,30 @@ are caught in review rather than in the cluster.
 
 No cluster, pytest, or network access required.
 
-## Scope of the HTML fixtures
-
-The Parcel and Vite HTML fixtures in `test_opencost_ui_subpath.py` are
-representative, hand-written snapshots of the two build layouts — they are
-**not** dynamically extracted from the exact OpenCost container image in use.
-They assert that the manifests correctly handle the *shapes* of root-absolute
-references each layout emits (`/index.*`, `/favicon.*`, `/assets/*`); they do
-not guarantee byte-for-byte parity with the pinned image's actual output.
-
 ## Running
 
 ```sh
 python3 platform/tests/test_opencost_ui_subpath.py
 ```
 
-## Coverage
+## `test_opencost_ui_subpath.py` — Issue #272 Option B
 
-| Test file | Manifests under test | What it proves |
+Guards the subpath-aware OpenCost UI architecture: a **custom UI image** built
+from upstream **v1.120.4** with `vite_basename=/opencost`, which serves the SPA,
+static assets and the API natively under `/opencost` — replacing the old
+root-only image plus its HTML `sub_filter` proxy and unauthenticated
+asset-bypass Ingress.
+
+| Test class | Under test | What it proves |
 | --- | --- | --- |
-| `test_opencost_ui_subpath.py` | `platform/base/opencost/ui-proxy.yaml`, `platform/base/ingress/opencost-assets-ingress.yaml` | The `/opencost` subpath proxy rewrites root-absolute asset references for **both** the Parcel (`/index.*`, `/favicon.*`) and Vite (`/assets/*`) UI layouts in every serving location, keeps gzip disabled and the redirect rewrite intact, and the asset ingress routes both layouts with an RE2-compatible expression (no non-capturing groups) whose `rewrite-target: /$1` capture strips `/opencost/` correctly. See GitHub issue #272. |
+| `BuildContractTest` | `opencost/ui-image/build.sh` | pins upstream ≥ v1.120.4 **and** an immutable 40-hex commit, compiles `vite_basename=/opencost` and `vite_base_api_url=/opencost/model`, keeps local kind and Harbor image coordinates aligned, passes version/commit provenance args, and embeds no credentials. |
+| `NginxServingRenderTest` | `ui-image/reference/default.nginx.conf.template` rendered with the `UI_PATH`/`BASE_URL` from `opencost/values.yaml` | via an nginx longest-prefix location matcher: `/opencost/` serves the SPA, deep links fall back to `index.html`, and `/opencost/model/` is the API proxy (API base `= /opencost/model`) — SPA and API never collide. |
+| `HelmWiringTest` | `opencost/values.yaml` | selects the custom (non-1.113.0, ≥ v1.120.4) image whose tag matches `build.sh`, uses `IfNotPresent`/`Never`, sets `BASE_URL=/opencost/model` (not the legacy `BASE_URL_OVERRIDE`) and `UI_PATH=/opencost`. |
+| `AuthRouteTest` | `opencost/oauth2-proxy.yaml`, `ingress/opencost-portal-ingress.yaml` | the auth proxy forwards straight to `opencost:9090` (no `9091` ui-proxy) with OIDC intact, and the portal Ingress routes `/opencost` through the auth proxy with **no** `rewrite-target`. |
+| `NoObsoleteWorkaroundsTest` | `opencost/`, `ingress/` | `ui-proxy.yaml` and `opencost-assets-ingress.yaml` are gone and unreferenced, no Ingress routes `/opencost*` straight to the `opencost` service (no unauthenticated bypass), and no `sub_filter`/`BASE_URL_OVERRIDE` remnants remain. |
+| `RouterBasenameDomTest` | `build.sh` `vite_basename` arg + a react-router basename simulation | the DOM-level guard: a root-only (no-basename) router renders an **empty** `#app` at `/opencost/` (the confirmed root cause), while the configured basename matches the index route and deep links — so `#app` is not empty. |
+
+The vendored `ui-image/reference/default.nginx.conf.template` is a byte-faithful
+snapshot of the upstream v1.120.4 template (see `ui-image/README.md`), so the
+render test exercises the **real** serving config rather than a hand-written
+fixture. Refresh it whenever the pinned upstream tag changes.

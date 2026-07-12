@@ -3,9 +3,9 @@ kind: Kustomization
 
 resources:
   - digiorg-ingress.yaml
-  # OpenCost: two dedicated Ingress objects required because rewrite-target
-  # and configuration-snippet cannot coexist on the same Ingress path.
-  # Both are bootstrap-managed (applied by local-setup.nu), NOT by ArgoCD.
+  # OpenCost: a single Ingress routes /opencost through the oauth2-proxy. The
+  # custom v1.120.4 UI image serves assets and the API natively under /opencost,
+  # so the separate (unauthenticated) asset-bypass Ingress was removed
+  # (Issue #272 Option B). Bootstrap-managed (local-setup.nu), NOT ArgoCD.
   - opencost-portal-ingress.yaml
-  - opencost-assets-ingress.yaml
   - harbor-ingress.yaml

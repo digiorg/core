@@ -48,9 +48,29 @@ opencost:
 
   ui:
     enabled: true
+    # -- Custom subpath-aware UI image (Issue #272 Option B).
+    #    Built from upstream v1.120.4 with `--build-arg vite_basename=/opencost`
+    #    so the router basename, Vite asset base and nginx UI_PATH are all
+    #    /opencost. Source of truth: platform/base/opencost/ui-image/build.sh
+    #    (kept in sync with the tag below). The stock ghcr.io opencost-ui:1.113.0
+    #    router is rooted at "/" and renders a blank page under /opencost.
+    image:
+      registry: digiorg
+      repository: opencost-ui
+      tag: "v1.120.4-basename-opencost"
+      # kind-loaded local image — must not force a registry pull.
+      pullPolicy: IfNotPresent
     extraEnv:
-      - name: BASE_URL_OVERRIDE
+      # BASE_URL renders the nginx model-proxy location at runtime. The standard
+      # v1.120.4 JavaScript client gets the matching /opencost/model API base at
+      # build time from `vite_base_api_url` in ui-image/build.sh. Both layers
+      # must stay aligned. Do NOT use the legacy BASE_URL_OVERRIDE mechanism.
+      - name: BASE_URL
         value: /opencost/model
+      # UI_PATH is baked from the build arg; set explicitly so the serving path
+      # is self-documenting in the Helm contract.
+      - name: UI_PATH
+        value: /opencost
 
 # Disable built-in ingress — DigiOrg uses unified NGINX ingress
 # oauth-proxy sidecar port registered in service for cross-namespace routing
