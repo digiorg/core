@@ -9,18 +9,22 @@
 # Responsibilities:
 #   1. Strip the /opencost prefix when forwarding to opencost:9090
 #      (standard nginx proxy_pass with trailing / on location and upstream)
-#   2. Apply sub_filter to HTML responses:
-#        src="/index.    →  src="/opencost/index.
-#        href="/index.   →  href="/opencost/index.
-#        href="/favicon. →  href="/opencost/favicon.
-#      The deployed OpenCost UI is a Parcel v2 build that emits root-level
-#      chunks (e.g. /index.6dd063c6.js, /index.runtime.216fe643.js,
-#      /index.3406705b.css) rather than Vite's /assets/* layout. Without
-#      these rewrites the browser requests those chunks at the domain root
-#      (https://digiorg.local/index.*) and gets 404s — a white /opencost page.
-#      The src="/assets/ and href="/assets/ Vite-style rules have been
-#      removed as the current Parcel build does not emit /assets/* paths
-#      and nginx does not support duplicate sub_filter keys within a block.
+#   2. Apply sub_filter to HTML responses, covering BOTH UI build layouts:
+#        Parcel v2 (root-level chunks):
+#          src="/index.    →  src="/opencost/index.
+#          href="/index.   →  href="/opencost/index.
+#          href="/favicon. →  href="/opencost/favicon.
+#        Vite (/assets/* chunks):
+#          src="/assets/   →  src="/opencost/assets/
+#          href="/assets/  →  href="/opencost/assets/
+#      The currently deployed OpenCost UI is a Parcel v2 build that emits
+#      root-level chunks (e.g. /index.6dd063c6.js, /index.runtime.216fe643.js,
+#      /index.3406705b.css), while newer OpenCost UI releases ship a Vite build
+#      that emits /assets/*. Without these rewrites the browser requests those
+#      chunks at the domain root (https://digiorg.local/index.* or /assets/*)
+#      and gets 404s — a white /opencost page. nginx 1.27 supports multiple
+#      sub_filter directives at one level (they are NOT duplicate keys — each is
+#      a distinct search string), so both layouts' rules coexist in every block.
 #   3. Disable upstream gzip so sub_filter can operate on uncompressed HTML
 #      (Accept-Encoding "" is sent upstream, so the response body is never
 #      gzip-encoded and the ngx_http_gunzip_module is not required here).
@@ -31,7 +35,7 @@
 # opencost-assets-ingress (rewrite-target: /$1 strips the /opencost prefix
 # at the NGINX ingress level).
 #
-# Issue: #233 #266 #268
+# Issue: #233 #266 #268 #272
 # =============================================================================
 ---
 apiVersion: v1
@@ -101,11 +105,17 @@ data:
           proxy_set_header   Accept-Encoding   "";
           proxy_redirect http://opencost.cost-monitoring.svc.cluster.local:9090/
                          https://digiorg.local/opencost/;
+          # Rewrite root-absolute SPA asset paths for BOTH build layouts.
+          # nginx 1.27 applies every sub_filter directive at this level in a
+          # single pass, so the Parcel (/index.*, /favicon.*) and Vite
+          # (/assets/*) rules coexist without conflict.
           sub_filter_once off;
           sub_filter_types  text/html;
           sub_filter 'src="/index.'    'src="/opencost/index.';
           sub_filter 'href="/index.'   'href="/opencost/index.';
           sub_filter 'href="/favicon.' 'href="/opencost/favicon.';
+          sub_filter 'src="/assets/'   'src="/opencost/assets/';
+          sub_filter 'href="/assets/'  'href="/opencost/assets/';
         }
 
         location /opencost/ {
@@ -127,15 +137,24 @@ data:
                          https://digiorg.local/opencost/;
 
           # Rewrite root-absolute SPA asset paths to the /opencost/ prefix.
-          # OpenCost UI compiles with base '/' — the current Parcel v2 build
-          # emits root-level chunks referenced as /index.* (JS/CSS) and
-          # /favicon.*. The Vite-style /assets/ rules have been removed as
-          # they are not emitted by the current build.
+          # OpenCost UI compiles with base '/', so both known build layouts
+          # emit root-level references that must be prefixed:
+          #   * Parcel v2 — /index.*.js, /index.runtime.*.js, /index.*.css,
+          #                 /favicon.*
+          #   * Vite      — /assets/*.js, /assets/*.css
+          # nginx 1.27 supports multiple sub_filter directives at one level and
+          # applies them in a single pass, so keeping both layouts' rules here
+          # is robust across a UI toolchain switch. nginx does not recursively
+          # re-scan a sub_filter's replacement output, so an already-rewritten
+          # /opencost/index. or /opencost/assets/ reference cannot be prefixed a
+          # second time.
           sub_filter_once off;
           sub_filter_types  text/html;
           sub_filter 'src="/index.'    'src="/opencost/index.';
           sub_filter 'href="/index.'   'href="/opencost/index.';
           sub_filter 'href="/favicon.' 'href="/opencost/favicon.';
+          sub_filter 'src="/assets/'   'src="/opencost/assets/';
+          sub_filter 'href="/assets/'  'href="/opencost/assets/';
         }
       }
     }
