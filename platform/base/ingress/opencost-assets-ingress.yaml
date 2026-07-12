@@ -4,23 +4,27 @@
 # Separate Ingress required because rewrite-target and configuration-snippet
 # cannot coexist on the same Ingress in NGINX Ingress Controller.
 #
-# This ingress strips the /opencost prefix when serving static assets:
-#   GET /opencost/index.6dd063c6.js → opencost:9090 at /index.6dd063c6.js
-#   GET /opencost/favicon.ico       → opencost:9090 at /favicon.ico
-#   GET /opencost/index.abc.js → opencost:9090 at /index.abc.js
+# This ingress strips the /opencost prefix when serving static assets, for
+# BOTH known OpenCost UI build layouts:
+#   Parcel v2 (root-level chunks):
+#     GET /opencost/index.6dd063c6.js → opencost:9090 at /index.6dd063c6.js
+#     GET /opencost/index.runtime.abc.js → opencost:9090 at /index.runtime.abc.js
+#     GET /opencost/favicon.ico       → opencost:9090 at /favicon.ico
+#   Vite (/assets/* chunks):
+#     GET /opencost/assets/index-abc.js → opencost:9090 at /assets/index-abc.js
 #
-# The deployed OpenCost UI is a Parcel v2 build that emits root-level chunks
-# (/index.*.js, /index.runtime.*.js, /index.*.css) rather than Vite's
-# /assets/* layout, so index.* and favicon.* are the patterns required today.
-# The assets/.+ alternative has been removed as the current build does not
-# emit /assets/* paths.
+# The currently deployed build is Parcel v2; the assets/.+ alternative is kept
+# so a future Vite-based OpenCost UI release keeps working without a manifest
+# change. The path uses a single capturing group (RE2-compatible — no
+# non-capturing (?:...) group) so rewrite-target: /$1 numbering stays correct.
 #
-# The matching HTML sub_filter (src="/index. → src="/opencost/index., etc.)
-# is applied via the opencost-ui-proxy ConfigMap on locations = /opencost and
-# /opencost/ — which uses the opencost-oauth2-proxy as backend.
+# The matching HTML sub_filter (src="/index. → src="/opencost/index., plus the
+# /assets/ equivalents) is applied via the opencost-ui-proxy ConfigMap on
+# locations = /opencost and /opencost/ — which uses the opencost-oauth2-proxy
+# as backend.
 #
 # Boot: applied by local-setup.nu bootstrap (not managed by ArgoCD).
-# Issue: #229 #231 #266 #268
+# Issue: #229 #231 #266 #268 #272
 # =============================================================================
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -42,10 +46,15 @@ spec:
     - host: digiorg.local
       http:
         paths:
-          # Routes /opencost/index.*, /opencost/favicon.* and /opencost/assets/*
-          # → opencost:9090. Static assets contain no sensitive data — bypass
-          # auth proxy intentionally.
-          - path: /opencost/((?:index|favicon)\..+)
+          # Routes /opencost/index.*, /opencost/favicon.* (Parcel) and
+          # /opencost/assets/* (Vite) → opencost:9090. Static assets contain no
+          # sensitive data — bypass auth proxy intentionally.
+          #
+          # The three alternatives sit inside a SINGLE capturing group so the
+          # rewrite-target keeps referencing $1 (the path after /opencost/).
+          # No non-capturing (?:...) group is used: ingress-nginx validates
+          # paths with RE2, which we keep strictly compatible here.
+          - path: /opencost/(assets/.+|index\..+|favicon\..+)
             pathType: ImplementationSpecific
             backend:
               service:
