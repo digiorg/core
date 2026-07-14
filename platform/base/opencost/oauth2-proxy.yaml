@@ -38,10 +38,12 @@ spec:
             - --oidc-issuer-url=https://digiorg.local/keycloak/realms/digiorg-core-platform
             - --client-id=opencost
             - --redirect-url=https://digiorg.local/opencost/oauth2/callback
-            # Upstream points to the ui-proxy (not directly to opencost) so that
-            # HTML responses get the Vite asset path rewritten at the nginx level
-            # (configuration-snippet is disabled on the Ingress Controller).
-            - --upstream=http://opencost-ui-proxy.cost-monitoring.svc.cluster.local:9091/
+            # Upstream points straight at the OpenCost UI (port 9090). The custom
+            # v1.120.4 image is built with vite_basename=/opencost, so it serves
+            # the SPA, assets and API natively under /opencost — no HTML
+            # sub_filter proxy and no prefix stripping are needed. oauth2-proxy
+            # forwards the full /opencost/... path unchanged (Issue #272 Opt B).
+            - --upstream=http://opencost.cost-monitoring.svc.cluster.local:9090/
             - --http-address=0.0.0.0:4180
             # proxy-prefix scopes the OAuth2 callback within the /opencost sub-path
             - --proxy-prefix=/opencost/oauth2

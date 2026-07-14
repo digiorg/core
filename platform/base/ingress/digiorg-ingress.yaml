@@ -267,20 +267,7 @@ spec:
   ports:
     - port: 4180
       protocol: TCP
----
-# ExternalName Service: routes ingress-nginx → opencost UI (cost-monitoring ns)
-# Used by the opencost-assets-ingress to serve /index.*.{js,css} directly.
-apiVersion: v1
-kind: Service
-metadata:
-  name: opencost
-  namespace: ingress-nginx
-  labels:
-    app.kubernetes.io/name: opencost
-    app.kubernetes.io/part-of: digiorg-core-platform
-spec:
-  type: ExternalName
-  externalName: opencost.cost-monitoring.svc.cluster.local
-  ports:
-    - port: 9090
-      protocol: TCP
+# NOTE: the `opencost` ExternalName Service (→ opencost UI :9090) that used to
+# live here was removed with the opencost-assets-ingress (Issue #272 Option B):
+# every /opencost request now flows through the opencost-oauth2-proxy above, so
+# there is no unauthenticated ExternalName to the UI in the ingress namespace.

@@ -151,7 +151,11 @@ def "main bootstrap" [] {
     # 8. Install ArgoCD (Helm)
     print "1.8 Installing ArgoCD (Helm)..."
     install_argocd
-    
+
+    # 9. Build & load the custom subpath-aware OpenCost UI image (Issue #272 Opt B)
+    print "1.9 Building custom OpenCost UI image..."
+    build_opencost_ui_image
+
     print ""
     print $"(ansi green_bold)✓ Phase 1 Bootstrap complete(ansi reset)"
 }
@@ -553,6 +557,30 @@ def install_argocd [] {
         --wait --timeout 10m)
 
     print $"(ansi green)✓ ArgoCD installed [Helm](ansi reset)"
+}
+
+# Build the custom subpath-aware OpenCost UI image and load it into the kind
+# cluster (Issue #272 Option B). The opencost ArgoCD app (wave 2) selects this
+# image via platform/base/opencost/values.yaml with pullPolicy IfNotPresent, so
+# it must exist in the node before the opencost pod schedules. build.nu is the
+# single source of truth for how the image is built (pinned upstream v1.120.4 +
+# vite_basename=/opencost) and is a cross-platform Nushell script. Non-fatal on
+# failure so the rest of bootstrap can proceed — the opencost UI pod simply
+# stays pending until the image is loaded.
+def build_opencost_ui_image [] {
+    if (which docker | length) == 0 {
+        print $"(ansi yellow)○ docker not found — skipping OpenCost UI image build.(ansi reset)"
+        print "  Build & load manually once docker is available:"
+        print "    nu platform/base/opencost/ui-image/build.nu"
+        return
+    }
+    try {
+        nu platform/base/opencost/ui-image/build.nu
+        print $"(ansi green)✓ Custom OpenCost UI image built and loaded.(ansi reset)"
+    } catch {
+        print $"(ansi yellow)Warning: OpenCost UI image build failed — the opencost UI pod(ansi reset)"
+        print $"(ansi yellow)will stay pending until you run build.nu manually.(ansi reset)"
+    }
 }
 
 # -----------------------------------------------------------------------------

@@ -1,15 +1,15 @@
 # =============================================================================
 # OpenCost Portal Ingress
 #
-# Routes /opencost → oauth2-proxy → opencost-ui-proxy (nginx, port 9091).
-# The ui-proxy handles HTML sub_filter rewriting internally (at nginx level)
-# because configuration-snippet is disabled on this NGINX Ingress Controller.
-#
-# Asset requests (/opencost/index.*.{js,css}) are handled separately by
-# opencost-assets-ingress (rewrite-target: /$1 → directly to opencost:9090).
+# Routes /opencost (and everything beneath it) → oauth2-proxy → opencost UI
+# (port 9090). The custom v1.120.4 UI image is built with vite_basename=/opencost
+# and serves the SPA, static assets and the /opencost/model API natively under
+# the subpath, so there is NO path rewrite here (the /opencost prefix must reach
+# the UI intact) and NO separate asset Ingress. Every /opencost request — assets
+# included — therefore stays behind the oauth2-proxy (no unauthenticated bypass).
 #
 # Boot: applied by local-setup.nu bootstrap (not managed by ArgoCD).
-# Issue: #229 #231 #233
+# Issue: #229 #231 #233 #272
 # =============================================================================
 apiVersion: networking.k8s.io/v1
 kind: Ingress
