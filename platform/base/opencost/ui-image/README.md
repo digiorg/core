@@ -26,7 +26,7 @@ browser's `window.location.pathname` is `/opencost/…`.
 
   Because it is a **build-time** setting, adding `VITE_BASENAME` as a runtime env
   var to a stock image does **not** work — the router and asset base are already
-  compiled. The image must be rebuilt, which is what `build.sh` does.
+  compiled. The image must be rebuilt, which is what `build.nu` does.
 
 ## Image coordinates
 
@@ -45,19 +45,24 @@ The tag and env alignment are consumed by `platform/base/opencost/values.yaml`
 
 ## Build & publish
 
-```sh
+`build.nu` is a cross-platform [Nushell](https://www.nushell.sh) script, so the
+exact same commands work on Linux, macOS and Windows (with Docker Desktop, Git
+and kind on `PATH`). Run them from a Nushell prompt — `with-env` sets the toggle
+for the spawned build without relying on any shell-specific `VAR=value` prefix:
+
+```nu
 # Build + load into the local kind cluster (default)
-./build.sh
+nu build.nu
 
 # Build only
-LOAD=0 ./build.sh
+with-env {LOAD: "0"} { nu build.nu }
 
 # Build + push to Harbor (run `docker login digiorg.local` first — no
 # credentials are stored in this repo)
-PUSH=1 ./build.sh
+with-env {PUSH: "1"} { nu build.nu }
 ```
 
-`build.sh` builds directly from the upstream Dockerfile at the pinned tag and
+`build.nu` builds directly from the upstream Dockerfile at the pinned tag and
 **verifies** the tag still resolves to `UPSTREAM_COMMIT` before building, so an
 upstream re-tag cannot silently change the source. `version`/`commit` build args
 bake the provenance into the image footer and OCI labels. Building therefore
@@ -98,9 +103,9 @@ gh api "repos/opencost/opencost-ui/contents/default.nginx.conf.template?ref=$UPS
 
 1. Pick the new upstream tag; resolve its commit:
    `git ls-remote https://github.com/opencost/opencost-ui.git refs/tags/<tag>^{}`
-2. Update `UPSTREAM_TAG` / `UPSTREAM_COMMIT` / `TAG` in `build.sh`.
+2. Update `UPSTREAM_TAG` / `UPSTREAM_COMMIT` / `TAG` in `build.nu`.
 3. Refresh `reference/default.nginx.conf.template` (command above) — check the
    `UI_PATH`/`BASE_URL` semantics did not change.
 4. Bump `opencost.ui.image.tag` in `values.yaml` to the new `TAG`.
 5. Run `python3 platform/tests/test_opencost_ui_subpath.py`.
-6. `PUSH=1 ./build.sh`, scan in Harbor, then roll out.
+6. `with-env {PUSH: "1"} { nu build.nu }`, scan in Harbor, then roll out.

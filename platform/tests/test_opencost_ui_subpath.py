@@ -23,9 +23,11 @@
 # These tests parse/render the REAL platform configuration and the REAL pinned
 # upstream nginx serving template — they do not grep a single arbitrary string:
 #
-#   BuildContractTest          ui-image/build.sh pins the upstream tag + immutable
-#                              commit, passes vite_basename=/opencost, embeds no
-#                              credentials, and defines an image name/tag.
+#   BuildContractTest          ui-image/build.nu (Nushell, cross-platform) pins the
+#                              upstream tag + immutable commit, passes
+#                              vite_basename=/opencost, embeds no credentials,
+#                              defines an image name/tag, and never shells out to
+#                              bash or Unix-only utilities (runs on Windows too).
 #   NginxServingRenderTest     the vendored v1.120.4 default.nginx.conf.template is
 #                              rendered with the UI_PATH/BASE_URL taken from the
 #                              Helm values, then a longest-prefix nginx location
@@ -63,7 +65,10 @@ VALUES = os.path.join(OPENCOST_DIR, "values.yaml")
 OAUTH2 = os.path.join(OPENCOST_DIR, "oauth2-proxy.yaml")
 OPENCOST_KUSTOMIZATION = os.path.join(OPENCOST_DIR, "kustomization.yaml")
 UI_IMAGE_DIR = os.path.join(OPENCOST_DIR, "ui-image")
-BUILD_SH = os.path.join(UI_IMAGE_DIR, "build.sh")
+# The builder is a cross-platform Nushell script (runs on Linux, macOS and
+# Windows). The legacy bash build.sh must no longer exist or be referenced.
+BUILD_NU = os.path.join(UI_IMAGE_DIR, "build.nu")
+BUILD_SH_LEGACY = os.path.join(UI_IMAGE_DIR, "build.sh")
 NGINX_TEMPLATE = os.path.join(UI_IMAGE_DIR, "reference", "default.nginx.conf.template")
 
 PORTAL_INGRESS = os.path.join(INGRESS_DIR, "opencost-portal-ingress.yaml")
@@ -205,19 +210,63 @@ def router_render(pathname, basename, routes=KNOWN_ROUTES):
 # tests
 # =========================================================================== #
 class BuildContractTest(unittest.TestCase):
-    """The custom image build must be pinned, reproducible and credential-free."""
+    """The custom image build must be pinned, reproducible, credential-free and
+    cross-platform (a Nushell script — no bash / Unix-only utilities)."""
 
     @classmethod
     def setUpClass(cls):
-        cls.script = read_text(BUILD_SH)
+        cls.script = read_text(BUILD_NU)
 
-    def _var(self, name):
-        m = re.search(r'^\s*%s="?([^"\n]+)"?\s*$' % re.escape(name), self.script, re.M)
-        self.assertIsNotNone(m, "build.sh must define %s" % name)
+    def _const(self, name):
+        """Read a pinned `const NAME = "value"` from the Nushell builder."""
+        m = re.search(
+            r'^\s*const\s+%s\s*=\s*"([^"\n]+)"' % re.escape(name), self.script, re.M
+        )
+        self.assertIsNotNone(m, "build.nu must define const %s" % name)
         return m.group(1).strip()
 
+    def _env_default(self, name):
+        """Read the default of an `$env.NAME? | default "value"` override."""
+        m = re.search(
+            r'\$env\.%s\??\s*\|\s*default\s+"([^"\n]+)"' % re.escape(name), self.script
+        )
+        self.assertIsNotNone(
+            m, "build.nu must expose an $env.%s override with a default" % name
+        )
+        return m.group(1).strip()
+
+    def test_is_cross_platform_nushell_not_bash(self):
+        # The builder must be Nushell so it runs on Linux, macOS and Windows with
+        # Docker Desktop, Git and kind on PATH — the whole point of the rewrite.
+        self.assertTrue(os.path.exists(BUILD_NU), "the builder must be build.nu (Nushell)")
+        self.assertFalse(
+            os.path.exists(BUILD_SH_LEGACY),
+            "the legacy bash build.sh must be removed so nothing depends on it",
+        )
+        self.assertRegex(
+            self.script.splitlines()[0], r"^#!.*\bnu\b",
+            "build.nu must carry a Nushell (`nu`) shebang",
+        )
+        # No shelling out to bash or the Unix-only text utilities that break on
+        # Windows; the tag-resolution parsing must use Nushell builtins instead.
+        for raw in self.script.splitlines():
+            line = raw.strip()
+            if line.startswith("#"):
+                continue
+            for tool in ("bash", "awk", "sed", "grep"):
+                self.assertNotRegex(
+                    line, r"(^|[\s|(])%s\b" % tool,
+                    "build.nu must not invoke the non-cross-platform tool "
+                    "%r: %r" % (tool, raw),
+                )
+
+    def test_supports_environment_overrides(self):
+        # REGISTRY / KIND_CLUSTER / LOAD / PUSH must stay overridable via $env.
+        for name in ("REGISTRY", "KIND_CLUSTER", "LOAD", "PUSH"):
+            self._env_default(name)
+
     def test_pins_release_at_least_v1_120_4(self):
-        tag = self._var("UPSTREAM_TAG")
+        tag = self._const("UPSTREAM_TAG")
         ver = parse_version_tuple(tag)
         self.assertIsNotNone(ver, "UPSTREAM_TAG must contain a semver: %r" % tag)
         self.assertGreaterEqual(
@@ -228,7 +277,7 @@ class BuildContractTest(unittest.TestCase):
         self.assertNotIn(STOCK_ROOT_ONLY_TAG, tag, "must not pin root-only v1.113.0")
 
     def test_pins_immutable_commit(self):
-        sha = self._var("UPSTREAM_COMMIT")
+        sha = self._const("UPSTREAM_COMMIT")
         self.assertRegex(
             sha, r"^[0-9a-f]{40}$",
             "UPSTREAM_COMMIT must be a full 40-hex immutable commit for provenance",
@@ -250,20 +299,20 @@ class BuildContractTest(unittest.TestCase):
         )
 
     def test_local_and_harbor_image_coordinates_are_distinct_and_aligned(self):
-        image = self._var("IMAGE")
-        tag = self._var("TAG")
-        registry = self._var("REGISTRY")
-        registry_repository = self._var("REGISTRY_REPOSITORY")
+        image = self._const("IMAGE")
+        tag = self._const("TAG")
+        registry = self._env_default("REGISTRY")
+        registry_repository = self._const("REGISTRY_REPOSITORY")
         self.assertEqual(image, "digiorg/opencost-ui")
         self.assertIn("digiorg.local/library", registry)
         self.assertEqual(registry_repository, "opencost-ui")
         self.assertIn(
-            '"${REGISTRY}/${REGISTRY_REPOSITORY}:${TAG}"', self.script,
+            '$"($registry)/($REGISTRY_REPOSITORY):($TAG)"', self.script,
             "Harbor push target must be digiorg.local/library/opencost-ui:<tag> "
             "without duplicating the local digiorg namespace",
         )
         self.assertNotIn(
-            '"${REGISTRY}/${IMAGE}:${TAG}"', self.script,
+            '$"($registry)/($IMAGE):($TAG)"', self.script,
             "Harbor target must not become library/digiorg/opencost-ui",
         )
 
@@ -271,13 +320,13 @@ class BuildContractTest(unittest.TestCase):
         # version + commit are baked into the image footer/labels for provenance.
         for arg in ("version", "commit"):
             self.assertRegex(
-                self.script, r"--build-arg\s+%s=" % arg,
+                self.script, r'--build-arg\s+\$?"?%s=' % arg,
                 "build should pass provenance build arg %s=" % arg,
             )
 
     def test_defines_image_name_and_tag(self):
-        self.assertTrue(self._var("IMAGE"))
-        self.assertTrue(self._var("TAG"))
+        self.assertTrue(self._const("IMAGE"))
+        self.assertTrue(self._const("TAG"))
 
     def test_no_embedded_credentials(self):
         # No hard-coded secrets/passwords/tokens in the build script.
@@ -285,7 +334,7 @@ class BuildContractTest(unittest.TestCase):
                     r"-p\s+\S+", r"DOCKER_PASSWORD="):
             self.assertNotRegex(
                 self.script, re.compile(pat, re.I),
-                "build.sh must not embed credentials (matched %r)" % pat,
+                "build.nu must not embed credentials (matched %r)" % pat,
             )
 
 
@@ -394,14 +443,14 @@ class HelmWiringTest(unittest.TestCase):
         )
 
     def test_image_tag_matches_build_script(self):
-        build = read_text(BUILD_SH)
-        m_img = re.search(r'^\s*IMAGE="?([^"\n]+)"?\s*$', build, re.M)
-        m_tag = re.search(r'^\s*TAG="?([^"\n]+)"?\s*$', build, re.M)
+        build = read_text(BUILD_NU)
+        m_img = re.search(r'^\s*const\s+IMAGE\s*=\s*"([^"\n]+)"', build, re.M)
+        m_tag = re.search(r'^\s*const\s+TAG\s*=\s*"([^"\n]+)"', build, re.M)
         self.assertTrue(m_img and m_tag)
         built = "%s:%s" % (m_img.group(1).strip(), m_tag.group(1).strip())
         self.assertIn(
             m_tag.group(1).strip(), self._image_ref(),
-            "Helm image tag must match the tag produced by build.sh (%s)" % built,
+            "Helm image tag must match the tag produced by build.nu (%s)" % built,
         )
 
     def test_pull_policy_present(self):
@@ -546,13 +595,13 @@ class RouterBasenameDomTest(unittest.TestCase):
     """DOM-level guard: prove the empty-#app root cause is fixed by the basename.
 
     The build arg vite_basename drives BOTH the Vite base and the react-router
-    basename, so this test reads that arg from build.sh and uses it as the
+    basename, so this test reads that arg from build.nu and uses it as the
     router basename — the DOM assertion is driven by real config, not a literal.
     """
 
     @classmethod
     def setUpClass(cls):
-        build = read_text(BUILD_SH)
+        build = read_text(BUILD_NU)
         m = re.search(r"--build-arg\s+vite_basename=(\S+)", build)
         cls.basename = m.group(1).rstrip("/") if m else None
 
@@ -565,7 +614,7 @@ class RouterBasenameDomTest(unittest.TestCase):
         )
 
     def test_configured_basename_renders_content_at_subpath(self):
-        self.assertIsNotNone(self.basename, "vite_basename build arg not found in build.sh")
+        self.assertIsNotNone(self.basename, "vite_basename build arg not found in build.nu")
         self.assertEqual(self.basename, SUBPATH)
         matched = router_render("/opencost/", basename=self.basename)
         self.assertIsNotNone(

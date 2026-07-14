@@ -51,7 +51,7 @@ opencost:
     # -- Custom subpath-aware UI image (Issue #272 Option B).
     #    Built from upstream v1.120.4 with `--build-arg vite_basename=/opencost`
     #    so the router basename, Vite asset base and nginx UI_PATH are all
-    #    /opencost. Source of truth: platform/base/opencost/ui-image/build.sh
+    #    /opencost. Source of truth: platform/base/opencost/ui-image/build.nu
     #    (kept in sync with the tag below). The stock ghcr.io opencost-ui:1.113.0
     #    router is rooted at "/" and renders a blank page under /opencost.
     image:
@@ -63,7 +63,7 @@ opencost:
     extraEnv:
       # BASE_URL renders the nginx model-proxy location at runtime. The standard
       # v1.120.4 JavaScript client gets the matching /opencost/model API base at
-      # build time from `vite_base_api_url` in ui-image/build.sh. Both layers
+      # build time from `vite_base_api_url` in ui-image/build.nu. Both layers
       # must stay aligned. Do NOT use the legacy BASE_URL_OVERRIDE mechanism.
       - name: BASE_URL
         value: /opencost/model
