@@ -346,6 +346,10 @@ class CoexistenceSafetyTest(unittest.TestCase):
         self.assertIn("wait --for=delete service/postgresql", text)
         self.assertNotIn("final delta dump", text)
         self.assertNotIn("single atomic git commit", text)
+        self.assertNotIn("--no-owner", text)
+        self.assertIn("pg_get_userbyid", text)
+        self.assertIn("backup_dir=./pgbackup-final", text)
+        self.assertIn("rpo", text)
 
     def test_logical_backups_are_private_verified_atomic_and_retained(self):
         cron = _find(_docs(INIT_YAML), "CronJob")

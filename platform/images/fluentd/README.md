@@ -1,8 +1,9 @@
 # DigiOrg pinned Fluentd image
 
 Pinned Fluentd log-forwarder image built for **Issue #275 — Tier 1**. It fixes
-the base image by immutable digest and installs **explicitly versioned** plugin
-gems, so a clean bootstrap ships the same, reproducible plugin set every time.
+the base image by immutable digest and installs explicitly versioned top-level
+plugin gems. Their transitive Ruby dependencies are still resolved live; a
+lockfile or vendored checksummed gems remain required for full reproducibility.
 
 ## Why this exists
 
@@ -42,7 +43,7 @@ only the plugin gem set is pinned on top.
 | Upstream base digest (immutable) | `sha256:f7a636ae892cab78b0e63fcb4d89f68a84bd602609a7f38b00fcc5c65f487de2` |
 | Pinned plugins | `fluent-plugin-opensearch=1.1.6`, `fluent-plugin-kubernetes_metadata_filter=3.8.0` |
 
-The local image + `IfNotPresent` pull policy are consumed by
+The local image + `Never` pull policy are consumed by
 `platform/base/fluentd/daemonset.yaml` and asserted by
 `platform/tests/test_fluentd_image.py`. The exact ref is allow-listed in
 `scripts/pin-policy-allowlist.yaml` (locally built, kind-loaded, never pulled).

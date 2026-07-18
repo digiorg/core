@@ -692,6 +692,8 @@ def sync_gated_apps_for_local_dev [] {
             error make {msg: $"ArgoCD Application ($app) was not created by the root app"}
         }
 
+        let previous_state = (kubectl get application $app -n argocd -o json | from json)
+        let previous_finished = ($previous_state | get -o status.operationState.finishedAt | default "")
         print $"  Syncing gated Application: ($app)"
         let sync_result = (do {
             kubectl patch application $app -n argocd --type merge -p $sync_payload
@@ -700,21 +702,35 @@ def sync_gated_apps_for_local_dev [] {
             error make {msg: $"Could not start sync for ($app): ($sync_result.stderr | str trim)"}
         }
 
-        mut healthy = false
+        mut completed = false
+        mut saw_new_operation = false
         for attempt in 1..90 {
-            let health_result = (do {
-                kubectl get application $app -n argocd -o jsonpath='{.status.health.status}'
+            let state_result = (do {
+                kubectl get application $app -n argocd -o json
             } | complete)
-            if $health_result.exit_code == 0 and ($health_result.stdout | str trim) == "Healthy" {
-                $healthy = true
-                break
+            if $state_result.exit_code == 0 {
+                let state = ($state_result.stdout | from json)
+                let phase = ($state | get -o status.operationState.phase | default "")
+                let finished = ($state | get -o status.operationState.finishedAt | default "")
+                let sync = ($state | get -o status.sync.status | default "")
+                let health = ($state | get -o status.health.status | default "")
+                if $phase == "Running" or $finished != $previous_finished {
+                    $saw_new_operation = true
+                }
+                if $saw_new_operation and $phase in ["Failed" "Error"] {
+                    error make {msg: $"Gated Application ($app) sync failed with phase ($phase)"}
+                }
+                if $saw_new_operation and $phase == "Succeeded" and $sync == "Synced" and $health == "Healthy" {
+                    $completed = true
+                    break
+                }
             }
             sleep 10sec
         }
-        if not $healthy {
-            error make {msg: $"Gated Application ($app) did not become Healthy within 15 minutes"}
+        if not $completed {
+            error make {msg: $"Gated Application ($app) did not complete a new successful Synced+Healthy operation within 15 minutes"}
         }
-        print $"(ansi green)  ✓ ($app) Healthy(ansi reset)"
+        print $"(ansi green)  ✓ ($app) sync Succeeded, Synced and Healthy(ansi reset)"
     }
 }
 
@@ -754,25 +770,28 @@ def wait_for_argocd_apps [] {
     loop {
         $attempts = $attempts + 1
         if $attempts > $max_attempts {
-            print $"(ansi yellow)Warning: Timeout waiting for all apps. Check ArgoCD UI for status.(ansi reset)"
-            break
+            error make {msg: "Timeout waiting for every required ArgoCD Application to become Synced and Healthy"}
         }
         
-        mut healthy_count = 0
+        mut ready_count = 0
         
         for app in $apps {
-            let status = (do { 
-                kubectl get application $app -n argocd -o jsonpath='{.status.health.status}' 
+            let status = (do {
+                kubectl get application $app -n argocd -o json
             } | complete)
-            
-            if $status.exit_code == 0 and ($status.stdout | str trim) == "Healthy" {
-                $healthy_count = $healthy_count + 1
+            if $status.exit_code == 0 {
+                let state = ($status.stdout | from json)
+                let health = ($state | get -o status.health.status | default "")
+                let sync = ($state | get -o status.sync.status | default "")
+                if $health == "Healthy" and $sync == "Synced" {
+                    $ready_count = $ready_count + 1
+                }
             }
         }
-        
-        print $"  Apps healthy: ($healthy_count)/($apps | length) [attempt ($attempts)/($max_attempts)]"
-        
-        if $healthy_count == ($apps | length) {
+
+        print $"  Apps Synced+Healthy: ($ready_count)/($apps | length) [attempt ($attempts)/($max_attempts)]"
+
+        if $ready_count == ($apps | length) {
             $all_healthy = true
             break
         }

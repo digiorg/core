@@ -24,11 +24,12 @@ and **fails CI** on:
 - non-first-party git sources without an immutable 40-hex commit.
 
 The only allowed exceptions are the DigiOrg-built, kind-loaded images listed in
-`scripts/pin-policy-allowlist.yaml` (each with a rationale). They carry
-`pullPolicy: IfNotPresent`/`Never`, are never pulled from a registry, and their
-reproducibility is guaranteed by their build definition (pinned upstream release
-+ immutable base digest + OCI provenance). Use `scripts/resolve_digest.py <ref>`
-to obtain a digest for a tag without Docker.
+`scripts/pin-policy-allowlist.yaml` (each with a rationale). They use
+`pullPolicy: Never` and a digest-pinned upstream base. OCI labels record build
+inputs but are not attestations. Fluentd's two direct plugins are version-pinned;
+its live Ruby transitive dependency resolution still requires a lockfile or
+vendored/checksummed gems before the build is fully reproducible. Use
+`scripts/resolve_digest.py <ref>` to obtain a digest for a tag without Docker.
 
 `scripts/render_platform_charts.py` additionally renders every Argo CD Helm
 source with its real inline/repository values and fails CI if a chart introduces

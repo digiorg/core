@@ -141,7 +141,8 @@ Re-running it is safe — it guards on `pg_roles` / `pg_database`.
 
 ```bash
 kubectl -n platform-db logs job/postgresql-cnpg-init
-kubectl -n platform-db exec deploy/postgresql-cnpg-1 -- psql -U postgres -c '\l' # sanity
+CNPG=$(kubectl -n platform-db get pod -l cnpg.io/instanceRole=primary -o jsonpath='{.items[0].metadata.name}')
+kubectl -n platform-db exec "$CNPG" -- psql -U postgres -c '\l' # sanity
 ```
 
 ---
@@ -154,13 +155,25 @@ step 3 into the CNPG primary (reach it directly at `postgresql-cnpg-rw` — the
 
 ```bash
 CNPG=$(kubectl -n platform-db get pod -l cnpg.io/instanceRole=primary -o jsonpath='{.items[0].metadata.name}')
+BACKUP_DIR=${BACKUP_DIR:-./pgbackup}
 
-# Globals first (roles already exist from the Job; this is a no-op fill for any
-# missing grants — safe to skip if the Job succeeded).
-# Then per-database data:
+# Roles already exist with the same names from the bootstrap Job. Preserve the
+# ownership metadata recorded by pg_dump. Restoring without ownership metadata or
+# as an application role would break owner-only schema migrations.
 for db in keycloak backstage gitea sonarqube registry; do
   kubectl -n platform-db exec -i "$CNPG" -- \
-    pg_restore -U postgres -d "$db" --clean --if-exists --no-owner < "./pgbackup/${db}.dump"
+    pg_restore -U postgres -d "$db" --clean --if-exists --exit-on-error < "${BACKUP_DIR}/${db}.dump"
+done
+
+# Verify that no application objects were silently reassigned to postgres.
+for spec in "keycloak:keycloak" "backstage:backstage" "gitea:gitea" \
+            "sonarqube:sonarqube" "registry:harbor"; do
+  db=${spec%%:*}; owner=${spec##*:}
+  kubectl -n platform-db exec "$CNPG" -- psql -U postgres -d "$db" -v ON_ERROR_STOP=1 -c \
+    "SELECT n.nspname, c.relname, pg_get_userbyid(c.relowner) AS owner
+       FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+      WHERE n.nspname='public' AND c.relkind IN ('r','S','v','m','f','p')
+        AND pg_get_userbyid(c.relowner) <> '$owner';"
 done
 ```
 
@@ -178,8 +191,9 @@ alone is **not atomic**. Perform this observed handoff while writes stay frozen:
    PostgreSQL pod yet.
 2. Take a **mandatory final full dump** (there is no `pg_dump` delta mode) using
    the commands in section 3, writing to a new `pgbackup-final/` directory.
-3. Restore that final dump into clean CNPG target databases and repeat the
-   baseline counts/checksums. Keep consumers stopped until they match.
+3. Restore that final dump into clean CNPG target databases by repeating section
+   5 with `BACKUP_DIR=./pgbackup-final`; repeat the ownership and baseline
+   counts/checksums. Keep consumers stopped until every check matches.
 4. Commit both cutover manifest changes, but do not let either Application sync
    automatically:
    - remove the legacy `service.yaml` from
@@ -229,7 +243,12 @@ Confirm each app logs a successful DB connection and serves traffic.
 ## 8. Rollback procedure
 
 Keep consumers stopped. Reverse the same ordered handoff; do not rely on a Git
-revert to sequence two Applications:
+revert to sequence two Applications. If CNPG accepted any writes after cutover,
+first take a full dump from the frozen CNPG primary, restore it into clean legacy
+databases with the ownership-preserving section-5 procedure, and verify counts
+and ownership. The declared RPO is therefore zero only while this write freeze
+and reverse restore succeed; otherwise stop and escalate rather than repointing
+to stale legacy data.
 
 1. Suspend automated sync for both Applications. Revert the cutover manifest
    commit so the legacy kustomization contains its selector Service and the CNPG

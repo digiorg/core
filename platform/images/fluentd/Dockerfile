@@ -5,8 +5,9 @@
 # The platform ran fluent/fluentd-kubernetes-daemonset on a FLOATING minor tag
 # (v1.19-debian-opensearch-1) and inherited whatever plugin versions the image
 # happened to ship. This pins the base by immutable digest and installs
-# EXPLICITLY versioned plugin gems, so a clean bootstrap forwards logs with the
-# same, reproducible plugin set every time.
+# EXPLICITLY versioned top-level plugin gems. Their Ruby transitive dependencies
+# are still resolved live; add a lockfile/vendor checksums before claiming a fully
+# reproducible plugin graph.
 #
 # The base image entrypoint/cmd and its bundled config are inherited unchanged
 # (no COPY, no ENTRYPOINT override) — only the plugin gem set is pinned on top.
