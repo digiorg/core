@@ -1002,6 +1002,37 @@ def sync_gated_apps_for_local_dev [] {
     }
 }
 
+# Argo CD 3.x can retain stale per-resource OutOfSync status after a successful
+# Helm sync even when its own diff engine reports no material difference (seen
+# with API-defaulted CRD fields). Use the CLI only as a fail-closed secondary
+# check: exit 0 means no diff; any missing CLI, setup error, or non-zero exit
+# remains not ready. Diagnostics are captured and never printed.
+def argocd_app_has_no_material_diff [app: string] {
+    if (which argocd | is-empty) {
+        return false
+    }
+
+    let temp_kubeconfig = (mktemp --tmpdir argocd-core-kubeconfig.XXXXXX | str trim)
+    try {
+        cp $KUBECONFIG_PATH $temp_kubeconfig
+        let context = (do {
+            kubectl --kubeconfig $temp_kubeconfig config set-context --current --namespace=argocd
+        } | complete)
+        if $context.exit_code != 0 {
+            return false
+        }
+
+        let diff = (with-env {KUBECONFIG: $temp_kubeconfig} {
+            do { argocd app diff $app --core --refresh } | complete
+        })
+        $diff.exit_code == 0
+    } catch {
+        false
+    } finally {
+        rm -f $temp_kubeconfig
+    }
+}
+
 # Wait for ArgoCD apps to become healthy
 def wait_for_argocd_apps [] {
     $env.KUBECONFIG = $KUBECONFIG_PATH
@@ -1052,6 +1083,11 @@ def wait_for_argocd_apps [] {
                 let health = ($state | get -o status.health.status | default "")
                 let sync = ($state | get -o status.sync.status | default "")
                 if $health == "Healthy" and $sync == "Synced" {
+                    $ready_count = $ready_count + 1
+                } else if $health == "Healthy" and $sync == "OutOfSync" and (argocd_app_has_no_material_diff $app) {
+                    # Count only a successful, fresh Argo core diff with zero
+                    # material changes; every tool/error path remains closed.
+                    print $"  ($app): stale OutOfSync status, but Argo reports no material diff"
                     $ready_count = $ready_count + 1
                 }
             }
