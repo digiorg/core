@@ -24,7 +24,6 @@ import yaml
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 KYVERNO_APP = os.path.join(REPO_ROOT, "apps", "platform", "kyverno.yaml")
-ARGOCD_VALUES = os.path.join(REPO_ROOT, "platform", "base", "argocd", "values.yaml")
 VERSIONS_DOC = os.path.join(REPO_ROOT, "docs", "guides", "platform-versions.md")
 POLICIES_DIR = os.path.join(REPO_ROOT, "policies", "kyverno")
 
@@ -49,18 +48,34 @@ class KyvernoCleanInstallTest(unittest.TestCase):
             "clean-install default must not run the CRD migration post-upgrade hook",
         )
 
-    def test_api_defaulted_conversion_is_globally_normalized(self):
-        with open(ARGOCD_VALUES, encoding="utf-8") as fh:
-            values = yaml.safe_load(fh)
-        customization = values["configs"]["cm"][
-            "resource.customizations.ignoreDifferences.apiextensions.k8s.io_CustomResourceDefinition"
-        ]
-        parsed = yaml.safe_load(customization)
-        self.assertEqual(
-            parsed,
-            {"jqPathExpressions": ['.spec.conversion | select(.strategy == "None")']},
+    def test_api_defaulted_conversion_ignores_are_exactly_scoped(self):
+        rules = _kyverno_app()["spec"].get("ignoreDifferences", [])
+        self.assertIn(
+            "RespectIgnoreDifferences=true",
+            _kyverno_app()["spec"]["syncPolicy"]["syncOptions"],
         )
-        self.assertNotIn("ignoreDifferences", _kyverno_app()["spec"])
+        expected = {
+            "deletingpolicies.policies.kyverno.io",
+            "generatingpolicies.policies.kyverno.io",
+            "imagevalidatingpolicies.policies.kyverno.io",
+            "mutatingpolicies.policies.kyverno.io",
+            "namespaceddeletingpolicies.policies.kyverno.io",
+            "namespacedgeneratingpolicies.policies.kyverno.io",
+            "namespacedimagevalidatingpolicies.policies.kyverno.io",
+            "namespacedmutatingpolicies.policies.kyverno.io",
+            "namespacedvalidatingpolicies.policies.kyverno.io",
+            "policyexceptions.policies.kyverno.io",
+            "validatingpolicies.policies.kyverno.io",
+        }
+        self.assertEqual({rule.get("name") for rule in rules}, expected)
+        self.assertTrue(
+            all(
+                rule.get("group") == "apiextensions.k8s.io"
+                and rule.get("kind") == "CustomResourceDefinition"
+                and rule.get("jsonPointers") == ["/spec/conversion"]
+                for rule in rules
+            )
+        )
 
     def test_policy_v2_crds_render_with_stable_labels(self):
         values = _kyverno_values()

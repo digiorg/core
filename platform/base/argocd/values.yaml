@@ -19,14 +19,6 @@ configs:
   cm:
     # Disable admin user - use Keycloak SSO instead
     admin.enabled: "false"
-
-    # kube-apiserver defaults an omitted CRD conversion block to strategy=None.
-    # Configure this normalization globally because Argo CD 3.4's Application
-    # status does not consistently honor the equivalent per-Application rule.
-    # Declared webhook conversions remain compared and drift-managed.
-    resource.customizations.ignoreDifferences.apiextensions.k8s.io_CustomResourceDefinition: |
-      jqPathExpressions:
-        - '.spec.conversion | select(.strategy == "None")'
     
     # Track resources via annotations instead of labels (avoids label conflicts)
     application.resourceTrackingMethod: annotation
