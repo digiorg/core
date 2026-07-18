@@ -38,11 +38,13 @@
 #                          port/probe/relative-path/hostname setting, and keeps
 #                          the realm data in the mounted configMap volume.
 #
-# Runs with the standard library + PyYAML only (no pytest, cluster or network):
+# Runs with the standard library + PyYAML + the repository-pinned Nushell
+# binary (no pytest, cluster, Docker daemon or network):
 #     python3 platform/tests/test_keycloak_image.py
 # =============================================================================
 import os
 import re
+import subprocess
 import unittest
 
 import yaml
@@ -81,6 +83,25 @@ class BuildContractTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.script = read_text(BUILD_NU)
+
+    def _validate_persisted_result(self, output, exit_code=0):
+        env = os.environ.copy()
+        env["KEYCLOAK_TEST_OUTPUT"] = output
+        env["KEYCLOAK_TEST_EXIT_CODE"] = str(exit_code)
+        source_path = BUILD_NU.replace("\\", "/")
+        command = (
+            'source "%s"; '
+            'validate_persisted_result {'
+            'exit_code: ($env.KEYCLOAK_TEST_EXIT_CODE | into int), '
+            'stdout: $env.KEYCLOAK_TEST_OUTPUT}'
+        ) % source_path
+        return subprocess.run(
+            ["nu", "-c", command],
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
 
     def _const(self, name):
         m = re.search(
@@ -190,6 +211,101 @@ class BuildContractTest(unittest.TestCase):
         self.assertIn("docker push", self.script,
                       "build.nu must support an optional Harbor push")
 
+    def test_validates_finished_image_persisted_configuration(self):
+        validator = re.search(
+            r"def validate_persisted_config \[image: string\] \{(?P<body>.*?)\n\}",
+            self.script,
+            re.S,
+        )
+        self.assertIsNotNone(
+            validator,
+            "build.nu must define a post-build persisted-config validator",
+        )
+        body = validator.group("body")
+        self.assertIn("docker run", body)
+        self.assertIn("--rm", body)
+        self.assertIn("--entrypoint /opt/keycloak/bin/kc.sh", body)
+        self.assertIn("show-config", body)
+        self.assertIn("| complete", body, "show-config failures must be captured")
+        self.assertIn("validate_persisted_result $result", body)
+
+        result_validator = re.search(
+            r"def validate_persisted_result \[result: record\] \{(?P<body>.*?)\n\}",
+            self.script,
+            re.S,
+        )
+        self.assertIsNotNone(
+            result_validator,
+            "build.nu must expose the result validation as testable Nushell behavior",
+        )
+        result_body = result_validator.group("body")
+        for name, value in (
+            ("db", "postgres"),
+            ("health-enabled", "true"),
+            ("metrics-enabled", "true"),
+            ("http-relative-path", "/keycloak"),
+            ("http-management-relative-path", "/"),
+        ):
+            self.assertRegex(
+                result_body,
+                r'name:\s*"%s"\s*,?\s*value:\s*"%s"'
+                % (re.escape(name), re.escape(value)),
+                "validator must require kc.%s = %s" % (name, value),
+            )
+        self.assertIn("(Persisted)", result_body)
+        self.assertIn("error make", result_body)
+
+        validation_call = 'validate_persisted_config $"($IMAGE):($TAG)"'
+        self.assertIn(validation_call, self.script)
+        self.assertLess(self.script.index("docker build"), self.script.index(validation_call))
+        self.assertLess(
+            self.script.index(validation_call),
+            self.script.index("kind load docker-image"),
+            "the finished image must be validated before it is loaded or pushed",
+        )
+        self.assertLess(
+            self.script.index(validation_call),
+            self.script.index("docker push"),
+            "the finished image must be validated before it is pushed",
+        )
+
+    def test_persisted_config_validator_accepts_real_variable_whitespace(self):
+        output = """
+            kc.health-enabled =  true (Persisted)
+        kc.metrics-enabled    = true   (Persisted)
+        kc.db =  postgres (Persisted)
+        kc.http-relative-path =   /keycloak (Persisted)
+        kc.http-management-relative-path = / (Persisted)
+        """
+        result = self._validate_persisted_result(output)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_persisted_config_validator_rejects_wrong_value(self):
+        output = """
+        kc.db = postgres (Persisted)
+        kc.health-enabled = true (Persisted)
+        kc.metrics-enabled = true (Persisted)
+        kc.http-relative-path = / (Persisted)
+        kc.http-management-relative-path = / (Persisted)
+        """
+        result = self._validate_persisted_result(output)
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_persisted_config_validator_requires_persisted_marker(self):
+        output = """
+        kc.db = postgres (Persisted)
+        kc.health-enabled = true (Persisted)
+        kc.metrics-enabled = true (Persisted)
+        kc.http-relative-path = /keycloak
+        kc.http-management-relative-path = / (Persisted)
+        """
+        result = self._validate_persisted_result(output)
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_persisted_config_validator_rejects_show_config_failure(self):
+        result = self._validate_persisted_result("", exit_code=2)
+        self.assertNotEqual(result.returncode, 0)
+
 
 class DockerfileContractTest(unittest.TestCase):
     """Multi-stage, digest-pinned, production-optimized, realm-data-free."""
@@ -236,6 +352,41 @@ class DockerfileContractTest(unittest.TestCase):
                           "must enable health at build time")
         self.assertRegex(self.text, r"KC_METRICS_ENABLED[= ]+true",
                           "must enable metrics at build time")
+
+    def test_builder_persists_complete_deployment_build_time_contract(self):
+        docs = load_yaml_docs(DEPLOYMENT)
+        deploy = next(d for d in docs if d.get("kind") == "Deployment")
+        container = deploy["spec"]["template"]["spec"]["containers"][0]
+        deployment_env = {
+            entry["name"]: str(entry["value"])
+            for entry in container.get("env", [])
+            if "value" in entry
+        }
+        expected_build_time = {
+            "KC_DB": "postgres",
+            "KC_HEALTH_ENABLED": "true",
+            "KC_METRICS_ENABLED": "true",
+            "KC_HTTP_RELATIVE_PATH": "/keycloak",
+            "KC_HTTP_MANAGEMENT_RELATIVE_PATH": "/",
+        }
+
+        builder_before_build = self.text.split("RUN /opt/keycloak/bin/kc.sh build", 1)[0]
+        builder_env = dict(
+            re.findall(r"^ENV\s+(KC_[A-Z_]+)[= ]([^\s]+)\s*$", builder_before_build, re.M)
+        )
+
+        for name, expected in expected_build_time.items():
+            if name in deployment_env:
+                self.assertEqual(
+                    deployment_env[name], expected,
+                    "%s must retain the image's persisted value at runtime" % name,
+                )
+            self.assertEqual(
+                builder_env.get(name),
+                expected,
+                "%s must be persisted before kc.sh build with the platform value"
+                % name,
+            )
 
     def test_final_stage_copies_optimized_build(self):
         self.assertRegex(

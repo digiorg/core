@@ -103,6 +103,18 @@ class CiWorkflowTest(unittest.TestCase):
         self.assertIn("KUSTOMIZE_VERSION=v5.8.1", workflow)
         self.assertNotIn("kustomize/master/hack/install_kustomize.sh", workflow)
 
+    def test_nushell_is_installed_before_platform_regression_tests(self):
+        workflow = next(
+            text for text in self.texts.values() if "scripts/check_pins.py" in text
+        )
+        marker = "Install Nushell for behavioral tests"
+        self.assertIn(marker, workflow)
+        self.assertLess(
+            workflow.index(marker),
+            workflow.index("Platform regression tests"),
+            "behavioral .nu tests require the pinned Nushell binary before Python tests run",
+        )
+
     def test_workflows_are_valid_yaml(self):
         for path, text in self.texts.items():
             try:

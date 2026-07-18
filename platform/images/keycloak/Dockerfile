@@ -27,6 +27,8 @@ FROM ${UPSTREAM_IMAGE}:${UPSTREAM_TAG}@${UPSTREAM_DIGEST} AS builder
 ENV KC_DB=postgres
 ENV KC_HEALTH_ENABLED=true
 ENV KC_METRICS_ENABLED=true
+ENV KC_HTTP_RELATIVE_PATH=/keycloak
+ENV KC_HTTP_MANAGEMENT_RELATIVE_PATH=/
 
 # Produce the augmented/optimized distribution under /opt/keycloak.
 RUN /opt/keycloak/bin/kc.sh build

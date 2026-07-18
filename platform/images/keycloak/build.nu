@@ -44,6 +44,43 @@ const IMAGE = "digiorg/keycloak"
 const TAG = "26.7.0-optimized"
 const REGISTRY_REPOSITORY = "keycloak"
 
+def validate_persisted_result [result: record] {
+    if $result.exit_code != 0 {
+        error make {msg: $"persisted Keycloak configuration check exited with code ($result.exit_code)"}
+    }
+
+    let persisted_config = (
+        $result.stdout
+        | lines
+        | each {|line| $line | str replace -ar '\s+' ' ' | str trim }
+    )
+    let expected = [
+        { name: "db", value: "postgres" }
+        { name: "health-enabled", value: "true" }
+        { name: "metrics-enabled", value: "true" }
+        { name: "http-relative-path", value: "/keycloak" }
+        { name: "http-management-relative-path", value: "/" }
+    ]
+    for option in $expected {
+        let persisted_line = ($"kc.($option.name) = ($option.value) " + "(Persisted)")
+        if not ($persisted_config | any {|line| $line == $persisted_line }) {
+            error make {msg: $"built image does not persist kc.($option.name)=($option.value)"}
+        }
+    }
+}
+
+def validate_persisted_config [image: string] {
+    let result = (
+        ^docker run
+            --rm
+            --entrypoint /opt/keycloak/bin/kc.sh
+            $image
+            show-config
+        | complete
+    )
+    validate_persisted_result $result
+}
+
 def main [] {
     # --- Behaviour toggles / registry (overridable via environment) --------- #
     let registry = ($env.REGISTRY? | default "digiorg.local/library")
@@ -89,6 +126,8 @@ def main [] {
     )
 
     print $">> Built ($IMAGE):($TAG)"
+    validate_persisted_config $"($IMAGE):($TAG)"
+    print "   verified: optimized Keycloak configuration is persisted"
 
     if $load == "1" {
         print $">> Loading ($IMAGE):($TAG) into kind cluster '($kind_cluster)'"
