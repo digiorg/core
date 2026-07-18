@@ -31,6 +31,7 @@ except ImportError:  # pragma: no cover
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 SURVEYOR = os.path.join(REPO_ROOT, "platform", "base", "nats", "surveyor.yaml")
+NATS_APP = os.path.join(REPO_ROOT, "apps", "platform", "nats.yaml")
 
 
 def _docs():
@@ -68,6 +69,25 @@ class SurveyorStartupTest(unittest.TestCase):
         main = next(c for c in self.pod_spec["containers"] if c["name"] == "nats-surveyor")
         self.assertEqual(main["livenessProbe"]["httpGet"]["path"], "/metrics")
         self.assertEqual(main["readinessProbe"]["httpGet"]["path"], "/metrics")
+
+
+class NatsStatefulSetDriftTest(unittest.TestCase):
+    def test_ignores_kubernetes_injected_pvc_template_status(self):
+        # Kubernetes persists status.phase inside StatefulSet PVC templates.
+        # Argo CD 3.4.5 does not normalize this nested status field and reports
+        # the otherwise-identical StatefulSet OutOfSync forever.
+        with open(NATS_APP, encoding="utf-8") as fh:
+            app = yaml.safe_load(fh)
+        rules = app["spec"].get("ignoreDifferences", [])
+        matching = [
+            rule for rule in rules
+            if rule.get("group") == "apps"
+            and rule.get("kind") == "StatefulSet"
+            and rule.get("name") == "nats"
+        ]
+        self.assertEqual(len(matching), 1)
+        expressions = matching[0].get("jqPathExpressions", [])
+        self.assertIn(".spec.volumeClaimTemplates[]?.status", expressions)
 
 
 if __name__ == "__main__":
