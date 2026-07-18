@@ -12,12 +12,21 @@ community:
   # Aligned with the chart 2026.3.1 default Community Build (Issue #275).
   buildNumber: "26.5.0.122743"
 
-# Explicitly pin the Community Build OCI index; the chart otherwise derives a
-# mutable tag from community.buildNumber.
+# Chart 2026.3.1 copies image.tag into app.kubernetes.io/version, where OCI
+# digest syntax (`@sha256:`) is invalid. Keep a label-safe tag in image.tag and
+# use the chart's explicit full image coordinates to retain the immutable digest.
 image:
   repository: sonarqube
-  tag: "26.5.0.122743-community@sha256:223d0090322edce6211a5328298b6f646920f1535025ef8dd880cab6647bb1fa"
+  tag: "26.5.0.122743-community"
   pullPolicy: IfNotPresent
+
+global:
+  azure:
+    images:
+      sonarqube:
+        registry: docker.io
+        image: sonarqube
+        tag: "26.5.0.122743-community@sha256:223d0090322edce6211a5328298b6f646920f1535025ef8dd880cab6647bb1fa"
 
 # ── Deployment ─────────────────────────────────────────────────────────────────
 replicaCount: 1
