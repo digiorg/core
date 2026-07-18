@@ -1,0 +1,132 @@
+# =============================================================================
+# Harbor Proxy-Cache Configuration Job (Issue #275, Tier 2)
+#
+# ArgoCD PostSync hook: after every Harbor deployment, provisions pull-through
+# proxy-cache projects for the upstream registries the platform pulls from —
+# Docker Hub, Quay, GHCR and registry.k8s.io — via Harbor's REST API. Harbor
+# stores registries/projects in PostgreSQL (not env/config), so — exactly like
+# the OIDC config (Issue #262) — a REST-API Job is the only GitOps-compatible
+# path.
+#
+# Each proxy-cache project pulls-through and caches its upstream:
+#   dockerhub-proxy  -> https://hub.docker.com      (type docker-hub)
+#   quay-proxy       -> https://quay.io             (type quay)
+#   ghcr-proxy       -> https://ghcr.io             (type github-ghcr)
+#   k8s-proxy        -> https://registry.k8s.io     (type docker-registry)
+#
+# Registry `type` strings are the exact Harbor constants from
+# src/pkg/reg/model/registry.go. A Harbor project becomes a proxy cache only
+# when created with a `registry_id`. The Job is bounded and idempotent: HTTP 409
+# triggers a read-back that verifies the existing registry/project matches the
+# desired type, URL and registry binding; stale name collisions fail closed.
+#
+# NOTE: consuming these mirror paths from workload manifests (e.g.
+# harbor.harbor.svc/dockerhub-proxy/library/busybox@sha256:…) is a follow-up;
+# bootstrap components that run before Harbor is Ready are a documented
+# exception (see docs/guides/platform-versions.md, "Harbor proxy-cache").
+# =============================================================================
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: harbor-proxy-cache-config
+  namespace: harbor
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  ttlSecondsAfterFinished: 300
+  activeDeadlineSeconds: 600
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: configure-proxy-cache
+          image: curlimages/curl:8.16.0@sha256:463eaf6072688fe96ac64fa623fe73e1dbe25d8ad6c34404a669ad3ce1f104b6
+          env:
+            - name: HARBOR_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: harbor-admin-secret
+                  key: HARBOR_ADMIN_PASSWORD
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              HARBOR_API="http://harbor.harbor.svc.cluster.local/api/v2.0"
+              AUTH="admin:${HARBOR_ADMIN_PASSWORD}"
+
+              CURL="curl --connect-timeout 5 --max-time 30 --retry 2"
+
+              echo "Waiting for Harbor API to be ready..."
+              ready=false
+              for attempt in $(seq 1 60); do
+                if ${CURL} -sf "${HARBOR_API}/ping" > /dev/null 2>&1; then
+                  ready=true; break
+                fi
+                echo "  Harbor not ready (${attempt}/60), retrying in 5s..."
+                sleep 5
+              done
+              [ "$ready" = true ] || { echo "ERROR: Harbor API readiness timeout"; exit 1; }
+              echo "Harbor API is ready."
+
+              # Create or verify an upstream registry endpoint.
+              create_registry() {
+                name="$1"; rtype="$2"; url="$3"
+                code=$(${CURL} -s -o /dev/null -w "%{http_code}" -X POST \
+                  -u "${AUTH}" -H "Content-Type: application/json" \
+                  -d "{\"name\":\"${name}\",\"type\":\"${rtype}\",\"url\":\"${url}\",\"insecure\":false}" \
+                  "${HARBOR_API}/registries")
+                case "$code" in
+                  201) echo "  registry ${name} created" ;;
+                  409)
+                    existing=$(${CURL} -sf -u "${AUTH}" "${HARBOR_API}/registries?q=name%3D${name}" | tr -d '[:space:]')
+                    echo "$existing" | grep -Fq "\"type\":\"${rtype}\"" || { echo "ERROR: registry ${name} has wrong type"; exit 1; }
+                    echo "$existing" | grep -Fq "\"url\":\"${url}\"" || { echo "ERROR: registry ${name} has wrong URL"; exit 1; }
+                    echo "  registry ${name} already exists and matches"
+                    ;;
+                  *) echo "ERROR: registry ${name} -> HTTP ${code}"; exit 1 ;;
+                esac
+              }
+
+              # Resolve a registry's numeric id by name (curl-only, no jq).
+              registry_id() {
+                ${CURL} -sf -u "${AUTH}" "${HARBOR_API}/registries?q=name%3D$1" \
+                  | tr ',' '\n' | grep -o '"id":[0-9]*' | head -1 | grep -o '[0-9]*'
+              }
+
+              # Create or verify a proxy-cache project bound to the registry.
+              create_proxy_project() {
+                project="$1"; regid="$2"
+                if [ -z "${regid}" ]; then
+                  echo "ERROR: could not resolve registry id for project ${project}"; exit 1
+                fi
+                code=$(${CURL} -s -o /dev/null -w "%{http_code}" -X POST \
+                  -u "${AUTH}" -H "Content-Type: application/json" \
+                  -d "{\"project_name\":\"${project}\",\"registry_id\":${regid},\"public\":true,\"metadata\":{\"public\":\"true\"},\"storage_limit\":-1}" \
+                  "${HARBOR_API}/projects")
+                case "$code" in
+                  201) echo "  proxy project ${project} created" ;;
+                  409)
+                    existing=$(${CURL} -sf -u "${AUTH}" "${HARBOR_API}/projects/${project}" | tr -d '[:space:]')
+                    echo "$existing" | grep -Fq "\"registry_id\":${regid}" || { echo "ERROR: project ${project} is not bound to registry ${regid}"; exit 1; }
+                    echo "  proxy project ${project} already exists and matches"
+                    ;;
+                  *) echo "ERROR: project ${project} -> HTTP ${code}"; exit 1 ;;
+                esac
+              }
+
+              echo "Configuring upstream registry endpoints..."
+              create_registry docker-hub      docker-hub      https://hub.docker.com
+              create_registry quay            quay            https://quay.io
+              create_registry ghcr            github-ghcr     https://ghcr.io
+              create_registry registry-k8s-io docker-registry https://registry.k8s.io
+
+              echo "Configuring proxy-cache projects..."
+              create_proxy_project dockerhub-proxy "$(registry_id docker-hub)"
+              create_proxy_project quay-proxy      "$(registry_id quay)"
+              create_proxy_project ghcr-proxy      "$(registry_id ghcr)"
+              create_proxy_project k8s-proxy       "$(registry_id registry-k8s-io)"
+
+              echo "Harbor proxy-cache configuration complete."

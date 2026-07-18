@@ -15,7 +15,7 @@ spec:
     # OpenSearch via official Helm chart (GitHub Pages — https://helm.opensearch.org does not exist)
     - repoURL: https://opensearch-project.github.io/helm-charts
       chart: opensearch
-      targetRevision: "3.6.0"
+      targetRevision: "3.7.0"
       helm:
         releaseName: opensearch
         valueFiles:

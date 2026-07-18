@@ -8,6 +8,7 @@ metadata:
   annotations:
     # Wave 8: Depends on XRDs (Wave 7) being installed and CRDs available
     argocd.argoproj.io/sync-wave: "8"
+    platform.digiorg.io/upgrade-gate: "issue-275-manual"
 spec:
   project: default
 
@@ -23,9 +24,7 @@ spec:
     namespace: crossplane-system
 
   syncPolicy:
-    automated:
-      selfHeal: true
-      prune: true
+    # Manual until the v2 XRDs and pinned catalog commit are validated together.
     syncOptions:
       - CreateNamespace=true
       - ServerSideApply=true

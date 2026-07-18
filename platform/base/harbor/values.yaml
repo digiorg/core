@@ -49,8 +49,10 @@ metrics:
   enabled: true
   serviceMonitor:
     enabled: true
-    additionalLabels:
-      release: prometheus
+    # Harbor chart 1.19 emits `release: harbor` itself. Do not add another
+    # release key here; duplicate YAML keys make the rendered ServiceMonitor
+    # invalid. Prometheus accepts both labels via its selector below.
+    additionalLabels: {}
 
 trace:
   enabled: true

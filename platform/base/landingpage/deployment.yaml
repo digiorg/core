@@ -20,7 +20,7 @@ spec:
     spec:
       containers:
         - name: landingpage
-          image: ghcr.io/digiorg/core-landingpage:main
+          image: ghcr.io/digiorg/core-landingpage:32a6777@sha256:a54c0d8cb01f27be93803ca883e4be6240fe19e82ee73c28023ed52da7b16b9f
           imagePullPolicy: Always
           ports:
             - name: http

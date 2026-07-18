@@ -7,12 +7,18 @@ metadata:
     - resources-finalizer.argocd.argoproj.io
   annotations:
     argocd.argoproj.io/sync-wave: "2"
+    platform.digiorg.io/upgrade-gate: "issue-275-manual"
 spec:
   project: default
   sources:
     - repoURL: https://opencost.github.io/opencost-helm-chart
       chart: opencost
-      targetRevision: "1.43.2"
+      # Issue #275: migrated 1.43.2 -> 2.x. Chart 2.5.27 ships appVersion 1.120.4
+      # (the release our custom subpath UI is built from). Values schema for our
+      # overrides (opencost.ui.image/extraEnv/uiPath, exporter, prometheus.external,
+      # customPricing, mcp, service.extraPorts) validated against the 2.5.27 chart
+      # tarball. Revalidate the exact patch against the chart repo before release.
+      targetRevision: "2.5.27"
       helm:
         releaseName: opencost
         valueFiles:
@@ -27,9 +33,7 @@ spec:
     server: https://kubernetes.default.svc
     namespace: cost-monitoring
   syncPolicy:
-    automated:
-      selfHeal: true
-      prune: true
+    # Major chart migration: manually verify the /opencost contract before sync.
     syncOptions:
       - CreateNamespace=true
       - ServerSideApply=true

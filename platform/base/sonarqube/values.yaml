@@ -9,8 +9,15 @@
 community:
   enabled: true
   # buildNumber pins the Community Build version (year.month.patch.buildid format).
-  # Update to the desired Community Build release.
-  buildNumber: "26.4.0.121862"
+  # Aligned with the chart 2026.3.1 default Community Build (Issue #275).
+  buildNumber: "26.5.0.122743"
+
+# Explicitly pin the Community Build OCI index; the chart otherwise derives a
+# mutable tag from community.buildNumber.
+image:
+  repository: sonarqube
+  tag: "26.5.0.122743-community@sha256:223d0090322edce6211a5328298b6f646920f1535025ef8dd880cab6647bb1fa"
+  pullPolicy: IfNotPresent
 
 # ── Deployment ─────────────────────────────────────────────────────────────────
 replicaCount: 1

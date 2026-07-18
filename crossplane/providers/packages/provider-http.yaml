@@ -3,4 +3,6 @@ kind: Provider
 metadata:
   name: provider-http
 spec:
+  # Issue #275: v1.0.14 is the latest crossplane-contrib release and installs on
+  # Crossplane v2.3.x (no upper Crossplane bound). Revalidated 2026-07-18.
   package: xpkg.upbound.io/crossplane-contrib/provider-http:v1.0.14

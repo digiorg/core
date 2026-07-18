@@ -6,7 +6,7 @@
 #   nu scripts/local-setup.nu up|down|reset|status
 # This Makefile provides utility helpers only.
 
-.PHONY: help deps argocd-password port-forward-argocd port-forward-vault port-forward-grafana lint validate-policies validate-crossplane clean kubeconfig
+.PHONY: help deps argocd-password port-forward-argocd port-forward-vault port-forward-grafana lint check-pins test validate-policies validate-crossplane clean kubeconfig
 
 CLUSTER_NAME := digiorg-core-dev
 KUBECONFIG_LOCAL := $(PWD)/kubeconfig-local.yaml
@@ -41,6 +41,13 @@ port-forward-grafana: ## Port forward Grafana (http://localhost:3000)
 # =============================================================================
 # Linting & Validation
 # =============================================================================
+
+check-pins: ## Enforce the image/chart/git pin policy (Issue #275)
+	@python3 scripts/check_pins.py
+
+test: check-pins ## Run pin policy + platform regression tests (no cluster needed)
+	@echo "Running platform regression tests..."
+	@python3 -m unittest discover -s platform/tests -p 'test_*.py'
 
 lint: ## Lint all configurations
 	@echo "Linting YAML files..."

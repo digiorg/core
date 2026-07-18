@@ -6,10 +6,12 @@ config:
   # Enable JetStream for persistent messaging
   jetstream:
     enabled: true
-    fileStorage:
+    fileStore:
       enabled: true
-      size: 1Gi
-      storageDirectory: /data
+      dir: /data
+      pvc:
+        enabled: true
+        size: 1Gi
 
   # Single-node for local dev (no clustering needed)
   cluster:
@@ -40,6 +42,8 @@ natsBox:
 # Use container.merge (not podTemplate.merge.spec.containers) to avoid
 # generating a container entry without an image field (causes StatefulSet validation failure)
 container:
+  image:
+    fullImageName: "nats:2.14.2-alpine@sha256:952d157e28d5394a211229bd57a7b37ff9f184e58e2c8486a08fa909fd254e32"
   merge:
     resources:
       requests:
@@ -49,14 +53,7 @@ container:
         cpu: 500m
         memory: 256Mi
 
-# Service configuration
-service:
-  ports:
-    client:
-      port: 4222
-    monitor:
-      port: 8222
-    leafnode:
-      enabled: false
-    websocket:
-      enabled: false
+# Pin the chart's enabled config reloader sidecar.
+reloader:
+  image:
+    fullImageName: "natsio/nats-server-config-reloader:0.23.0@sha256:64cb6c858e794906d3167378e02b7e0feb83c4e14c07b371eb8d921ef8c4a60b"

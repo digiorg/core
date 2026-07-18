@@ -8,13 +8,20 @@ metadata:
   annotations:
     # Wave 3: Extensions - no dependencies on other platform services
     argocd.argoproj.io/sync-wave: "3"
+    platform.digiorg.io/upgrade-gate: "issue-275-manual"
 spec:
   project: default
 
   source:
     repoURL: https://charts.crossplane.io/stable
     chart: crossplane
-    targetRevision: 1.19.0
+    # Issue #275: migrated 1.19.0 -> 2.3.3 (highest-blast-radius migration, run
+    # last). Revalidated 2026-07-18 against https://charts.crossplane.io/stable.
+    # Crossplane v2 keeps apiextensions.crossplane.io/v1 XRDs in LegacyCluster
+    # scope, so the existing XRD + Claims (crossplane/xrds) are unchanged; the
+    # crossplane-contrib providers (pkg.crossplane.io/v1) install unchanged.
+    # See docs/guides/platform-versions.md for the CRD-ordering + rollback notes.
+    targetRevision: 2.3.3
     helm:
       releaseName: crossplane
       values: |
@@ -40,9 +47,8 @@ spec:
     namespace: crossplane-system
 
   syncPolicy:
-    automated:
-      selfHeal: true
-      prune: true
+    # Highest-blast-radius v2 migration: promote last and only after providers,
+    # XRDs and core-catalog have been validated against the v2 compatibility plan.
     syncOptions:
       - CreateNamespace=true
       - ServerSideApply=true

@@ -1,0 +1,39 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cnpg-cluster
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    # Wave 1: the CNPG Cluster + database bootstrap. Must sync AFTER the CNPG
+    # operator (apps/platform/cnpg.yaml, wave 0) so the postgresql.cnpg.io CRDs
+    # exist. The consumer alias Service becomes authoritative only at cutover,
+    # when the legacy `postgresql` Application is disabled — see
+    # docs/guides/postgres-cnpg-migration.md.
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/digiorg/core.git
+    targetRevision: main
+    path: platform/base/cnpg
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: platform-db
+
+  syncPolicy:
+    automated:
+      selfHeal: true
+      prune: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 10
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 5m

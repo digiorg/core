@@ -9,6 +9,7 @@ metadata:
     # Wave 0: Deploy alongside cert-manager and postgresql
     # No Keycloak dependency — NATS must be ready before Wave 1
     argocd.argoproj.io/sync-wave: "0"
+    platform.digiorg.io/upgrade-gate: "issue-275-manual"
 spec:
   project: default
 
@@ -16,7 +17,7 @@ spec:
     # NATS Server via Helm chart
     - repoURL: https://nats-io.github.io/k8s/helm/charts
       chart: nats
-      targetRevision: "1.2.11"
+      targetRevision: "2.14.2"
       helm:
         releaseName: nats
         valueFiles:
@@ -37,9 +38,7 @@ spec:
     namespace: messaging
 
   syncPolicy:
-    automated:
-      selfHeal: true
-      prune: true
+    # Major chart migration with JetStream persistence: promote manually.
     syncOptions:
       - CreateNamespace=true
       - ServerSideApply=true

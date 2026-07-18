@@ -3,7 +3,9 @@ kind: Provider
 metadata:
   name: provider-helm
 spec:
-  package: xpkg.upbound.io/crossplane-contrib/provider-helm:v1.2.0
+  # Issue #275: v1.2.0 -> v1.3.0 (latest crossplane-contrib release, no upper
+  # Crossplane bound, compatible with Crossplane v2.3.x). Revalidated 2026-07-18.
+  package: xpkg.upbound.io/crossplane-contrib/provider-helm:v1.3.0
   runtimeConfigRef:
     apiVersion: pkg.crossplane.io/v1beta1
     kind: DeploymentRuntimeConfig

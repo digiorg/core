@@ -6,8 +6,13 @@
 replicaCount: 1
 
 image:
-  repository: gitea/gitea
-  tag: ""  # Use chart default (latest stable)
+  # Chart 12 changed the default registry/repository layout from the historical
+  # Docker Hub-style gitea/gitea path. Pin the actual 1.26.1 OCI index so the
+  # rendered image is reproducible and pullable.
+  registry: docker.gitea.com
+  repository: gitea
+  tag: "1.26.1"
+  digest: "sha256:d8667667b4ccbd1f67b86a376bffcc0a17b16cf71309ed04e3918231776d47dd"
   pullPolicy: IfNotPresent
   rootless: false
 
@@ -15,12 +20,16 @@ image:
 postgresql:
   enabled: false
 
-# Disable built-in PostgreSQL HA
+# Disable built-in PostgreSQL HA (default-enabled in chart 12.x)
 postgresql-ha:
   enabled: false
 
-# Disable Redis cluster — use in-memory cache for local dev
-redis-cluster:
+# Chart 12.x replaced the bundled Redis with Valkey; valkey-cluster is enabled by
+# default. Gitea here uses in-process session/cache (memory) + level queue, so no
+# Valkey is needed — disable both bundled subcharts (Issue #275).
+valkey-cluster:
+  enabled: false
+valkey:
   enabled: false
 
 # Persistence for Git repositories
@@ -103,9 +112,32 @@ gitea:
     actions:
       ENABLED: true
 
+  # Chart 12.x nests probes below `gitea`; top-level probe keys are ignored.
+  livenessProbe:
+    enabled: true
+    tcpSocket:
+      port: http
+    initialDelaySeconds: 200
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 10
+  readinessProbe:
+    enabled: true
+    tcpSocket:
+      port: http
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+
 # Note: Database password is injected via gitea.additionalConfigFromEnvs above,
 # NOT via extraEnvVars. extraEnvVars only applies to the main container,
 # but the configure-gitea init container needs the password for migrations.
+
+# Optional Helm test hook defaults to busybox:latest in chart 12.x. Disable it;
+# platform smoke tests are run by the dedicated validation workflow instead.
+test:
+  enabled: false
 
 # Ingress disabled — using platform-wide ingress
 ingress:
@@ -128,18 +160,3 @@ resources:
   limits:
     cpu: 500m
     memory: 512Mi
-
-# Probes
-livenessProbe:
-  enabled: true
-  initialDelaySeconds: 200
-  periodSeconds: 10
-  timeoutSeconds: 5
-  failureThreshold: 10
-
-readinessProbe:
-  enabled: true
-  initialDelaySeconds: 5
-  periodSeconds: 10
-  timeoutSeconds: 5
-  failureThreshold: 3

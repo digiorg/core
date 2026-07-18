@@ -8,6 +8,7 @@ metadata:
   annotations:
     # Wave 7: Depends on Crossplane providers and ProviderConfigs (Wave 6) being ready
     argocd.argoproj.io/sync-wave: "7"
+    platform.digiorg.io/upgrade-gate: "issue-275-manual"
 spec:
   project: default
 
@@ -21,9 +22,7 @@ spec:
     namespace: crossplane-system
 
   syncPolicy:
-    automated:
-      selfHeal: true
-      prune: true
+    # Manual until providers and ProviderConfigs report Healthy.
     syncOptions:
       - CreateNamespace=true
       - ServerSideApply=true
