@@ -88,6 +88,14 @@ CASES = [
     ),
     ("admission webhook \"validate.kyverno.svc\" denied the request", False),
     ("failed to sync: failed to run hook: BackoffLimitExceeded", False),
+    (
+        "containers with incomplete status: [init] hook failed: BackoffLimitExceeded",
+        False,
+    ),
+    (
+        "containers with incomplete status: [init] helm template failed with unexpected EOF",
+        False,
+    ),
     ("", False),
 ]
 
@@ -118,6 +126,10 @@ class DiagnosticRedactionTest(unittest.TestCase):
         ("token: token-value-123", "token-value-123"),
         ("api_key=key-123456", "key-123456"),
         ("Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload", "eyJhbGciOiJIUzI1NiJ9.payload"),
+        ("Authorization: Basic YWRtaW46cGFzcw==", "YWRtaW46cGFzcw=="),
+        ('{"token":"sentinel-json-value"}', "sentinel-json-value"),
+        ("secret=sentinel-secret-value", "sentinel-secret-value"),
+        ('password: "quoted value with spaces"', "quoted value with spaces"),
         ("request to https://admin:hunter2@harbor.example/api failed", "admin:hunter2"),
         ("Secret data: c2Vuc2l0aXZl", "c2Vuc2l0aXZl"),
     ]
