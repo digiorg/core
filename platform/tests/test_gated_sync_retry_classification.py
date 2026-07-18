@@ -50,8 +50,14 @@ CASES = [
     ("rpc error: code = Unavailable desc = transport is closing", True),
     ("failed to list refs: EOF", True),
     ("lookup github.com on 10.96.0.10:53: server misbehaving", True),
-    ("dial tcp: connect: connection refused", True),
-    ("context deadline exceeded", True),
+    ("repository checkout dial tcp: connect: connection refused", True),
+    ("repo-server manifest generation context deadline exceeded", True),
+    (
+        "one or more synchronization tasks completed unsuccessfully\n"
+        "Prometheus/prometheus: shard 0: pod prometheus-0: containers with "
+        "incomplete status: [init-config-reloader]",
+        True,
+    ),
     (
         "rpc error: code = Internal desc = error reading from server: EOF",
         True,
@@ -59,6 +65,15 @@ CASES = [
     (
         "rpc error: code = InvalidArgument desc = failed to unmarshal manifest: "
         "yaml: line 7: mapping values are not allowed here",
+        False,
+    ),
+    ("rpc error: code = PermissionDenied desc = access denied", False),
+    ("rpc error: code = Unauthenticated desc = missing credentials", False),
+    ("rpc error: code = Unknown desc = failed to unmarshal manifest", False),
+    ("helm template: YAML parse error: unexpected EOF", False),
+    (
+        "failed to apply: admission webhook validate.example.svc: dial tcp: "
+        "connect: connection refused",
         False,
     ),
     (
@@ -97,6 +112,25 @@ class RetryClassificationTest(unittest.TestCase):
                                   f"message classified as {out}, expected {expected}")
 
 
+class DiagnosticRedactionTest(unittest.TestCase):
+    CASES = [
+        ("password=super-secret-value", "super-secret-value"),
+        ("token: token-value-123", "token-value-123"),
+        ("api_key=key-123456", "key-123456"),
+        ("Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload", "eyJhbGciOiJIUzI1NiJ9.payload"),
+        ("request to https://admin:hunter2@harbor.example/api failed", "admin:hunter2"),
+        ("Secret data: c2Vuc2l0aXZl", "c2Vuc2l0aXZl"),
+    ]
+
+    def test_sensitive_values_are_redacted_by_real_nushell(self):
+        for message, sensitive in self.CASES:
+            with self.subTest(message=message):
+                escaped = message.replace("\\", "\\\\").replace('"', '\\"')
+                out = _run_nu(f'redact_sync_diagnostic "{escaped}"')
+                self.assertNotIn(sensitive, out)
+                self.assertIn("[REDACTED]", out)
+
+
 class RetryWiringStructureTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -127,6 +161,22 @@ class RetryWiringStructureTest(unittest.TestCase):
     def test_prints_operation_state_message_and_resource_diagnostics(self):
         self.assertIn("operationState.message", self.text)
         self.assertIn("syncResult.resources", self.text)
+
+    def test_classification_includes_resource_messages(self):
+        start = self.text.index("def sync_gated_apps_for_local_dev")
+        end = self.text.index("\ndef ", start + 10)
+        body = self.text[start:end]
+        self.assertIn("classification_text", body)
+        self.assertIn("syncResult.resources", body)
+        self.assertIn("is_retryable_sync_error $classification_text", body)
+
+    def test_uses_started_at_as_fresh_operation_identity(self):
+        start = self.text.index("def sync_gated_apps_for_local_dev")
+        end = self.text.index("\ndef ", start + 10)
+        body = self.text[start:end]
+        self.assertIn("previous_started", body)
+        self.assertIn("status.operationState.startedAt", body)
+        self.assertIn("started != $previous_started", body)
 
     def test_preserves_major_upgrade_gate_contract(self):
         # Must not regress the existing gated-sync contract (test_major_upgrade_gates.py)

@@ -47,15 +47,36 @@ def _central_namespace_names():
     return names
 
 
-def _kustomization_namespace_resources(kustomization_path):
-    """Namespace names declared by any YAML resource this kustomization lists."""
+def _kustomization_namespace_resources(kustomization_path, visited=None):
+    """Recursively find Namespace resources reachable from a Kustomization."""
+    visited = set() if visited is None else visited
+    real_path = os.path.realpath(kustomization_path)
+    if real_path in visited:
+        return []
+    visited.add(real_path)
+
     comp_dir = os.path.dirname(kustomization_path)
     with open(kustomization_path, encoding="utf-8") as fh:
         kustomization = yaml.safe_load(fh) or {}
     names = []
     for resource in kustomization.get("resources", []):
-        resource_path = os.path.join(comp_dir, resource)
-        if not os.path.isfile(resource_path) or not resource.endswith((".yaml", ".yml")):
+        resource_path = os.path.normpath(os.path.join(comp_dir, resource))
+        if os.path.isdir(resource_path):
+            nested = next(
+                (
+                    os.path.join(resource_path, candidate)
+                    for candidate in ("kustomization.yaml", "kustomization.yml", "Kustomization")
+                    if os.path.isfile(os.path.join(resource_path, candidate))
+                ),
+                None,
+            )
+            if nested:
+                names.extend(_kustomization_namespace_resources(nested, visited))
+            continue
+        if not os.path.isfile(resource_path) or not resource_path.endswith((".yaml", ".yml")):
+            continue
+        if os.path.basename(resource_path).lower().startswith("kustomization"):
+            names.extend(_kustomization_namespace_resources(resource_path, visited))
             continue
         for doc in _docs(resource_path):
             if doc and doc.get("kind") == "Namespace":
@@ -65,12 +86,13 @@ def _kustomization_namespace_resources(kustomization_path):
 
 def _all_component_kustomizations():
     paths = []
-    for entry in sorted(os.listdir(BASE_DIR)):
-        comp_dir = os.path.join(BASE_DIR, entry)
-        kustomization = os.path.join(comp_dir, "kustomization.yaml")
-        if entry != "namespaces" and os.path.isfile(kustomization):
-            paths.append(kustomization)
-    return paths
+    central_dir = os.path.realpath(os.path.join(BASE_DIR, "namespaces"))
+    for root, dirs, files in os.walk(BASE_DIR):
+        dirs[:] = [d for d in dirs if os.path.realpath(os.path.join(root, d)) != central_dir]
+        for candidate in ("kustomization.yaml", "kustomization.yml", "Kustomization"):
+            if candidate in files and os.path.realpath(root) != central_dir:
+                paths.append(os.path.join(root, candidate))
+    return sorted(paths)
 
 
 class NamespaceOwnershipTest(unittest.TestCase):

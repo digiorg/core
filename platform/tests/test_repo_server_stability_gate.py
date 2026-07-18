@@ -37,6 +37,16 @@ class RepoServerStabilityGateTest(unittest.TestCase):
         self.assertIn("restartCount", body)
         self.assertRegex(body, r"error make", "must fail closed if repo-server never stabilizes")
 
+    def test_checks_every_pod_identity_and_deployment_rollout(self):
+        start = self.text.index("def wait_for_repo_server_stable")
+        end = self.text.index("\ndef ", start + 10)
+        body = self.text[start:end]
+        self.assertIn("metadata.uid", body)
+        self.assertIn("readyReplicas", body)
+        self.assertIn("updatedReplicas", body)
+        self.assertIn("availableReplicas", body)
+        self.assertNotIn("items | first", body)
+
     def test_status_output_does_not_parse_label_as_a_subcommand(self):
         # In Nushell interpolation, `(restarts: ($restarts))` is parsed as an
         # attempted external command named `restarts:` at runtime even though
