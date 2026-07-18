@@ -25,12 +25,12 @@ spec:
 
     # Reference to values file in Git repo
     - repoURL: https://github.com/digiorg/core.git
-      targetRevision: main
+      targetRevision: test/issue-279-runtime
       ref: values
 
     # Surveyor, oauth2-proxy, namespace via Kustomize
     - repoURL: https://github.com/digiorg/core.git
-      targetRevision: main
+      targetRevision: test/issue-279-runtime
       path: platform/base/nats
 
   destination:
