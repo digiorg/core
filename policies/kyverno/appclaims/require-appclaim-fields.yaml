@@ -18,9 +18,7 @@ spec:
         any:
           - resources:
               kinds:
-                - AppClaim
-              apiGroups:
-                - platform.digiorg.io
+                - platform.digiorg.io/v1alpha1/AppClaim
       validate:
         allowExistingViolations: true
         message: "AppClaim spec.appName is required and must be non-empty"
@@ -34,9 +32,7 @@ spec:
         any:
           - resources:
               kinds:
-                - AppClaim
-              apiGroups:
-                - platform.digiorg.io
+                - platform.digiorg.io/v1alpha1/AppClaim
       validate:
         allowExistingViolations: true
         message: "AppClaim spec.team is required and must be non-empty"
@@ -50,9 +46,7 @@ spec:
         any:
           - resources:
               kinds:
-                - AppClaim
-              apiGroups:
-                - platform.digiorg.io
+                - platform.digiorg.io/v1alpha1/AppClaim
       validate:
         allowExistingViolations: true
         message: "AppClaim spec.size is required and must be non-empty (valid values: S, M, L)"

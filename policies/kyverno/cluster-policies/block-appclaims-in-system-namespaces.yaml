@@ -24,7 +24,7 @@ spec:
         any:
           - resources:
               kinds:
-                - AppClaim
+                - platform.digiorg.io/v1alpha1/AppClaim
               namespaces:
                 # Kubernetes system namespaces
                 - kube-system
