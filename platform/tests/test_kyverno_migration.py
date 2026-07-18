@@ -55,7 +55,10 @@ class KyvernoCleanInstallTest(unittest.TestCase):
         self.assertEqual(rules[0]["kind"], "CustomResourceDefinition")
         self.assertEqual(
             rules[0]["jqPathExpressions"],
-            ['.spec.conversion | select(.strategy == "None")'],
+            [
+                '.spec.conversion | select(.strategy == "None")',
+                ".metadata.labels | select(length == 0)",
+            ],
         )
 
     def test_policy_api_defaults_are_declared(self):

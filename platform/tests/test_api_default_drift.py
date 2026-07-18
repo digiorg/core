@@ -40,6 +40,21 @@ class StatefulSetDriftTest(unittest.TestCase):
         )
 
 
+    def test_grafana_ignores_only_generated_admin_password(self):
+        app = load("apps/platform/grafana.yaml")
+        self.assertIn("RespectIgnoreDifferences=true", app["spec"]["syncPolicy"]["syncOptions"])
+        rules = app["spec"]["ignoreDifferences"]
+        self.assertEqual(
+            {(rule["kind"], rule["name"]): rule["jsonPointers"] for rule in rules},
+            {
+                ("Secret", "prometheus-grafana"): ["/data/admin-password"],
+                ("Deployment", "prometheus-grafana"): [
+                    "/spec/template/metadata/annotations/checksum~1secret"
+                ],
+            },
+        )
+
+
 class CertificateOwnershipTest(unittest.TestCase):
     def test_upstream_cert_manager_namespace_is_removed(self):
         kustomization = load("platform/base/cert-manager/kustomization.yaml")
