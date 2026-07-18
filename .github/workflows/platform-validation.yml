@@ -36,8 +36,8 @@ jobs:
 
       - name: Install PyYAML
         run: |
-          printf '%s\n' 'PyYAML==6.0.3 --hash=sha256:ba1cc08a7ccde2d2ec775841541641e4548226580ab850948cbfda66a1befcdc' |
-            python3 -m pip install --disable-pip-version-check --only-binary=:all: --require-hashes -r -
+          printf '%s\n' 'PyYAML==6.0.3 --hash=sha256:ba1cc08a7ccde2d2ec775841541641e4548226580ab850948cbfda66a1befcdc' > /tmp/pyyaml-requirements.txt
+          python3 -m pip install --disable-pip-version-check --only-binary=:all: --require-hashes -r /tmp/pyyaml-requirements.txt
 
       - name: Pin policy (reject floating / unpinned references)
         run: python3 scripts/check_pins.py
@@ -115,6 +115,8 @@ jobs:
           git config core.whitespace trailing-space,space-before-tab
           base="${PR_BASE_SHA:-${PUSH_BEFORE_SHA:-}}"
           if [[ -z "$base" || "$base" =~ ^0+$ ]]; then
-            base="$(git rev-list --max-parents=0 HEAD | tail -1)"
+            # A newly created branch has an all-zero `before` SHA. Compare only
+            # the branch delta, not every historical whitespace issue in the repo.
+            base="$(git merge-base origin/main HEAD)"
           fi
           git diff --check "$base"...HEAD
