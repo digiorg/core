@@ -50,6 +50,10 @@ class KyvernoCleanInstallTest(unittest.TestCase):
 
     def test_api_defaulted_conversion_ignores_are_exactly_scoped(self):
         rules = _kyverno_app()["spec"].get("ignoreDifferences", [])
+        self.assertIn(
+            "RespectIgnoreDifferences=true",
+            _kyverno_app()["spec"]["syncPolicy"]["syncOptions"],
+        )
         expected = {
             "deletingpolicies.policies.kyverno.io",
             "generatingpolicies.policies.kyverno.io",
