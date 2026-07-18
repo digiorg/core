@@ -12,6 +12,13 @@ config:
       pvc:
         enabled: true
         size: 1Gi
+        # Match API-defaulted fields persisted inside StatefulSet
+        # volumeClaimTemplates so Argo CD does not report false drift.
+        merge:
+          apiVersion: v1
+          kind: PersistentVolumeClaim
+          spec:
+            volumeMode: Filesystem
 
   # Single-node for local dev (no clustering needed)
   cluster:
