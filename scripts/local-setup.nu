@@ -21,6 +21,7 @@
 # Configuration
 let CLUSTER_NAME = "digiorg-core-dev"
 let KIND_CONFIG = "platform/bootstrap/kind-config.yaml"
+let KIND_NODE_IMAGE = "kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5"
 let KUBECONFIG_PATH = $"($env.PWD)/kubeconfig-local.yaml"
 
 # Main entry point
@@ -108,7 +109,7 @@ def "main bootstrap" [] {
         print $"(ansi yellow)✓ Cluster '($CLUSTER_NAME)' already exists(ansi reset)"
     } else {
         print "1.1 Creating KinD cluster..."
-        kind create cluster --config $KIND_CONFIG --kubeconfig $KUBECONFIG_PATH
+        kind create cluster --image $KIND_NODE_IMAGE --config $KIND_CONFIG --kubeconfig $KUBECONFIG_PATH
         print $"(ansi green)✓ KinD cluster created(ansi reset)"
     }
     $env.KUBECONFIG = $KUBECONFIG_PATH
@@ -682,34 +683,76 @@ def deploy_root_app [] {
 def wait_for_repo_server_stable [] {
     $env.KUBECONFIG = $KUBECONFIG_PATH
 
-    mut previous_restarts = -1
+    mut previous_snapshot = []
     mut stable_checks = 0
+    mut last_diagnostic = "repo-server state was not observed"
     for attempt in 1..60 {
-        let result = (do {
+        let pods_result = (do {
             kubectl get pods -n argocd -l app.kubernetes.io/name=argocd-repo-server -o json
         } | complete)
-        if $result.exit_code == 0 {
-            let pods = ($result.stdout | from json | get -o items | default [])
-            if ($pods | length) > 0 {
-                let pod = ($pods | first)
-                let ready = ($pod | get -o status.containerStatuses.0.ready | default false)
-                let restarts = ($pod | get -o status.containerStatuses.0.restartCount | default 0)
-                if $ready and $restarts == $previous_restarts {
-                    $stable_checks = $stable_checks + 1
-                } else {
-                    $stable_checks = 0
+        let deployment_result = (do {
+            kubectl get deployment argocd-repo-server -n argocd -o json
+        } | complete)
+
+        if $pods_result.exit_code == 0 and $deployment_result.exit_code == 0 {
+            let pods = ($pods_result.stdout | from json | get -o items | default [])
+            let deployment = ($deployment_result.stdout | from json)
+            let desired = ($deployment | get -o spec.replicas | default 0)
+            let ready_replicas = ($deployment | get -o status.readyReplicas | default 0)
+            let updated_replicas = ($deployment | get -o status.updatedReplicas | default 0)
+            let available_replicas = ($deployment | get -o status.availableReplicas | default 0)
+            let observed_generation = ($deployment | get -o status.observedGeneration | default 0)
+            let generation = ($deployment | get -o metadata.generation | default (-1))
+
+            let pod_snapshot = (
+                $pods
+                | each {|pod|
+                    let statuses = ($pod | get -o status.containerStatuses | default [])
+                    let ready = (($statuses | length) > 0) and ($statuses | all {|status| $status.ready })
+                    let restarts = if ($statuses | length) == 0 { 0 } else {
+                        $statuses | get restartCount | math sum
+                    }
+                    {
+                        name: ($pod | get -o metadata.name | default "")
+                        uid: ($pod | get -o metadata.uid | default "")
+                        ready: $ready
+                        restarts: $restarts
+                    }
                 }
-                $previous_restarts = $restarts
-                print $"  repo-server: ready=($ready) restartCount=($restarts) stable_checks=($stable_checks)/3"
-                if $stable_checks >= 3 {
-                    print $"(ansi green)✓ argocd-repo-server is Ready and restart-stable; restartCount=($restarts)(ansi reset)"
-                    return
-                }
+                | sort-by name
+            )
+            let all_pods_ready = (($pod_snapshot | length) == $desired) and ($pod_snapshot | all {|pod| $pod.ready })
+            let rollout_complete = (
+                $desired > 0
+                and $ready_replicas == $desired
+                and $updated_replicas == $desired
+                and $available_replicas == $desired
+                and $observed_generation == $generation
+            )
+            let unchanged = ($pod_snapshot == $previous_snapshot)
+
+            if $all_pods_ready and $rollout_complete and $unchanged {
+                $stable_checks = $stable_checks + 1
+            } else {
+                $stable_checks = 0
             }
+            $previous_snapshot = $pod_snapshot
+            $last_diagnostic = $"desired=($desired) ready=($ready_replicas) updated=($updated_replicas) available=($available_replicas) pods=($pod_snapshot | length)"
+            print $"  repo-server: ($last_diagnostic) stable_checks=($stable_checks)/3"
+            if $stable_checks >= 3 {
+                let total_restarts = ($pod_snapshot | get restarts | math sum)
+                print $"(ansi green)✓ argocd-repo-server rollout is Ready and identity-stable; totalRestarts=($total_restarts)(ansi reset)"
+                return
+            }
+        } else {
+            let stderr = ($pods_result.stderr + " " + $deployment_result.stderr | str trim)
+            $last_diagnostic = (redact_sync_diagnostic $stderr)
+            $stable_checks = 0
+            $previous_snapshot = []
         }
         sleep 5sec
     }
-    error make {msg: "argocd-repo-server did not become Ready and restart-stable within the timeout"}
+    error make {msg: $"argocd-repo-server did not become Ready and identity-stable within the timeout: ($last_diagnostic)"}
 }
 
 # Issue #279: classify an Argo CD operationState.message as retryable
@@ -720,28 +763,94 @@ def is_retryable_sync_error [message: string] {
     if ($message | str trim | is-empty) {
         return false
     }
-    let transient_markers = [
-        "code = Unavailable"
-        "code = DeadlineExceeded"
-        "EOF"
+    let normalized = ($message | str lowercase)
+
+    # One narrowly identified resource-health race is transient even though the
+    # operation-level message is generic. Permanent init failures use different
+    # messages (CrashLoopBackOff, non-zero exit, BackoffLimitExceeded).
+    if ($normalized | str contains "containers with incomplete status:") {
+        return true
+    }
+
+    # Deterministic render/apply/auth/policy errors always win over transport
+    # words embedded in their text (for example "unexpected EOF" or a webhook
+    # endpoint reporting "connection refused").
+    let deterministic_markers = [
+        "invalidargument"
+        "permissiondenied"
+        "unauthenticated"
+        "failed to unmarshal"
+        "yaml parse error"
+        "unexpected eof"
+        "helm template failed"
+        "admission webhook"
+        "failed calling webhook"
+        "backofflimitexceeded"
+        "is invalid:"
+    ]
+    for marker in $deterministic_markers {
+        if ($normalized | str contains $marker) {
+            return false
+        }
+    }
+
+    # gRPC Unavailable/DeadlineExceeded and an explicit broken server read are
+    # transport failures. Generic dial/EOF/timeout words require repository or
+    # comparison context below instead of being accepted globally.
+    let explicit_transport_markers = [
+        "code = unavailable"
+        "code = deadlineexceeded"
+        "error reading from server: eof"
         "transport is closing"
-        "connection refused"
         "connection reset by peer"
-        "server misbehaving"
-        "no route to host"
-        "i/o timeout"
-        "TLS handshake timeout"
-        "dial tcp"
-        "context deadline exceeded"
         "client connection lost"
         "broken pipe"
     ]
-    for marker in $transient_markers {
-        if ($message | str contains $marker) {
+    for marker in $explicit_transport_markers {
+        if ($normalized | str contains $marker) {
             return true
         }
     }
-    false
+
+    let repository_context_markers = [
+        "repo-server"
+        "repository"
+        "comparisonerror"
+        "manifest generation"
+        "failed to list refs"
+        "list refs"
+        "github.com"
+        "gitlab.com"
+        "bitbucket.org"
+        "helm repository"
+    ]
+    let generic_transport_markers = [
+        "eof"
+        "connection refused"
+        "server misbehaving"
+        "no route to host"
+        "i/o timeout"
+        "tls handshake timeout"
+        "dial tcp"
+        "context deadline exceeded"
+        "temporary failure in name resolution"
+        "no such host"
+    ]
+    let has_repository_context = ($repository_context_markers | any {|marker| $normalized | str contains $marker })
+    let has_transport_failure = ($generic_transport_markers | any {|marker| $normalized | str contains $marker })
+    $has_repository_context and $has_transport_failure
+}
+
+# Redact likely credentials from controller/admission messages before they are
+# printed or included in a terminal error. Diagnostics are untrusted text: a
+# failed webhook or tool can echo request headers, URLs with userinfo, or Secret
+# values. Classification still uses the original text; only output is redacted.
+def redact_sync_diagnostic [message: string] {
+    $message
+    | str replace --all --regex '(?i)authorization\s*:\s*bearer\s+[^\s,;]+' 'Authorization: [REDACTED]'
+    | str replace --all --regex '(?i)https?://[^\s/@:]+:[^\s/@]+@' 'https://[REDACTED]@'
+    | str replace --all --regex '(?i)(password|token|api[_-]?key|client[_-]?secret)\s*[:=]\s*[^\s,;]+' '[REDACTED]'
+    | str replace --all --regex '(?i)secret\s+data\s*[:=]\s*[^\s,;]+' 'Secret data: [REDACTED]'
 }
 
 # Print operationState.message plus any failed resource/hook messages so a
@@ -749,7 +858,8 @@ def is_retryable_sync_error [message: string] {
 def print_sync_diagnostics [state: record] {
     let message = ($state | get -o status.operationState.message | default "")
     if not ($message | is-empty) {
-        print $"(ansi red)    operationState.message: ($message)(ansi reset)"
+        let safe_message = (redact_sync_diagnostic $message)
+        print $"(ansi red)    operationState.message: ($safe_message)(ansi reset)"
     }
     let resources = ($state | get -o status.operationState.syncResult.resources | default [])
     for r in $resources {
@@ -759,7 +869,8 @@ def print_sync_diagnostics [state: record] {
             let kind = ($r | get -o kind | default "")
             let name = ($r | get -o name | default "")
             let rmsg = ($r | get -o message | default "")
-            print $"(ansi red)    ($kind)/($name): status=($rstatus) hookPhase=($hook_phase) ($rmsg)(ansi reset)"
+            let safe_rmsg = (redact_sync_diagnostic $rmsg)
+            print $"(ansi red)    ($kind)/($name): status=($rstatus) hookPhase=($hook_phase) ($safe_rmsg)(ansi reset)"
         }
     }
 }
@@ -804,6 +915,7 @@ def sync_gated_apps_for_local_dev [] {
         mut retry_count = 0
         loop {
             let previous_state = (kubectl get application $app -n argocd -o json | from json)
+            let previous_started = ($previous_state | get -o status.operationState.startedAt | default "")
             let previous_finished = ($previous_state | get -o status.operationState.finishedAt | default "")
             print $"  Syncing gated Application: ($app) \(attempt ($retry_count + 1)/($max_operation_retries + 1)\)"
             let sync_result = (do {
@@ -825,10 +937,11 @@ def sync_gated_apps_for_local_dev [] {
                     let state = ($state_result.stdout | from json)
                     $last_state = $state
                     let phase = ($state | get -o status.operationState.phase | default "")
+                    let started = ($state | get -o status.operationState.startedAt | default "")
                     let finished = ($state | get -o status.operationState.finishedAt | default "")
                     let sync = ($state | get -o status.sync.status | default "")
                     let health = ($state | get -o status.health.status | default "")
-                    if $phase == "Running" or $finished != $previous_finished {
+                    if not ($started | is-empty) and $started != $previous_started {
                         $saw_new_operation = true
                     }
                     if $saw_new_operation and $phase in ["Failed" "Error"] {
@@ -844,7 +957,12 @@ def sync_gated_apps_for_local_dev [] {
                 sleep 10sec
             }
             if not $completed {
-                error make {msg: $"Gated Application ($app) did not complete a new successful Synced+Healthy operation within 15 minutes"}
+                if not ($last_state | is-empty) {
+                    print_sync_diagnostics $last_state
+                }
+                let observed_started = ($last_state | get -o status.operationState.startedAt | default "")
+                let observed_finished = ($last_state | get -o status.operationState.finishedAt | default "")
+                error make {msg: $"Gated Application ($app) did not complete a fresh successful Synced+Healthy operation within 15 minutes; previousStarted=($previous_started) previousFinished=($previous_finished) observedStarted=($observed_started) observedFinished=($observed_finished)"}
             }
 
             if $succeeded {
@@ -855,16 +973,25 @@ def sync_gated_apps_for_local_dev [] {
             # Operation reached Failed/Error: surface full diagnostics before
             # deciding whether this is retryable.
             let message = ($last_state | get -o status.operationState.message | default "")
+            let resource_messages = (
+                $last_state
+                | get -o status.operationState.syncResult.resources
+                | default []
+                | each {|resource| $resource | get -o message | default "" }
+                | where {|resource_message| not ($resource_message | is-empty) }
+            )
+            let classification_text = ([$message] | append $resource_messages | str join "\n")
             print $"(ansi red)  ✗ ($app) sync failed(ansi reset)"
             print_sync_diagnostics $last_state
 
-            if (is_retryable_sync_error $message) and $retry_count < $max_operation_retries {
+            if (is_retryable_sync_error $classification_text) and $retry_count < $max_operation_retries {
                 let backoff = (10 * (2 ** $retry_count)) * 1sec
                 print $"(ansi yellow)  Transient error detected; retrying ($app) in ($backoff) with a fresh sync operation...(ansi reset)"
                 sleep $backoff
                 $retry_count = $retry_count + 1
             } else {
-                error make {msg: $"Gated Application ($app) sync failed with phase Error/Failed - not retryable or retries exhausted - : ($message)"}
+                let safe_message = (redact_sync_diagnostic $message)
+                error make {msg: $"Gated Application ($app) sync failed with phase Error/Failed - not retryable or retries exhausted: ($safe_message)"}
             }
         }
     }

@@ -30,6 +30,10 @@ Pure python3 + PyYAML::
 """
 import os
 import re
+import stat
+import subprocess
+import tempfile
+import textwrap
 import unittest
 
 import yaml
@@ -43,6 +47,24 @@ def _script():
         docs = [d for d in yaml.safe_load_all(fh) if d]
     job = next(d for d in docs if d.get("kind") == "Job")
     return job["spec"]["template"]["spec"]["containers"][0]["command"][-1]
+
+
+def _run_with_fake_curl(fake_curl):
+    with tempfile.TemporaryDirectory() as tmp:
+        curl_path = os.path.join(tmp, "curl")
+        with open(curl_path, "w", encoding="utf-8") as fh:
+            fh.write("#!/bin/sh\n" + textwrap.dedent(fake_curl))
+        os.chmod(curl_path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+        env = os.environ.copy()
+        env["PATH"] = tmp + os.pathsep + env["PATH"]
+        env["HARBOR_ADMIN_PASSWORD"] = "fixture-password-never-print"
+        return subprocess.run(
+            ["/bin/sh", "-c", _script()],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=20,
+        )
 
 
 class NoSilentCurlFailureTest(unittest.TestCase):
@@ -69,6 +91,32 @@ class NoSilentCurlFailureTest(unittest.TestCase):
         script = _script()
         self.assertIn("could not read back registry", script)
         self.assertIn("could not read back project", script)
+
+    def test_create_transport_failure_is_actionable_and_secret_safe(self):
+        result = _run_with_fake_curl(r'''
+            case "$*" in
+              */ping*) exit 0 ;;
+              *) exit 7 ;;
+            esac
+        ''')
+        output = result.stdout + result.stderr
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("create transport failure (curl exit 7)", output)
+        self.assertNotIn("fixture-password-never-print", output)
+
+    def test_readback_transport_failure_is_actionable_and_secret_safe(self):
+        result = _run_with_fake_curl(r'''
+            case "$*" in
+              */ping*) exit 0 ;;
+              *"-X POST"*) printf 409; exit 0 ;;
+              *"/registries?q="*) exit 7 ;;
+              *) exit 9 ;;
+            esac
+        ''')
+        output = result.stdout + result.stderr
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("readback transport failure (curl exit 7)", output)
+        self.assertNotIn("fixture-password-never-print", output)
 
     def test_never_prints_credentials(self):
         script = _script()
