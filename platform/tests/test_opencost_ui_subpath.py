@@ -427,6 +427,13 @@ class HelmWiringTest(unittest.TestCase):
             self.image.get("tag", ""),
         )
 
+    def test_prometheus_endpoint_matches_kube_prometheus_service(self):
+        endpoint = self.values["opencost"]["prometheus"]["external"]["url"]
+        self.assertEqual(
+            endpoint,
+            "http://prometheus-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090",
+        )
+
     def test_ui_enabled(self):
         self.assertTrue(self.ui.get("enabled"))
 
