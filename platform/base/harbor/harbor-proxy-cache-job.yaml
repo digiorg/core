@@ -125,7 +125,9 @@ spec:
                   echo "ERROR: could not resolve registry ${registry_name} id (HTTP ${code})" >&2; return 1
                 fi
                 tr -d '[:space:]' < "${body}" \
-                  | tr ',' '\n' | grep -o '"id":[0-9]*' | head -1 | grep -o '[0-9]*'
+                  | tr '}' '\n' \
+                  | grep -F "\"name\":\"${registry_name}\"" \
+                  | grep -o '"id":[0-9]*' | head -1 | grep -o '[0-9]*'
               }
 
               # Create or verify a proxy-cache project bound to the registry.

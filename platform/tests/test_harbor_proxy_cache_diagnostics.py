@@ -92,6 +92,10 @@ class NoSilentCurlFailureTest(unittest.TestCase):
         self.assertIn("could not read back registry", script)
         self.assertIn("could not read back project", script)
 
+    def test_registry_id_lookup_filters_the_requested_name(self):
+        script = _script()
+        self.assertIn('grep -F "\\\"name\\\":\\\"${registry_name}\\\""', script)
+
     def test_create_transport_failure_is_actionable_and_secret_safe(self):
         result = _run_with_fake_curl(r'''
             case "$*" in
