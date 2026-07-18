@@ -32,6 +32,7 @@ except ImportError:  # pragma: no cover
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 SURVEYOR = os.path.join(REPO_ROOT, "platform", "base", "nats", "surveyor.yaml")
 NATS_APP = os.path.join(REPO_ROOT, "apps", "platform", "nats.yaml")
+NATS_VALUES = os.path.join(REPO_ROOT, "platform", "base", "nats", "values.yaml")
 
 
 def _docs():
@@ -72,6 +73,16 @@ class SurveyorStartupTest(unittest.TestCase):
 
 
 class NatsStatefulSetDriftTest(unittest.TestCase):
+    def test_pod_template_annotations_are_not_rendered_as_null(self):
+        # Chart 2.14.2 emits `metadata.annotations: null` when no pod annotation
+        # is configured; Kubernetes drops the null map, and Argo CD 3.4.5 then
+        # reports the StatefulSet OutOfSync forever. Render a stable annotation.
+        with open(NATS_VALUES, encoding="utf-8") as fh:
+            values = yaml.safe_load(fh)
+        annotations = values.get("podTemplate", {}).get("merge", {}).get("metadata", {}).get("annotations")
+        self.assertIsInstance(annotations, dict)
+        self.assertTrue(annotations)
+
     def test_ignores_kubernetes_injected_pvc_template_status(self):
         # Kubernetes persists status.phase inside StatefulSet PVC templates.
         # Argo CD 3.4.5 does not normalize this nested status field and reports
