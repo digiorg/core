@@ -32,7 +32,9 @@ Requires the `nu` binary (Nushell 0.114.1, matches docs/guides/platform-versions
     python3 platform/tests/test_gated_sync_retry_classification.py
 """
 import os
+import shutil
 import subprocess
+import tempfile
 import unittest
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -197,6 +199,63 @@ class RetryWiringStructureTest(unittest.TestCase):
         self.assertIn("status.sync.status", self.text)
         self.assertIn('phase in ["Failed" "Error"]', self.text)
         self.assertIn("Synced+Healthy", self.text)
+
+    def test_stale_status_fallback_remains_fail_closed(self):
+        start = self.text.index("def argocd_app_has_no_material_diff")
+        end = self.text.index("\n# Wait for ArgoCD apps", start)
+        body = self.text[start:end]
+        self.assertIn("argocd app diff $app --core --refresh", body)
+        self.assertIn("$diff.exit_code == 0", body)
+        self.assertNotIn("$diff.stdout", body)
+        self.assertNotIn("$diff.stderr", body)
+
+        wait_start = self.text.index("def wait_for_argocd_apps")
+        wait_end = self.text.index("\n# -----------------------------------------------------------------------------", wait_start)
+        wait_body = self.text[wait_start:wait_end]
+        self.assertIn('$health == "Healthy" and $sync == "OutOfSync"', wait_body)
+        self.assertIn("argocd_app_has_no_material_diff $app", wait_body)
+
+
+class MaterialDiffFallbackRuntimeTest(unittest.TestCase):
+    def _run_with_fake_argocd(self, exit_code: int) -> str:
+        nu = shutil.which("nu")
+        assert nu is not None
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "kubeconfig-local.yaml"), "w", encoding="utf-8") as fh:
+                fh.write("apiVersion: v1\nkind: Config\n")
+            for name, script in {
+                "kubectl": "#!/bin/sh\nexit 0\n",
+                "mktemp": "#!/bin/sh\nexec /usr/bin/mktemp \"$@\"\n",
+                "argocd": (
+                    "#!/bin/sh\n"
+                    "echo 'Authorization: Bearer should-not-leak'\n"
+                    "echo 'password=should-not-leak' >&2\n"
+                    f"exit {exit_code}\n"
+                ),
+            }.items():
+                path = os.path.join(tmp, name)
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(script)
+                os.chmod(path, 0o755)
+
+            result = subprocess.run(
+                [nu, "-c", f"source {SETUP}; argocd_app_has_no_material_diff kyverno"],
+                cwd=tmp,
+                env={**os.environ, "PATH": f"{tmp}:/usr/bin:/bin"},
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn("should-not-leak", result.stdout + result.stderr)
+            return result.stdout.strip()
+
+    def test_zero_diff_is_accepted(self):
+        self.assertEqual(self._run_with_fake_argocd(0), "true")
+
+    def test_diff_or_cli_error_is_rejected(self):
+        self.assertEqual(self._run_with_fake_argocd(1), "false")
+        self.assertEqual(self._run_with_fake_argocd(2), "false")
 
 
 if __name__ == "__main__":
