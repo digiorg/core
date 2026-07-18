@@ -4,7 +4,6 @@ kind: Kustomization
 namespace: logging
 
 resources:
-  - namespace.yaml
   - rbac.yaml
   - configmap.yaml
   - daemonset.yaml

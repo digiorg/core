@@ -4,7 +4,6 @@ kind: Kustomization
 namespace: platform-db
 
 resources:
-  - namespace.yaml
   - statefulset.yaml
   - service.yaml
 

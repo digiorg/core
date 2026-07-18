@@ -3,9 +3,11 @@ kind: Kustomization
 
 namespace: code-quality
 
-resources:
-  - namespace.yaml
+resources: []
 
+# Namespace 'code-quality' is owned centrally by platform/base/namespaces
+# (issue #279) — do not re-add namespace.yaml here.
+#
 # SonarQube itself is deployed via Helm by the ArgoCD Application (apps/platform/sonarqube.yaml).
 # The following secrets must be created manually by local-setup.nu before ArgoCD sync:
 #   - sonarqube-db-secret          (SONAR_JDBC_PASSWORD)

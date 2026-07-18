@@ -633,10 +633,10 @@ def build_tier1_images [] {
 # Deploy ArgoCD Root App (triggers App-of-Apps)
 def deploy_root_app [] {
     $env.KUBECONFIG = $KUBECONFIG_PATH
-    
+
     print "Deploying ArgoCD Root App..."
     kubectl apply -f platform/base/argocd/applications/root-app.yaml
-    
+
     print $"(ansi green)✓ Root App deployed - ArgoCD will now sync all platform components(ansi reset)"
     print ""
     print "ArgoCD Sync Waves:"
@@ -651,6 +651,17 @@ def deploy_root_app [] {
     print "  Wave  7: crossplane-xrds"
     print "  Wave  8: core-catalog"
 
+    # Issue #279: the root Application immediately fans out into many
+    # concurrent Git/Helm/Kustomize renders. Wait for argocd-repo-server to be
+    # Ready and restart-stable before promoting gated syncs, so the first gated
+    # operation doesn't race the initial render burst (confirmed cause of the
+    # repo-server liveness restart that severed External Secrets' manifest
+    # generation with gRPC Unavailable/EOF).
+    print ""
+    print $"(ansi cyan_bold)Waiting for argocd-repo-server to stabilize(ansi reset)"
+    print "────────────────────────────────────"
+    wait_for_repo_server_stable
+
     # The repository keeps major upgrades manual so a Git merge cannot trigger
     # them concurrently in a shared cluster. This script targets only the named
     # local KinD environment; invoking `main up` is the explicit approval to sync
@@ -664,8 +675,105 @@ def deploy_root_app [] {
     wait_for_argocd_apps
 }
 
+# Issue #279: wait for argocd-repo-server to be Ready AND to have stopped
+# restarting before promoting any gated Application. Bounded and fails closed
+# — a repo-server that never stabilizes surfaces as a clear error rather than
+# racing the first gated sync against it.
+def wait_for_repo_server_stable [] {
+    $env.KUBECONFIG = $KUBECONFIG_PATH
+
+    mut previous_restarts = -1
+    mut stable_checks = 0
+    for attempt in 1..60 {
+        let result = (do {
+            kubectl get pods -n argocd -l app.kubernetes.io/name=argocd-repo-server -o json
+        } | complete)
+        if $result.exit_code == 0 {
+            let pods = ($result.stdout | from json | get -o items | default [])
+            if ($pods | length) > 0 {
+                let pod = ($pods | first)
+                let ready = ($pod | get -o status.containerStatuses.0.ready | default false)
+                let restarts = ($pod | get -o status.containerStatuses.0.restartCount | default 0)
+                if $ready and $restarts == $previous_restarts {
+                    $stable_checks = $stable_checks + 1
+                } else {
+                    $stable_checks = 0
+                }
+                $previous_restarts = $restarts
+                print $"  repo-server: ready=($ready) restartCount=($restarts) stable_checks=($stable_checks)/3"
+                if $stable_checks >= 3 {
+                    print $"(ansi green)✓ argocd-repo-server is Ready and restart-stable; restartCount=($restarts)(ansi reset)"
+                    return
+                }
+            }
+        }
+        sleep 5sec
+    }
+    error make {msg: "argocd-repo-server did not become Ready and restart-stable within the timeout"}
+}
+
+# Issue #279: classify an Argo CD operationState.message as retryable
+# (transient repo-server/network/comparison failures) or fatal (deterministic
+# manifest/resource/hook/policy errors, which must fail immediately). Fail
+# closed: an unrecognized message is treated as fatal, not retryable.
+def is_retryable_sync_error [message: string] {
+    if ($message | str trim | is-empty) {
+        return false
+    }
+    let transient_markers = [
+        "code = Unavailable"
+        "code = DeadlineExceeded"
+        "EOF"
+        "transport is closing"
+        "connection refused"
+        "connection reset by peer"
+        "server misbehaving"
+        "no route to host"
+        "i/o timeout"
+        "TLS handshake timeout"
+        "dial tcp"
+        "context deadline exceeded"
+        "client connection lost"
+        "broken pipe"
+    ]
+    for marker in $transient_markers {
+        if ($message | str contains $marker) {
+            return true
+        }
+    }
+    false
+}
+
+# Print operationState.message plus any failed resource/hook messages so a
+# gated-sync failure is diagnosable from the script's own output.
+def print_sync_diagnostics [state: record] {
+    let message = ($state | get -o status.operationState.message | default "")
+    if not ($message | is-empty) {
+        print $"(ansi red)    operationState.message: ($message)(ansi reset)"
+    }
+    let resources = ($state | get -o status.operationState.syncResult.resources | default [])
+    for r in $resources {
+        let rstatus = ($r | get -o status | default "")
+        let hook_phase = ($r | get -o hookPhase | default "")
+        if ($rstatus == "SyncFailed") or ($hook_phase in ["Failed" "Error"]) {
+            let kind = ($r | get -o kind | default "")
+            let name = ($r | get -o name | default "")
+            let rmsg = ($r | get -o message | default "")
+            print $"(ansi red)    ($kind)/($name): status=($rstatus) hookPhase=($hook_phase) ($rmsg)(ansi reset)"
+        }
+    }
+}
+
 # Explicitly promote gated major upgrades on the disposable local KinD cluster.
 # Shared/production clusters must follow docs/guides/platform-versions.md instead.
+#
+# Issue #279: a gated Application's operation can fail with a transient
+# repo-server/comparison error (confirmed: repo-server liveness restart
+# severing manifest generation mid-render, surfaced as ComparisonError / gRPC
+# Unavailable / EOF). Those are retried with bounded exponential backoff by
+# reissuing a genuinely fresh sync operation (`kubectl patch` again, not
+# re-reading the stale terminal operation). Deterministic manifest/resource/
+# hook/policy errors fail immediately — no retry.
 def sync_gated_apps_for_local_dev [] {
     let gated_apps = [
         "external-secrets", "nats", "grafana", "opencost", "gitea",
@@ -673,6 +781,7 @@ def sync_gated_apps_for_local_dev [] {
         "crossplane-provider-configs", "crossplane-xrds", "core-catalog"
     ]
     let sync_payload = '{"operation":{"sync":{"prune":true,"syncOptions":["CreateNamespace=true","ServerSideApply=true"]}}}'
+    let max_operation_retries = 3
 
     print ""
     print $"(ansi cyan_bold)Promoting gated upgrades sequentially on local KinD(ansi reset)"
@@ -692,45 +801,72 @@ def sync_gated_apps_for_local_dev [] {
             error make {msg: $"ArgoCD Application ($app) was not created by the root app"}
         }
 
-        let previous_state = (kubectl get application $app -n argocd -o json | from json)
-        let previous_finished = ($previous_state | get -o status.operationState.finishedAt | default "")
-        print $"  Syncing gated Application: ($app)"
-        let sync_result = (do {
-            kubectl patch application $app -n argocd --type merge -p $sync_payload
-        } | complete)
-        if $sync_result.exit_code != 0 {
-            error make {msg: $"Could not start sync for ($app): ($sync_result.stderr | str trim)"}
-        }
-
-        mut completed = false
-        mut saw_new_operation = false
-        for attempt in 1..90 {
-            let state_result = (do {
-                kubectl get application $app -n argocd -o json
+        mut retry_count = 0
+        loop {
+            let previous_state = (kubectl get application $app -n argocd -o json | from json)
+            let previous_finished = ($previous_state | get -o status.operationState.finishedAt | default "")
+            print $"  Syncing gated Application: ($app) \(attempt ($retry_count + 1)/($max_operation_retries + 1)\)"
+            let sync_result = (do {
+                kubectl patch application $app -n argocd --type merge -p $sync_payload
             } | complete)
-            if $state_result.exit_code == 0 {
-                let state = ($state_result.stdout | from json)
-                let phase = ($state | get -o status.operationState.phase | default "")
-                let finished = ($state | get -o status.operationState.finishedAt | default "")
-                let sync = ($state | get -o status.sync.status | default "")
-                let health = ($state | get -o status.health.status | default "")
-                if $phase == "Running" or $finished != $previous_finished {
-                    $saw_new_operation = true
-                }
-                if $saw_new_operation and $phase in ["Failed" "Error"] {
-                    error make {msg: $"Gated Application ($app) sync failed with phase ($phase)"}
-                }
-                if $saw_new_operation and $phase == "Succeeded" and $sync == "Synced" and $health == "Healthy" {
-                    $completed = true
-                    break
-                }
+            if $sync_result.exit_code != 0 {
+                error make {msg: $"Could not start sync for ($app): ($sync_result.stderr | str trim)"}
             }
-            sleep 10sec
+
+            mut completed = false
+            mut saw_new_operation = false
+            mut succeeded = false
+            mut last_state = {}
+            for attempt in 1..90 {
+                let state_result = (do {
+                    kubectl get application $app -n argocd -o json
+                } | complete)
+                if $state_result.exit_code == 0 {
+                    let state = ($state_result.stdout | from json)
+                    $last_state = $state
+                    let phase = ($state | get -o status.operationState.phase | default "")
+                    let finished = ($state | get -o status.operationState.finishedAt | default "")
+                    let sync = ($state | get -o status.sync.status | default "")
+                    let health = ($state | get -o status.health.status | default "")
+                    if $phase == "Running" or $finished != $previous_finished {
+                        $saw_new_operation = true
+                    }
+                    if $saw_new_operation and $phase in ["Failed" "Error"] {
+                        $completed = true
+                        break
+                    }
+                    if $saw_new_operation and $phase == "Succeeded" and $sync == "Synced" and $health == "Healthy" {
+                        $completed = true
+                        $succeeded = true
+                        break
+                    }
+                }
+                sleep 10sec
+            }
+            if not $completed {
+                error make {msg: $"Gated Application ($app) did not complete a new successful Synced+Healthy operation within 15 minutes"}
+            }
+
+            if $succeeded {
+                print $"(ansi green)  ✓ ($app) sync Succeeded, Synced and Healthy(ansi reset)"
+                break
+            }
+
+            # Operation reached Failed/Error: surface full diagnostics before
+            # deciding whether this is retryable.
+            let message = ($last_state | get -o status.operationState.message | default "")
+            print $"(ansi red)  ✗ ($app) sync failed(ansi reset)"
+            print_sync_diagnostics $last_state
+
+            if (is_retryable_sync_error $message) and $retry_count < $max_operation_retries {
+                let backoff = (10 * (2 ** $retry_count)) * 1sec
+                print $"(ansi yellow)  Transient error detected; retrying ($app) in ($backoff) with a fresh sync operation...(ansi reset)"
+                sleep $backoff
+                $retry_count = $retry_count + 1
+            } else {
+                error make {msg: $"Gated Application ($app) sync failed with phase Error/Failed - not retryable or retries exhausted - : ($message)"}
+            }
         }
-        if not $completed {
-            error make {msg: $"Gated Application ($app) did not complete a new successful Synced+Healthy operation within 15 minutes"}
-        }
-        print $"(ansi green)  ✓ ($app) sync Succeeded, Synced and Healthy(ansi reset)"
     }
 }
 

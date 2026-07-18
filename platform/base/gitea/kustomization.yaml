@@ -3,9 +3,11 @@ kind: Kustomization
 
 namespace: gitea
 
-resources:
-  - namespace.yaml
+resources: []
 
+# Namespace 'gitea' is owned centrally by platform/base/namespaces (issue #279)
+# — do not re-add namespace.yaml here.
+#
 # Note: The main Gitea deployment is handled via Helm chart
 # referenced in the ArgoCD Application (apps/platform/gitea.yaml).
 # This Kustomization provides supporting resources.

@@ -4,7 +4,6 @@ kind: Kustomization
 namespace: messaging
 
 resources:
-  - namespace.yaml
   - surveyor.yaml
   - grafana-dashboards.yaml
 
