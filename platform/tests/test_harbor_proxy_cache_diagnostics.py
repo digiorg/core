@@ -92,6 +92,12 @@ class NoSilentCurlFailureTest(unittest.TestCase):
         self.assertIn("could not read back registry", script)
         self.assertIn("could not read back project", script)
 
+    def test_http_failures_emit_bounded_api_error_body(self):
+        script = _script()
+        self.assertIn("print_api_error", script)
+        self.assertIn("Harbor API response", script)
+        self.assertIn("cut -c1-500", script)
+
     def test_registry_id_lookup_filters_the_requested_name(self):
         script = _script()
         self.assertIn('grep -F "\\\"name\\\":\\\"${registry_name}\\\""', script)
