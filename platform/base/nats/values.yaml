@@ -38,6 +38,15 @@ config:
 natsBox:
   enabled: false
 
+# Keep pod-template annotations non-null. Chart 2.14.2 otherwise renders
+# `metadata.annotations: null`; Kubernetes drops that null map and Argo CD 3.4.5
+# reports the StatefulSet OutOfSync after every successful apply (issue #279).
+podTemplate:
+  merge:
+    metadata:
+      annotations:
+        platform.digiorg.io/component: nats
+
 # Resource limits for the NATS container
 # Use container.merge (not podTemplate.merge.spec.containers) to avoid
 # generating a container entry without an image field (causes StatefulSet validation failure)
