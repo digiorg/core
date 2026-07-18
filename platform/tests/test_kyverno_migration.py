@@ -73,10 +73,23 @@ class KyvernoCleanInstallTest(unittest.TestCase):
             self.assertIn("background", spec, policy["metadata"]["name"])
             self.assertEqual(spec.get("admission"), True, policy["metadata"]["name"])
             self.assertEqual(spec.get("emitWarning"), False, policy["metadata"]["name"])
-            for rule in spec["rules"]:
-                self.assertEqual(rule.get("skipBackgroundRequests"), True, rule["name"])
+            for rule in spec.get("rules", []):
+                self.assertTrue(rule.get("skipBackgroundRequests"), policy["metadata"]["name"])
+                for match in rule.get("match", {}).get("any", []):
+                    resources = match.get("resources", {})
+                    self.assertNotIn("apiGroups", resources, policy["metadata"]["name"])
+                    for kind in resources.get("kinds", []):
+                        if kind.endswith("AppClaim"):
+                            self.assertEqual(
+                                kind,
+                                "platform.digiorg.io/v1alpha1/AppClaim",
+                                policy["metadata"]["name"],
+                            )
                 if "validate" in rule:
-                    self.assertEqual(rule["validate"].get("allowExistingViolations"), True, rule["name"])
+                    self.assertTrue(
+                        rule["validate"].get("allowExistingViolations"),
+                        policy["metadata"]["name"],
+                    )
 
     def test_upgrade_path_is_documented(self):
         with open(VERSIONS_DOC, encoding="utf-8") as fh:
