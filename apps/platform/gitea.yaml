@@ -12,6 +12,7 @@ metadata:
   annotations:
     # Wave 2: Depends on PostgreSQL (Wave 0) and Keycloak (Wave 1)
     argocd.argoproj.io/sync-wave: "2"
+    platform.digiorg.io/upgrade-gate: "issue-275-manual"
 spec:
   project: default
   
@@ -19,7 +20,11 @@ spec:
     # Source 1: Gitea Helm chart
     - repoURL: https://dl.gitea.com/charts/
       chart: gitea
-      targetRevision: "10.6.0"
+      # Issue #275: migrated 10.6.0 -> 12.6.0 (appVersion Gitea 1.26.1).
+      # Breaking change: bundled cache provider moved Redis -> Valkey; the
+      # values file disables the now-default valkey-cluster/valkey subcharts.
+      # Revalidated 2026-07-18 against https://dl.gitea.com/charts/index.yaml.
+      targetRevision: "12.6.0"
       helm:
         releaseName: gitea
         valueFiles:
@@ -35,9 +40,7 @@ spec:
     namespace: gitea
   
   syncPolicy:
-    automated:
-      selfHeal: true
-      prune: true
+    # Major chart/application DB migration: sync explicitly after backup.
     syncOptions:
       - CreateNamespace=true
       - ServerSideApply=true

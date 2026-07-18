@@ -3,6 +3,8 @@ kind: Provider
 metadata:
   name: provider-kubernetes
 spec:
+  # Issue #275: v1.2.1 is the latest crossplane-contrib release and installs on
+  # Crossplane v2.3.x (no upper Crossplane bound). Revalidated 2026-07-18.
   package: xpkg.upbound.io/crossplane-contrib/provider-kubernetes:v1.2.1
   runtimeConfigRef:
     apiVersion: pkg.crossplane.io/v1beta1

@@ -14,7 +14,9 @@ spec:
   source:
     repoURL: https://cloudnative-pg.github.io/charts
     chart: cloudnative-pg
-    targetRevision: 0.22.0
+    # Issue #275 approved baseline (bumped from 0.22.0), revalidated against
+    # https://cloudnative-pg.github.io/charts and Helm-rendered with these values.
+    targetRevision: 0.29.0
     helm:
       releaseName: cnpg
       values: |

@@ -14,13 +14,17 @@ spec:
   source:
     repoURL: https://kyverno.github.io/kyverno/
     chart: kyverno
-    targetRevision: 3.3.7
+    targetRevision: 3.8.1
     helm:
       releaseName: kyverno
       values: |
         # Kyverno Helm values for local development
         # Reduced resource requests for KinD
-        replicaCount: 1
+        # Keep the chart's v1.18 CRD migration hook explicit for this upgrade.
+        # The removed policyReportsCleanup value is intentionally not used.
+        crds:
+          migration:
+            enabled: true
         admissionController:
           replicas: 1
           container:
@@ -63,11 +67,16 @@ spec:
             limits:
               cpu: 100m
               memory: 128Mi
-        # Disabled: bitnami/kubectl:1.30.2 no longer available on Docker Hub
-        # Cleanup is only needed for Kyverno v1 -> v2 migrations (not applicable here)
-        # See: https://github.com/digiorg/core/issues/107
-        policyReportsCleanup:
-          enabled: false
+
+        # Chart 3.8.1 defaults both hook images to readiness-checker:latest.
+        # Pin the v1.18.1 OCI index used by this Kyverno release.
+        test:
+          image:
+            tag: "v1.18.1@sha256:455400758235cf448dd9be3374ecb9e8bf543ee0c39adc880d25ed28cc7eb69d"
+        webhooksCleanup:
+          image:
+            tag: "v1.18.1@sha256:455400758235cf448dd9be3374ecb9e8bf543ee0c39adc880d25ed28cc7eb69d"
+
 
   destination:
     server: https://kubernetes.default.svc

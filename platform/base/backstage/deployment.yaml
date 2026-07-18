@@ -19,7 +19,7 @@ spec:
       # Wait for PostgreSQL to be ready before starting Backstage
       initContainers:
         - name: wait-for-postgres
-          image: busybox:1.36
+          image: busybox:1.37.0@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028
           command:
             - sh
             - -c
@@ -32,7 +32,7 @@ spec:
               echo "PostgreSQL is ready!"
       containers:
         - name: backstage
-          image: ghcr.io/digiorg/core-portal:latest
+          image: ghcr.io/digiorg/core-portal:48d262e@sha256:8736f4195b06ab8fe0dbe3b806cd538771f61e7f53dedd4f11dc6ad7e2ff644f
           imagePullPolicy: Always
           ports:
             - containerPort: 7007

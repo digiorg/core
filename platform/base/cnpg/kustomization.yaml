@@ -1,8 +1,28 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-# CNPG Operator is installed via Helm by ArgoCD.
-# This kustomization provides supplementary resources if needed.
-# See: apps/platform/cnpg.yaml
+# CNPG Cluster + database bootstrap for the shared PostgreSQL (Issue #275). The
+# CNPG *operator* is installed via Helm by the `cnpg` ArgoCD Application
+# (apps/platform/cnpg.yaml); this base is deployed by the `cnpg-cluster`
+# Application (apps/platform/cnpg-cluster.yaml).
+#
+# COEXISTENCE SAFETY: `service.yaml` (the ExternalName alias named `postgresql`)
+# is DELIBERATELY NOT listed below. The legacy `postgresql` Application already
+# owns a Service named `postgresql` in this namespace; syncing the alias here at
+# the same time would make two ArgoCD Applications fight over that one object
+# (selfHeal ping-pong). During coexistence the CNPG database is reachable
+# directly at `postgresql-cnpg-rw`. The alias is enabled only at CUTOVER, in the
+# same commit that removes the legacy app/base — see
+# docs/guides/postgres-cnpg-migration.md.
+#
+# Secrets: `postgresql-secrets` (per-service passwords, Opaque) and
+# `postgresql-cnpg-superuser` (CNPG basic-auth superuser) are created by the
+# setup script before ArgoCD bootstrap, so they are not committed to Git but are
+# available when ArgoCD syncs this base.
 
-resources: []
+namespace: platform-db
+
+resources:
+  - cluster.yaml
+  - init-databases.yaml
+  # - service.yaml   # enabled only at cutover (see runbook) — do NOT sync yet

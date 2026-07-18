@@ -25,7 +25,7 @@ spec:
     spec:
       containers:
         - name: nats-surveyor
-          image: natsio/nats-surveyor:latest
+          image: natsio/nats-surveyor:0.9.10@sha256:3ba1d0e1f9e29a9f7481451097e39246d322cfd2e085aadefaec3b5141691746
           args:
             - --servers
             - nats://nats.messaging.svc.cluster.local:4222

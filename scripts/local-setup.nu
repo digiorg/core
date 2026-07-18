@@ -156,6 +156,10 @@ def "main bootstrap" [] {
     print "1.9 Building custom OpenCost UI image..."
     build_opencost_ui_image
 
+    # 10. Build & load the Tier-1 DigiOrg images (Keycloak, Fluentd) — Issue #275
+    print "1.10 Building Tier-1 DigiOrg images (Keycloak, Fluentd)..."
+    build_tier1_images
+
     print ""
     print $"(ansi green_bold)✓ Phase 1 Bootstrap complete(ansi reset)"
 }
@@ -248,13 +252,20 @@ def install_gateway_api [] {
 # Required before ArgoCD deploys any ServiceMonitor resources.
 # kube-prometheus-stack (grafana, Wave 2) will later adopt and manage these CRDs.
 def install_prometheus_crds [] {
-    let prom_op_version = "v0.82.2"
+    let prom_op_version = "v0.92.1"  # Issue #275: aligned with kube-prometheus-stack 87.17.0 (prometheus-operator v0.92.1)
     let base_url = $"https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/($prom_op_version)/example/prometheus-operator-crd"
 
     let crds = [
-        "monitoring.coreos.com_servicemonitors.yaml"
+        "monitoring.coreos.com_alertmanagerconfigs.yaml"
+        "monitoring.coreos.com_alertmanagers.yaml"
         "monitoring.coreos.com_podmonitors.yaml"
+        "monitoring.coreos.com_probes.yaml"
+        "monitoring.coreos.com_prometheusagents.yaml"
+        "monitoring.coreos.com_prometheuses.yaml"
         "monitoring.coreos.com_prometheusrules.yaml"
+        "monitoring.coreos.com_scrapeconfigs.yaml"
+        "monitoring.coreos.com_servicemonitors.yaml"
+        "monitoring.coreos.com_thanosrulers.yaml"
     ]
 
     for crd in $crds {
@@ -264,7 +275,7 @@ def install_prometheus_crds [] {
         if $result.exit_code == 0 {
             print $"(ansi green)✓ ($crd) installed(ansi reset)"
         } else {
-            print $"(ansi yellow)⚠ ($crd): ($result.stderr | str trim)(ansi reset)"
+            error make {msg: $"Failed to install Prometheus Operator CRD ($crd): ($result.stderr | str trim)"}
         }
     }
 }
@@ -399,6 +410,18 @@ def create_platform_namespaces_secrets [] {
         --from-literal=GITEA_DB_PASSWORD=($gitea_db_password)
         --from-literal=SONARQUBE_DB_PASSWORD=($sonarqube_db_password)
         --from-literal=HARBOR_DB_PASSWORD=($harbor_db_password)
+        --dry-run=client -o yaml | kubectl apply -f -)
+
+    # CNPG superuser secret (Issue #275, Tier-3 migration). CloudNativePG requires
+    # its superuserSecret to be a kubernetes.io/basic-auth Secret with
+    # username=postgres + password (the Opaque postgresql-secrets above cannot be
+    # reused: a Secret's type is immutable). Reuse the SAME postgres_password so
+    # the init Job (auths with POSTGRES_PASSWORD) connects. Used by the CNPG
+    # Cluster in platform/base/cnpg/cluster.yaml.
+    (kubectl create secret generic postgresql-cnpg-superuser -n platform-db
+        --type=kubernetes.io/basic-auth
+        --from-literal=username=postgres
+        --from-literal=password=($postgres_password)
         --dry-run=client -o yaml | kubectl apply -f -)
     
     # Keycloak namespace and DB credentials secret
@@ -548,7 +571,12 @@ def install_argocd [] {
     helm repo add argo https://argoproj.github.io/argo-helm
     helm repo update
 
+    # Issue #275: pin the bootstrap chart explicitly so a clean install is
+    # reproducible. argo-cd 10.1.4 ships Argo CD app v3.4.5. Keep in sync with
+    # the ARGOCD_CHART_VERSION comment in docs/guides/platform-versions.md and
+    # the second (OIDC CA) helm upgrade below.
     (helm upgrade --install argocd argo/argo-cd
+        --version 10.1.4
         --namespace argocd
         --create-namespace
         --values platform/base/argocd/values.yaml
@@ -561,25 +589,40 @@ def install_argocd [] {
 
 # Build the custom subpath-aware OpenCost UI image and load it into the kind
 # cluster (Issue #272 Option B). The opencost ArgoCD app (wave 2) selects this
-# image via platform/base/opencost/values.yaml with pullPolicy IfNotPresent, so
-# it must exist in the node before the opencost pod schedules. build.nu is the
-# single source of truth for how the image is built (pinned upstream v1.120.4 +
-# vite_basename=/opencost) and is a cross-platform Nushell script. Non-fatal on
-# failure so the rest of bootstrap can proceed — the opencost UI pod simply
-# stays pending until the image is loaded.
+# image via platform/base/opencost/values.yaml with pullPolicy Never, so it must
+# exist in the node before the opencost pod schedules. build.nu is the single
+# source of truth for how the image is built (pinned upstream v1.120.4 +
+# vite_basename=/opencost). Missing Docker or a failed build aborts bootstrap.
 def build_opencost_ui_image [] {
     if (which docker | length) == 0 {
-        print $"(ansi yellow)○ docker not found — skipping OpenCost UI image build.(ansi reset)"
-        print "  Build & load manually once docker is available:"
-        print "    nu platform/base/opencost/ui-image/build.nu"
-        return
+        error make {msg: "Docker is required to build the local OpenCost UI image"}
     }
     try {
         nu platform/base/opencost/ui-image/build.nu
         print $"(ansi green)✓ Custom OpenCost UI image built and loaded.(ansi reset)"
-    } catch {
-        print $"(ansi yellow)Warning: OpenCost UI image build failed — the opencost UI pod(ansi reset)"
-        print $"(ansi yellow)will stay pending until you run build.nu manually.(ansi reset)"
+    } catch {|err|
+        error make {msg: $"OpenCost UI image build failed: ($err.msg)"}
+    }
+}
+
+# Build & kind-load the Tier-1 DigiOrg images (Issue #275): the pinned,
+# production-optimized Keycloak image and the pinned Fluentd log-forwarder image.
+# Both use pullPolicy Never and must exist in the kind node before their pods
+# schedule. Fail closed: never fall back to an untrusted public namespace.
+def build_tier1_images [] {
+    if (which docker | length) == 0 {
+        error make {msg: "Docker is required to build the local Keycloak and Fluentd images"}
+    }
+    for spec in [
+        {name: "Keycloak", path: "platform/images/keycloak/build.nu"}
+        {name: "Fluentd",  path: "platform/images/fluentd/build.nu"}
+    ] {
+        try {
+            nu $spec.path
+            print $"(ansi green)✓ ($spec.name) image built and loaded.(ansi reset)"
+        } catch {|err|
+            error make {msg: $"($spec.name) image build failed: ($err.msg)"}
+        }
     }
 }
 
@@ -599,7 +642,7 @@ def deploy_root_app [] {
     print "ArgoCD Sync Waves:"
     print "  Wave -1: root-app (just deployed)"
     print "  Wave  0: cert-manager, cnpg, external-secrets, nats, postgresql"
-    print "  Wave  1: keycloak, argocd (self-managed)"
+    print "  Wave  1: cnpg-cluster, keycloak, argocd (self-managed)"
     print "  Wave  2: backstage, gitea, grafana, harbor, jaeger, landingpage, opencost, sonarqube"
     print "  Wave  3: crossplane, kyverno, opensearch"
     print "  Wave  4: crossplane-providers, fluentd, kyverno-policies"
@@ -608,11 +651,71 @@ def deploy_root_app [] {
     print "  Wave  7: crossplane-xrds"
     print "  Wave  8: core-catalog"
 
+    # The repository keeps major upgrades manual so a Git merge cannot trigger
+    # them concurrently in a shared cluster. This script targets only the named
+    # local KinD environment; invoking `main up` is the explicit approval to sync
+    # its gated apps sequentially.
+    sync_gated_apps_for_local_dev
+
     # Wait for apps to sync
     print ""
     print $"(ansi cyan_bold)Phase 3: Waiting for ArgoCD Apps(ansi reset)"
     print "────────────────────────────────────"
     wait_for_argocd_apps
+}
+
+# Explicitly promote gated major upgrades on the disposable local KinD cluster.
+# Shared/production clusters must follow docs/guides/platform-versions.md instead.
+def sync_gated_apps_for_local_dev [] {
+    let gated_apps = [
+        "external-secrets", "nats", "grafana", "opencost", "gitea",
+        "sonarqube", "crossplane", "crossplane-providers",
+        "crossplane-provider-configs", "crossplane-xrds", "core-catalog"
+    ]
+    let sync_payload = '{"operation":{"sync":{"prune":true,"syncOptions":["CreateNamespace=true","ServerSideApply=true"]}}}'
+
+    print ""
+    print $"(ansi cyan_bold)Promoting gated upgrades sequentially on local KinD(ansi reset)"
+    for app in $gated_apps {
+        mut exists = false
+        for attempt in 1..60 {
+            let get_result = (do {
+                kubectl get application $app -n argocd -o name
+            } | complete)
+            if $get_result.exit_code == 0 {
+                $exists = true
+                break
+            }
+            sleep 2sec
+        }
+        if not $exists {
+            error make {msg: $"ArgoCD Application ($app) was not created by the root app"}
+        }
+
+        print $"  Syncing gated Application: ($app)"
+        let sync_result = (do {
+            kubectl patch application $app -n argocd --type merge -p $sync_payload
+        } | complete)
+        if $sync_result.exit_code != 0 {
+            error make {msg: $"Could not start sync for ($app): ($sync_result.stderr | str trim)"}
+        }
+
+        mut healthy = false
+        for attempt in 1..90 {
+            let health_result = (do {
+                kubectl get application $app -n argocd -o jsonpath='{.status.health.status}'
+            } | complete)
+            if $health_result.exit_code == 0 and ($health_result.stdout | str trim) == "Healthy" {
+                $healthy = true
+                break
+            }
+            sleep 10sec
+        }
+        if not $healthy {
+            error make {msg: $"Gated Application ($app) did not become Healthy within 15 minutes"}
+        }
+        print $"(ansi green)  ✓ ($app) Healthy(ansi reset)"
+    }
 }
 
 # Wait for ArgoCD apps to become healthy
@@ -627,7 +730,7 @@ def wait_for_argocd_apps [] {
         # Wave 0
         "cert-manager", "cnpg", "external-secrets", "nats", "postgresql",
         # Wave 1
-        "keycloak", "argocd",
+        "cnpg-cluster", "keycloak", "argocd",
         # Wave 2
         "backstage", "gitea", "grafana", "harbor", "jaeger", "landingpage", "opencost", "sonarqube",
         # Wave 3
@@ -1121,6 +1224,7 @@ rootCA: |\n($indented_cert)
     # so ArgoCD self-sync will not overwrite it
     print "  Running helm upgrade to embed CA cert in ArgoCD release..."
     (helm upgrade argocd argo/argo-cd
+        --version 10.1.4
         --namespace argocd
         --reuse-values
         --values platform/base/argocd/values.yaml

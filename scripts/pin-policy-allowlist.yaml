@@ -1,0 +1,32 @@
+# =============================================================================
+# Pin-policy allowlist — documented exceptions to scripts/check_pins.py
+# =============================================================================
+# Every entry MUST carry a rationale. Exceptions are limited to images that are
+# built locally and loaded into the kind cluster (pullPolicy Never/IfNotPresent)
+# and are therefore never pulled from a registry, so a registry digest is neither
+# available nor meaningful. Their reproducibility is guaranteed instead by the
+# build definition under platform/images/<name>/ (pinned upstream release +
+# immutable base-image digest + OCI provenance labels).
+#
+# Third-party registry images must NOT appear here — they are pinned by digest
+# directly in the manifest.
+images:
+  - ref: "opencost-ui:v1.120.4-basename-opencost"
+    reason: >-
+      DigiOrg Tier-1 image built by platform/base/opencost/ui-image/build.nu from
+      upstream opencost-ui v1.120.4 (commit 6384abbf) and kind-loaded with
+      pullPolicy Never. Not pulled from a registry (Issue #272 / #275).
+
+  - ref: "digiorg/keycloak:26.7.0-optimized"
+    reason: >-
+      DigiOrg Tier-1 image built by platform/images/keycloak/build.nu from
+      upstream quay.io/keycloak/keycloak:26.7.0 (digest-pinned base) with
+      `kc.sh build --optimized`. Kind-loaded with pullPolicy Never; realm data
+      stays outside the image (Issue #275).
+
+  - ref: "digiorg/fluentd:v1.19.2-debian-opensearch-1.0"
+    reason: >-
+      DigiOrg Tier-1 image built by platform/images/fluentd/build.nu from upstream
+      fluent/fluentd-kubernetes-daemonset:v1.19.2-debian-opensearch-1.0
+      (digest-pinned base) with pinned fluent-plugin gem versions. Kind-loaded,
+      pullPolicy Never (Issue #275).

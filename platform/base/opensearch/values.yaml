@@ -25,6 +25,15 @@ nodeGroup: "master"
 singleNode: true
 replicas: 1
 
+# Pin the OpenSearch OCI index. Chart 3.7.0 otherwise derives a mutable tag from
+# appVersion without a digest. majorVersion prevents the chart helper from
+# semver-parsing the digest-qualified tag.
+majorVersion: "3"
+image:
+  repository: opensearchproject/opensearch
+  tag: "3.7.0@sha256:44ba7ea58a319adf61c33ab16873f9ef5dbb30b291a832d375172f0b2d24e3c9"
+  pullPolicy: IfNotPresent
+
 # =============================================================================
 # Java Heap
 # =============================================================================
@@ -64,6 +73,9 @@ resources:
 persistence:
   enabled: true
   size: 8Gi
+  # Chart defaults its volume-permission init container to busybox:latest.
+  image: busybox
+  imageTag: "1.37.0@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028"
   # storageClass: "" — uses cluster default (standard on KinD)
 
 # =============================================================================

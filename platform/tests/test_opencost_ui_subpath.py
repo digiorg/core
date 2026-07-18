@@ -60,6 +60,7 @@ import yaml
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 OPENCOST_DIR = os.path.join(REPO_ROOT, "platform", "base", "opencost")
 INGRESS_DIR = os.path.join(REPO_ROOT, "platform", "base", "ingress")
+APPS_OPENCOST = os.path.join(REPO_ROOT, "apps", "platform", "opencost.yaml")
 
 VALUES = os.path.join(OPENCOST_DIR, "values.yaml")
 OAUTH2 = os.path.join(OPENCOST_DIR, "oauth2-proxy.yaml")
@@ -633,6 +634,50 @@ class RouterBasenameDomTest(unittest.TestCase):
                 "deep link %s must match its client-side route under the basename"
                 % pathname,
             )
+
+
+class ChartMajorUpgradeTest(unittest.TestCase):
+    """Issue #275: the OpenCost Helm chart is migrated 1.43.2 -> 2.x while the
+    pinned custom subpath UI image and the whole /opencost contract are preserved.
+
+    The 2.x chart ships appVersion 1.120.4 (exactly the release our custom UI is
+    built from) and defaults `opencost.ui.image` to the stock
+    ghcr.io/opencost/opencost-ui:1.120.4 — so these guards prove our subpath
+    override still wins after the upgrade and that the exact chart version is
+    pinned (no floating range)."""
+
+    @classmethod
+    def setUpClass(cls):
+        docs = load_yaml_docs(APPS_OPENCOST)
+        app = next(d for d in docs if d.get("kind") == "Application")
+        cls.chart_src = next(
+            s for s in app["spec"]["sources"] if s.get("chart") == "opencost"
+        )
+        cls.values = load_single(VALUES)
+
+    def test_chart_pinned_to_v2_exact_semver(self):
+        rev = str(self.chart_src["targetRevision"])
+        self.assertRegex(
+            rev, r"^2\.\d+\.\d+$",
+            "opencost chart must be pinned to an exact 2.x SemVer, got %r" % rev,
+        )
+
+    def test_custom_ui_image_preserved_after_upgrade(self):
+        img = self.values["opencost"]["ui"]["image"]
+        self.assertEqual(
+            img.get("repository"), "opencost-ui",
+            "the subpath-aware override must survive the chart 2.x upgrade",
+        )
+        self.assertIn("basename-opencost", str(img.get("tag", "")))
+        self.assertIn(img.get("pullPolicy"), ("IfNotPresent", "Never"))
+
+    def test_native_uipath_matches_subpath(self):
+        # 2.x exposes a first-class opencost.ui.uiPath; pin it to the subpath so
+        # the serving path is expressed through the supported chart value too.
+        self.assertEqual(
+            self.values["opencost"]["ui"].get("uiPath"), SUBPATH,
+            "opencost.ui.uiPath (native in chart 2.x) must equal %s" % SUBPATH,
+        )
 
 
 if __name__ == "__main__":

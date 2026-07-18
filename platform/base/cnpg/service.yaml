@@ -1,0 +1,37 @@
+# =============================================================================
+# Consumer-facing alias Service (Issue #275)
+# =============================================================================
+# Every platform consumer (keycloak, backstage, gitea, sonarqube, harbor)
+# connects to host `postgresql.platform-db.svc.cluster.local:5432`. CNPG names
+# its primary service `<cluster>-rw` (here `postgresql-cnpg-rw`), so this
+# ExternalName alias keeps the original DNS name resolving to the CNPG primary
+# with NO change to any consumer manifest.
+#
+# CUTOVER-ONLY ARTIFACT — NOT SYNCED DURING COEXISTENCE.
+# The legacy StatefulSet (platform/base/postgresql) still defines its own
+# `postgresql` Service. Both are named `postgresql` in platform-db, so if BOTH
+# the legacy `postgresql` Application and the `cnpg-cluster` Application synced a
+# Service by this name, the two ArgoCD apps would continuously fight over the
+# object. To avoid that, this file is intentionally EXCLUDED from
+# kustomization.yaml until cutover. Until then the CNPG stack is reachable
+# directly at `postgresql-cnpg-rw`.
+#
+# CUTOVER (single atomic commit, see docs/guides/postgres-cnpg-migration.md):
+#   1. uncomment `- service.yaml` in platform/base/cnpg/kustomization.yaml
+#   2. delete apps/platform/postgresql.yaml and platform/base/postgresql/
+# Reverting that commit rolls the cutover back.
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgresql
+  namespace: platform-db
+  labels:
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/part-of: digiorg-platform
+spec:
+  type: ExternalName
+  externalName: postgresql-cnpg-rw.platform-db.svc.cluster.local
+  ports:
+    - port: 5432
+      targetPort: 5432

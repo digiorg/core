@@ -24,7 +24,10 @@ spec:
           effect: NoSchedule
       containers:
         - name: fluentd
-          image: fluent/fluentd-kubernetes-daemonset:v1.19-debian-opensearch-1
+          # Locally built + kind-loaded DigiOrg image with pinned plugin gems
+          # (built by platform/images/fluentd/build.nu). Never pulled.
+          image: digiorg/fluentd:v1.19.2-debian-opensearch-1.0
+          imagePullPolicy: Never
           env:
             - name: FLUENT_ELASTICSEARCH_HOST
               value: "opensearch-cluster-master.platform-db.svc.cluster.local"

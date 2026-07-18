@@ -48,6 +48,10 @@ opencost:
 
   ui:
     enabled: true
+    # Chart 2.x exposes uiPath as a first-class value (Issue #275). Pin it to the
+    # platform subpath so the serving path is set through the supported chart
+    # value in addition to the UI_PATH env below.
+    uiPath: /opencost
     # -- Custom subpath-aware UI image (Issue #272 Option B).
     #    Built from upstream v1.120.4 with `--build-arg vite_basename=/opencost`
     #    so the router basename, Vite asset base and nginx UI_PATH are all

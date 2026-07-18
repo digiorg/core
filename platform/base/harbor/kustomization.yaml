@@ -5,3 +5,4 @@ resources:
   - harbor-oidc-secret.yaml
   - harbor-admin-secret.yaml
   - harbor-oidc-config-job.yaml
+  - harbor-proxy-cache-job.yaml

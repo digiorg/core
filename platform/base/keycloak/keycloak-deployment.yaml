@@ -1,6 +1,9 @@
 # =============================================================================
-# Keycloak Deployment — official image quay.io/keycloak/keycloak:26.0
-# Dev mode: HTTP only, realm import on first start
+# Keycloak Deployment — DigiOrg production-optimized image (Issue #275, Tier 1)
+# Built by platform/images/keycloak/build.nu from the digest-pinned upstream
+# base quay.io/keycloak/keycloak:26.7.0 with `kc.sh build` (db=postgres, health,
+# metrics), then started with `start --optimized`. HTTP enabled for local dev;
+# realm data stays in the mounted keycloak-realm-import configMap (not baked in).
 # =============================================================================
 apiVersion: v1
 kind: Service
@@ -33,9 +36,14 @@ spec:
     spec:
       containers:
         - name: keycloak
-          image: quay.io/keycloak/keycloak:26.0
+          # Locally built + kind-loaded DigiOrg optimized image (never pulled).
+          image: digiorg/keycloak:26.7.0-optimized
+          imagePullPolicy: Never
           args:
-            - start-dev
+            # Production start against the pre-built optimized distribution.
+            - start
+            - --optimized
+            # Realm data stays in the mounted configMap volume (imported at boot).
             - --import-realm
           env:
             # Database

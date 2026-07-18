@@ -8,13 +8,14 @@ metadata:
   annotations:
     # Wave 2: Platform Services - Grafana depends on Keycloak for OAuth
     argocd.argoproj.io/sync-wave: "2"
+    platform.digiorg.io/upgrade-gate: "issue-275-manual"
 spec:
   project: default
 
   sources:
     - repoURL: https://prometheus-community.github.io/helm-charts
       chart: kube-prometheus-stack
-      targetRevision: 72.6.2
+      targetRevision: 87.17.0
       helm:
         releaseName: prometheus
         valueFiles:
@@ -28,9 +29,7 @@ spec:
     namespace: monitoring
 
   syncPolicy:
-    automated:
-      selfHeal: true
-      prune: true
+    # Major Prometheus Operator/CRD migration: promote and validate manually.
     syncOptions:
       - CreateNamespace=true
       - ServerSideApply=true

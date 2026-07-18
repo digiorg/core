@@ -77,8 +77,12 @@ prometheus:
     # (default: only monitoring namespace). Required for NATS Surveyor in messaging ns.
     serviceMonitorNamespaceSelector: {}
     serviceMonitorSelector:
-      matchLabels:
-        release: prometheus
+      matchExpressions:
+        - key: release
+          operator: In
+          values:
+            - prometheus
+            - harbor
 
 alertmanager:
   enabled: false
