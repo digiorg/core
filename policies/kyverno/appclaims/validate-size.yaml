@@ -13,14 +13,18 @@ metadata:
 spec:
   validationFailureAction: Enforce
   background: true
+  admission: true
+  emitWarning: false
   rules:
     - name: validate-size
+      skipBackgroundRequests: true
       match:
         any:
           - resources:
               kinds:
                 - platform.digiorg.io/v1alpha1/AppClaim
       validate:
+        allowExistingViolations: true
         message: "spec.size must be one of: S, M, L"
         pattern:
           spec:
