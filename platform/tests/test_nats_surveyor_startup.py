@@ -83,6 +83,17 @@ class NatsStatefulSetDriftTest(unittest.TestCase):
         self.assertIsInstance(annotations, dict)
         self.assertTrue(annotations)
 
+    def test_pvc_template_declares_api_defaulted_identity_fields(self):
+        # Kubernetes injects these fields into StatefulSet volumeClaimTemplates;
+        # declaring them in the chart output prevents perpetual drift. Only the
+        # runtime status subresource remains ignored below.
+        with open(NATS_VALUES, encoding="utf-8") as fh:
+            values = yaml.safe_load(fh)
+        pvc = values["config"]["jetstream"]["fileStore"]["pvc"]["merge"]
+        self.assertEqual(pvc.get("apiVersion"), "v1")
+        self.assertEqual(pvc.get("kind"), "PersistentVolumeClaim")
+        self.assertEqual(pvc.get("spec", {}).get("volumeMode"), "Filesystem")
+
     def test_ignores_kubernetes_injected_pvc_template_status(self):
         # Kubernetes persists status.phase inside StatefulSet PVC templates.
         # Argo CD 3.4.5 does not normalize this nested status field and reports
