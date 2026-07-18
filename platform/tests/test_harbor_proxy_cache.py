@@ -133,15 +133,22 @@ class GeneratedSecretDriftTest(unittest.TestCase):
         app = _docs(APP)[0]
         rules = app["spec"].get("ignoreDifferences", [])
         self.assertIn("RespectIgnoreDifferences=true", app["spec"]["syncPolicy"]["syncOptions"])
-        secret_names = {
-            rule.get("name")
+        secret_rules = {
+            rule.get("name"): set(rule.get("jsonPointers", []))
             for rule in rules
-            if rule.get("kind") == "Secret" and rule.get("jsonPointers") == ["/data"]
+            if rule.get("kind") == "Secret"
         }
         self.assertEqual(
-            secret_names,
-            {"harbor-core", "harbor-jobservice", "harbor-registry", "harbor-registry-htpasswd"},
+            secret_rules,
+            {
+                "harbor-core": {"/data/CSRF_KEY", "/data/secret", "/data/tls.crt", "/data/tls.key"},
+                "harbor-jobservice": {"/data/JOBSERVICE_SECRET"},
+                "harbor-registry": {"/data/REGISTRY_HTTP_SECRET"},
+                "harbor-registry-htpasswd": {"/data/REGISTRY_HTPASSWD"},
+            },
         )
+        self.assertNotIn("/data/REGISTRY_CREDENTIAL_PASSWORD", set().union(*secret_rules.values()))
+        self.assertNotIn("/data/REGISTRY_REDIS_PASSWORD", set().union(*secret_rules.values()))
 
         deployment_rules = {
             rule.get("name"): set(rule.get("jsonPointers", []))

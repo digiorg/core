@@ -154,6 +154,10 @@ kind: PersistentVolumeClaim
 metadata:
   name: postgresql-cnpg-backups
   namespace: platform-db
+  annotations:
+    # local-path binds on first consumer; this PVC is intentionally idle until
+    # the scheduled backup runs and must not block Argo CD application health.
+    argocd.argoproj.io/ignore-healthcheck: "true"
 spec:
   accessModes:
     - ReadWriteOnce

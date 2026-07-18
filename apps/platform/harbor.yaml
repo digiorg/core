@@ -27,29 +27,32 @@ spec:
     server: https://kubernetes.default.svc
     namespace: harbor
   # The chart generates these internal values with randAlphaNum on every Helm
-  # render. Ignore only their data and the corresponding rollout checksums;
+  # render. Ignore only those generated keys and corresponding rollout checksums;
   # all other Secret metadata and Deployment fields remain drift-managed.
   ignoreDifferences:
     - group: ""
       kind: Secret
       name: harbor-core
       jsonPointers:
-        - /data
+        - /data/CSRF_KEY
+        - /data/secret
+        - /data/tls.crt
+        - /data/tls.key
     - group: ""
       kind: Secret
       name: harbor-jobservice
       jsonPointers:
-        - /data
+        - /data/JOBSERVICE_SECRET
     - group: ""
       kind: Secret
       name: harbor-registry
       jsonPointers:
-        - /data
+        - /data/REGISTRY_HTTP_SECRET
     - group: ""
       kind: Secret
       name: harbor-registry-htpasswd
       jsonPointers:
-        - /data
+        - /data/REGISTRY_HTPASSWD
     - group: apps
       kind: Deployment
       name: harbor-core

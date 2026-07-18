@@ -100,6 +100,16 @@ class NamespaceOwnershipTest(unittest.TestCase):
         self.assertTrue(os.path.isfile(CENTRAL_NAMESPACES_FILE))
         self.assertGreater(len(_central_namespace_names()), 0)
 
+    def test_central_namespaces_are_never_pruned_during_ownership_transfer(self):
+        docs = [doc for doc in _docs(CENTRAL_NAMESPACES_FILE) if doc.get("kind") == "Namespace"]
+        self.assertTrue(docs)
+        for doc in docs:
+            self.assertEqual(
+                doc["metadata"].get("annotations", {}).get("argocd.argoproj.io/sync-options"),
+                "Prune=false",
+                doc["metadata"]["name"],
+            )
+
     def test_no_component_duplicates_a_centrally_owned_namespace(self):
         central = _central_namespace_names()
         violations = []

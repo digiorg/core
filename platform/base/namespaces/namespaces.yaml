@@ -1,4 +1,7 @@
 # Pre-created platform namespaces (Wave -1)
+# Namespace deletion is never an acceptable prune operation. Every object is
+# marked Prune=false, which also protects the one-time ownership transfer from
+# legacy component Applications that previously rendered their own Namespace.
 # Purpose: Eliminate 409 Conflict races when multiple Wave 2+ apps
 #          try to CreateNamespace=true for the same namespace simultaneously.
 #
@@ -13,6 +16,8 @@
 apiVersion: v1
 kind: Namespace
 metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false
   name: argocd
   labels:
     app.kubernetes.io/managed-by: argocd
@@ -21,6 +26,8 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false
   name: monitoring
   labels:
     app.kubernetes.io/managed-by: argocd
@@ -29,6 +36,8 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false
   name: tracing
   labels:
     app.kubernetes.io/managed-by: argocd
@@ -37,6 +46,8 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false
   name: cost-monitoring
   labels:
     app.kubernetes.io/managed-by: argocd
@@ -45,6 +56,8 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false
   name: harbor
   labels:
     app.kubernetes.io/managed-by: argocd
@@ -53,6 +66,8 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false
   name: code-quality
   labels:
     app.kubernetes.io/managed-by: argocd
@@ -61,6 +76,8 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false
   name: messaging
   labels:
     app.kubernetes.io/managed-by: argocd
@@ -69,6 +86,8 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false
   name: cert-manager
   labels:
     app.kubernetes.io/managed-by: argocd
@@ -77,6 +96,8 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false
   name: external-secrets
   labels:
     app.kubernetes.io/managed-by: argocd
@@ -85,6 +106,8 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false
   name: keycloak
   labels:
     app.kubernetes.io/managed-by: argocd
@@ -93,6 +116,8 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false
   name: platform-db
   labels:
     app.kubernetes.io/managed-by: argocd
@@ -101,6 +126,8 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false
   name: cnpg
   labels:
     app.kubernetes.io/managed-by: argocd
@@ -109,6 +136,8 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false
   name: crossplane-system
   labels:
     app.kubernetes.io/managed-by: argocd
@@ -117,6 +146,8 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false
   name: kyverno
   labels:
     app.kubernetes.io/managed-by: argocd
@@ -125,6 +156,8 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false
   name: gitea
   labels:
     app.kubernetes.io/managed-by: argocd
@@ -133,6 +166,8 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false
   name: backstage
   labels:
     app.kubernetes.io/managed-by: argocd
@@ -141,6 +176,8 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false
   name: landingpage
   labels:
     app.kubernetes.io/managed-by: argocd
@@ -149,6 +186,8 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false
   name: opensearch
   labels:
     app.kubernetes.io/managed-by: argocd
@@ -157,6 +196,8 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false
   name: logging
   labels:
     app.kubernetes.io/managed-by: argocd

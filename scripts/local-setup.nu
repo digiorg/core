@@ -770,13 +770,6 @@ def is_retryable_sync_error [message: string] {
     }
     let normalized = ($message | str lowercase)
 
-    # One narrowly identified resource-health race is transient even though the
-    # operation-level message is generic. Permanent init failures use different
-    # messages (CrashLoopBackOff, non-zero exit, BackoffLimitExceeded).
-    if ($normalized | str contains "containers with incomplete status:") {
-        return true
-    }
-
     # Deterministic render/apply/auth/policy errors always win over transport
     # words embedded in their text (for example "unexpected EOF" or a webhook
     # endpoint reporting "connection refused").
@@ -797,6 +790,12 @@ def is_retryable_sync_error [message: string] {
         if ($normalized | str contains $marker) {
             return false
         }
+    }
+
+    # One narrowly identified resource-health race is transient only when no
+    # deterministic marker occurs anywhere in the combined diagnostics.
+    if ($normalized | str contains "containers with incomplete status:") {
+        return true
     }
 
     # gRPC Unavailable/DeadlineExceeded and an explicit broken server read are
@@ -852,9 +851,10 @@ def is_retryable_sync_error [message: string] {
 # values. Classification still uses the original text; only output is redacted.
 def redact_sync_diagnostic [message: string] {
     $message
-    | str replace --all --regex '(?i)authorization\s*:\s*bearer\s+[^\s,;]+' 'Authorization: [REDACTED]'
+    | str replace --all --regex '(?i)authorization\s*[:=]\s*(bearer|basic)\s+[^\s,;]+' 'Authorization: [REDACTED]'
     | str replace --all --regex '(?i)https?://[^\s/@:]+:[^\s/@]+@' 'https://[REDACTED]@'
-    | str replace --all --regex '(?i)(password|token|api[_-]?key|client[_-]?secret)\s*[:=]\s*[^\s,;]+' '[REDACTED]'
+    | str replace --all --regex `(?i)["']?(password|token|api[_-]?key|client[_-]?secret|secret)["']?\s*[:=]\s*["'][^"']*["']` '[REDACTED]'
+    | str replace --all --regex `(?i)["']?(password|token|api[_-]?key|client[_-]?secret|secret)["']?\s*[:=]\s*[^\s,;}]+` '[REDACTED]'
     | str replace --all --regex '(?i)secret\s+data\s*[:=]\s*[^\s,;]+' 'Secret data: [REDACTED]'
 }
 
