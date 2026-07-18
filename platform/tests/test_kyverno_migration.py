@@ -48,29 +48,12 @@ class KyvernoCleanInstallTest(unittest.TestCase):
             "clean-install default must not run the CRD migration post-upgrade hook",
         )
 
-    def test_api_defaulted_conversion_ignores_are_exactly_scoped(self):
+    def test_only_api_defaulted_none_conversion_is_ignored(self):
         rules = _kyverno_app()["spec"].get("ignoreDifferences", [])
-        expected = {
-            "deletingpolicies.policies.kyverno.io",
-            "generatingpolicies.policies.kyverno.io",
-            "imagevalidatingpolicies.policies.kyverno.io",
-            "mutatingpolicies.policies.kyverno.io",
-            "namespaceddeletingpolicies.policies.kyverno.io",
-            "namespacedgeneratingpolicies.policies.kyverno.io",
-            "namespacedimagevalidatingpolicies.policies.kyverno.io",
-            "namespacedmutatingpolicies.policies.kyverno.io",
-            "namespacedvalidatingpolicies.policies.kyverno.io",
-            "policyexceptions.policies.kyverno.io",
-            "validatingpolicies.policies.kyverno.io",
-        }
-        self.assertEqual({rule.get("name") for rule in rules}, expected)
-        self.assertTrue(
-            all(
-                rule.get("group") == "apiextensions.k8s.io"
-                and rule.get("kind") == "CustomResourceDefinition"
-                and rule.get("jsonPointers") == ["/spec/conversion"]
-                for rule in rules
-            )
+        self.assertEqual(len(rules), 1)
+        self.assertEqual(
+            rules[0]["jqPathExpressions"],
+            ['.spec.conversion | select(.strategy == "None")'],
         )
 
     def test_policy_v2_crds_render_with_stable_labels(self):
