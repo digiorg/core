@@ -42,6 +42,15 @@ jobs:
       - name: Pin policy (reject floating / unpinned references)
         run: python3 scripts/check_pins.py
 
+      - name: Install Nushell for behavioral tests
+        run: |
+          set -euo pipefail
+          NU_VERSION=0.114.1
+          curl -fsSL "https://github.com/nushell/nushell/releases/download/${NU_VERSION}/nu-${NU_VERSION}-x86_64-unknown-linux-gnu.tar.gz" -o /tmp/nu.tgz
+          echo '8802b26edcdf1a64477567b5ce909fbae3d72d731c8f0847892ea16c6fa73c53  /tmp/nu.tgz' | sha256sum -c -
+          mkdir -p /tmp/nu && tar xzf /tmp/nu.tgz -C /tmp/nu --strip-components=1
+          sudo install -m 0755 /tmp/nu/nu /usr/local/bin/nu
+
       - name: Platform regression tests
         run: python3 -m unittest discover -s platform/tests -p 'test_*.py' -v
 
