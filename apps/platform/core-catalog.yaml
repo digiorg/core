@@ -14,9 +14,9 @@ spec:
 
   source:
     repoURL: https://github.com/digiorg/core-catalog.git
-    # Pinned to specific commit to prevent silent breaking changes from HEAD.
-    # Update this SHA deliberately after validating compatibility with the core wave 0-7 stack.
-    targetRevision: 0ced57eb40a50ec170352ce4a59bffedd4a16a6c
+    # Crossplane v2 removed native `spec.resources` Compositions. This commit
+    # migrates the local catalog to function-patch-and-transform Pipeline mode.
+    targetRevision: 4c30d9c3fa5c3c401c19f26b66a025854c65ee02
     path: compositions/local
 
   destination:

@@ -38,6 +38,8 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 APP = os.path.join(REPO_ROOT, "apps", "platform", "crossplane.yaml")
 PKG_DIR = os.path.join(REPO_ROOT, "crossplane", "providers", "packages")
 XRD = os.path.join(REPO_ROOT, "crossplane", "xrds", "application.yaml")
+FUNCTION = os.path.join(PKG_DIR, "function-patch-and-transform.yaml")
+PROVIDER_KUSTOMIZATION = os.path.join(PKG_DIR, "kustomization.yaml")
 
 # Revalidated compatible provider package versions (exact pins).
 EXPECTED_PROVIDERS = {
@@ -91,6 +93,19 @@ class ProviderVersionTest(unittest.TestCase):
                              "%s must not use a floating package tag" % name)
             self.assertRegex(tag, r"^v\d+\.\d+\.\d+",
                              "%s package tag must be an exact version" % name)
+
+
+class CompositionFunctionTest(unittest.TestCase):
+    def test_patch_and_transform_function_is_exactly_pinned_and_installed(self):
+        function = _docs(FUNCTION)[0]
+        self.assertEqual(function["kind"], "Function")
+        self.assertEqual(function["metadata"]["name"], "function-patch-and-transform")
+        self.assertEqual(
+            function["spec"]["package"],
+            "xpkg.crossplane.io/crossplane-contrib/function-patch-and-transform:v0.10.7",
+        )
+        kustomization = _docs(PROVIDER_KUSTOMIZATION)[0]
+        self.assertIn("function-patch-and-transform.yaml", kustomization["resources"])
 
 
 class XrdLegacyClusterCompatTest(unittest.TestCase):
