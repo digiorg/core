@@ -29,6 +29,7 @@ except ImportError:  # pragma: no cover
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 HARBOR_DIR = os.path.join(REPO_ROOT, "platform", "base", "harbor")
 JOB = os.path.join(HARBOR_DIR, "harbor-proxy-cache-job.yaml")
+VALUES = os.path.join(HARBOR_DIR, "values.yaml")
 KUSTOMIZATION = os.path.join(HARBOR_DIR, "kustomization.yaml")
 
 # name -> (harbor registry type, upstream url) that MUST be configured.
@@ -94,6 +95,13 @@ class ProxyCacheContentTest(unittest.TestCase):
         self.assertIn("wrong URL", self.script)
         self.assertIn("not bound to registry", self.script)
         self.assertIn("already exists and matches", self.script)
+
+    def test_harbor_core_permits_every_configured_proxy_provider(self):
+        values = _docs(VALUES)[0]
+        env = {item["name"]: item["value"] for item in values.get("core", {}).get("extraEnvVars", [])}
+        permitted = set(env.get("PERMITTED_REGISTRY_TYPES_FOR_PROXY_CACHE", "").split(","))
+        expected = {rtype for rtype, _ in EXPECTED_REGISTRIES.values()}
+        self.assertTrue(expected.issubset(permitted), expected - permitted)
 
     def test_every_registry_type_and_url_present(self):
         for name, (rtype, url) in EXPECTED_REGISTRIES.items():
