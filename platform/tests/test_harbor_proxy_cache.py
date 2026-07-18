@@ -30,6 +30,7 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 HARBOR_DIR = os.path.join(REPO_ROOT, "platform", "base", "harbor")
 JOB = os.path.join(HARBOR_DIR, "harbor-proxy-cache-job.yaml")
 VALUES = os.path.join(HARBOR_DIR, "values.yaml")
+APP = os.path.join(REPO_ROOT, "apps", "platform", "harbor.yaml")
 KUSTOMIZATION = os.path.join(HARBOR_DIR, "kustomization.yaml")
 
 # name -> (harbor registry type, upstream url) that MUST be configured.
@@ -125,6 +126,32 @@ class KustomizationTest(unittest.TestCase):
     def test_job_is_included(self):
         k = _docs(KUSTOMIZATION)[0]
         self.assertIn("harbor-proxy-cache-job.yaml", k.get("resources", []))
+
+
+class GeneratedSecretDriftTest(unittest.TestCase):
+    def test_argocd_ignores_only_chart_generated_secret_material(self):
+        app = _docs(APP)[0]
+        rules = app["spec"].get("ignoreDifferences", [])
+        self.assertIn("RespectIgnoreDifferences=true", app["spec"]["syncPolicy"]["syncOptions"])
+        secret_names = {
+            rule.get("name")
+            for rule in rules
+            if rule.get("kind") == "Secret" and rule.get("jsonPointers") == ["/data"]
+        }
+        self.assertEqual(
+            secret_names,
+            {"harbor-core", "harbor-jobservice", "harbor-registry", "harbor-registry-htpasswd"},
+        )
+
+        deployment_rules = {
+            rule.get("name"): set(rule.get("jsonPointers", []))
+            for rule in rules
+            if rule.get("kind") == "Deployment"
+        }
+        self.assertEqual(set(deployment_rules), {"harbor-core", "harbor-jobservice", "harbor-registry"})
+        for pointers in deployment_rules.values():
+            self.assertTrue(pointers)
+            self.assertTrue(all("/checksum~1secret" in pointer for pointer in pointers))
 
 
 if __name__ == "__main__":
