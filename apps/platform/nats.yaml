@@ -28,7 +28,8 @@ spec:
       targetRevision: test/issue-279-runtime
       ref: values
 
-    # Surveyor, oauth2-proxy, namespace via Kustomize
+    # Surveyor and its Service via Kustomize. The messaging Namespace is owned
+    # centrally by the namespaces Application.
     - repoURL: https://github.com/digiorg/core.git
       targetRevision: test/issue-279-runtime
       path: platform/base/nats
@@ -36,6 +37,18 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: messaging
+
+  # Kubernetes persists a status field inside each StatefulSet PVC template.
+  # Argo CD 3.4.5 does not normalize that nested status, which otherwise leaves
+  # the healthy NATS StatefulSet permanently OutOfSync after every successful
+  # server-side apply. Ignore only this API-populated status field.
+  ignoreDifferences:
+    - group: apps
+      kind: StatefulSet
+      name: nats
+      namespace: messaging
+      jqPathExpressions:
+        - .spec.volumeClaimTemplates[]?.status
 
   syncPolicy:
     # Major chart migration with JetStream persistence: promote manually.
