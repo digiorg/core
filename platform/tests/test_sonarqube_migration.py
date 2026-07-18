@@ -73,11 +73,15 @@ class ValuesMigrationTest(unittest.TestCase):
         self.assertEqual(self.values["community"]["buildNumber"], EXPECTED_BUILD,
                          "community.buildNumber must align with the 2026.x chart")
 
-    def test_community_image_is_digest_pinned(self):
+    def test_community_image_is_digest_pinned_with_label_safe_tag(self):
         image = self.values["image"]
         self.assertEqual(image.get("repository"), "sonarqube")
+        self.assertEqual(image.get("tag"), "26.5.0.122743-community")
+        pinned = self.values["global"]["azure"]["images"]["sonarqube"]
+        self.assertEqual(pinned.get("registry"), "docker.io")
+        self.assertEqual(pinned.get("image"), "sonarqube")
         self.assertEqual(
-            image.get("tag"),
+            pinned.get("tag"),
             "26.5.0.122743-community@sha256:223d0090322edce6211a5328298b6f646920f1535025ef8dd880cab6647bb1fa",
         )
 

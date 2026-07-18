@@ -118,11 +118,16 @@ def "main bootstrap" [] {
     print "Waiting for cluster nodes..."
     kubectl wait --for=condition=Ready nodes --all --timeout=120s
     
-    # 2. Set vm.max_map_count on KinD node (required by OpenSearch)
-    print "1.2 Setting vm.max_map_count on KinD node..."
+    # 2. Set node runtime limits required by the local all-in-one platform.
+    # OpenSearch needs vm.max_map_count. The many Kubernetes controllers use
+    # inotify; KinD's default 128 user instances is exhausted during a full
+    # bootstrap and prevents hook containers from starting (issue #279).
+    print "1.2 Setting KinD node runtime limits..."
     let kind_node = $"($CLUSTER_NAME)-control-plane"
     docker exec $kind_node sysctl -w vm.max_map_count=262144
-    print $"(ansi green)✓ vm.max_map_count=262144 set on KinD node(ansi reset)"
+    docker exec $kind_node sysctl -w fs.inotify.max_user_instances=8192
+    docker exec $kind_node sysctl -w fs.inotify.max_user_watches=1048576
+    print $"(ansi green)✓ KinD node runtime limits configured(ansi reset)"
     
     # 3. Install Gateway API CRDs
     print "1.3 Installing Gateway API CRDs..."

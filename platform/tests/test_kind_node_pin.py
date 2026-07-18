@@ -21,6 +21,9 @@ class KindNodePinTest(unittest.TestCase):
         )
         self.assertIsNotNone(match)
         self.assertIn("kind create cluster --image $KIND_NODE_IMAGE", self.text)
+    def test_node_runtime_limits_cover_platform_watchers(self):
+        self.assertIn("fs.inotify.max_user_instances=8192", self.text)
+        self.assertIn("fs.inotify.max_user_watches=1048576", self.text)
 
 
 if __name__ == "__main__":
