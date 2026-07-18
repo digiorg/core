@@ -28,11 +28,27 @@ spec:
     server: https://kubernetes.default.svc
     namespace: monitoring
 
+  # kube-prometheus-stack generates Grafana's initial admin password on every
+  # render when no explicit password is supplied. Preserve only that generated
+  # key and its rollout checksum; all other Secret data remains drift-managed.
+  ignoreDifferences:
+    - group: ""
+      kind: Secret
+      name: prometheus-grafana
+      jsonPointers:
+        - /data/admin-password
+    - group: apps
+      kind: Deployment
+      name: prometheus-grafana
+      jsonPointers:
+        - /spec/template/metadata/annotations/checksum~1secret
+
   syncPolicy:
     # Major Prometheus Operator/CRD migration: promote and validate manually.
     syncOptions:
       - CreateNamespace=true
       - ServerSideApply=true
+      - RespectIgnoreDifferences=true
     retry:
       limit: 5
       backoff:

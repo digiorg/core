@@ -98,6 +98,7 @@ spec:
       kind: CustomResourceDefinition
       jqPathExpressions:
         - '.spec.conversion | select(.strategy == "None")'
+        - '.metadata.labels | select(length == 0)'
 
   syncPolicy:
     automated:
