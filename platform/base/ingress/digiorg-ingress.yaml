@@ -30,7 +30,6 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-buffers-number: "4"
     # TLS: cert-manager provisions and renews the certificate automatically
     # Switch issuer for staging/prod: letsencrypt-staging or letsencrypt-prod
-    cert-manager.io/cluster-issuer: "digiorg-local-ca-issuer"
     # Redirect all HTTP traffic to HTTPS
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
     nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
@@ -105,7 +104,6 @@ metadata:
     nginx.ingress.kubernetes.io/use-regex: "true"
     nginx.ingress.kubernetes.io/rewrite-target: /$2
     nginx.ingress.kubernetes.io/proxy-buffer-size: "128k"
-    cert-manager.io/cluster-issuer: "digiorg-local-ca-issuer"
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
     nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
 spec:
@@ -139,7 +137,6 @@ metadata:
     nginx.ingress.kubernetes.io/rewrite-target: /$2
     nginx.ingress.kubernetes.io/proxy-buffer-size: "128k"
     nginx.ingress.kubernetes.io/proxy-body-size: "512m"  # Large Git pushes
-    cert-manager.io/cluster-issuer: "digiorg-local-ca-issuer"
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
     nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
 spec:

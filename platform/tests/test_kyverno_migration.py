@@ -25,11 +25,16 @@ import yaml
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 KYVERNO_APP = os.path.join(REPO_ROOT, "apps", "platform", "kyverno.yaml")
 VERSIONS_DOC = os.path.join(REPO_ROOT, "docs", "guides", "platform-versions.md")
+POLICIES_DIR = os.path.join(REPO_ROOT, "policies", "kyverno")
+
+
+def _kyverno_app():
+    with open(KYVERNO_APP, encoding="utf-8") as fh:
+        return yaml.safe_load(fh)
 
 
 def _kyverno_values():
-    with open(KYVERNO_APP, encoding="utf-8") as fh:
-        app = yaml.safe_load(fh)
+    app = _kyverno_app()
     values_text = app["spec"]["source"]["helm"]["values"]
     return yaml.safe_load(values_text)
 
@@ -42,6 +47,36 @@ class KyvernoCleanInstallTest(unittest.TestCase):
             False,
             "clean-install default must not run the CRD migration post-upgrade hook",
         )
+
+    def test_only_api_defaulted_none_conversion_is_ignored(self):
+        rules = _kyverno_app()["spec"].get("ignoreDifferences", [])
+        self.assertEqual(len(rules), 1)
+        self.assertEqual(rules[0]["group"], "apiextensions.k8s.io")
+        self.assertEqual(rules[0]["kind"], "CustomResourceDefinition")
+        self.assertEqual(
+            rules[0]["jqPathExpressions"],
+            ['.spec.conversion | select(.strategy == "None")'],
+        )
+
+    def test_policy_api_defaults_are_declared(self):
+        policies = []
+        for root, _, files in os.walk(POLICIES_DIR):
+            for name in files:
+                if not name.endswith(".yaml") or name == "kustomization.yaml":
+                    continue
+                with open(os.path.join(root, name), encoding="utf-8") as fh:
+                    policies.extend(d for d in yaml.safe_load_all(fh) if d and d.get("kind") == "ClusterPolicy")
+        self.assertTrue(policies)
+        for policy in policies:
+            spec = policy["spec"]
+            self.assertIn("validationFailureAction", spec, policy["metadata"]["name"])
+            self.assertIn("background", spec, policy["metadata"]["name"])
+            self.assertEqual(spec.get("admission"), True, policy["metadata"]["name"])
+            self.assertEqual(spec.get("emitWarning"), False, policy["metadata"]["name"])
+            for rule in spec["rules"]:
+                self.assertEqual(rule.get("skipBackgroundRequests"), True, rule["name"])
+                if "validate" in rule:
+                    self.assertEqual(rule["validate"].get("allowExistingViolations"), True, rule["name"])
 
     def test_upgrade_path_is_documented(self):
         with open(VERSIONS_DOC, encoding="utf-8") as fh:

@@ -35,6 +35,18 @@ spec:
     server: https://kubernetes.default.svc
     namespace: platform-db
 
+  # The chart omits immutable PVC-template type/default fields that Kubernetes
+  # stores on the StatefulSet. Ignore only those API defaults and status.
+  ignoreDifferences:
+    - group: apps
+      kind: StatefulSet
+      name: opensearch-cluster-master
+      jqPathExpressions:
+        - '.spec.volumeClaimTemplates[]?.apiVersion'
+        - '.spec.volumeClaimTemplates[]?.kind'
+        - '.spec.volumeClaimTemplates[]?.spec.volumeMode'
+        - '.spec.volumeClaimTemplates[]?.status'
+
   syncPolicy:
     automated:
       selfHeal: true

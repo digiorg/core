@@ -14,8 +14,13 @@ metadata:
     policies.kyverno.io/severity: medium
     policies.kyverno.io/category: Network
 spec:
+  validationFailureAction: Audit
+  background: true
+  admission: true
+  emitWarning: false
   rules:
     - name: generate-default-deny-ingress
+      skipBackgroundRequests: true
       # Triggered when a Namespace is created or updated with the app label.
       # AppClaim compositions must set: platform.digiorg.io/type: app
       match:

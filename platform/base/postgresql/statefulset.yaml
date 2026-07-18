@@ -151,11 +151,14 @@ spec:
             name: postgresql-init-scripts
             defaultMode: 0755
   volumeClaimTemplates:
-    - metadata:
+    - apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
         name: postgres-data
       spec:
         accessModes:
           - ReadWriteOnce
+        volumeMode: Filesystem
         resources:
           requests:
             storage: 5Gi

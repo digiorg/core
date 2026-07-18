@@ -15,8 +15,11 @@ metadata:
 spec:
   validationFailureAction: Enforce
   background: false
+  admission: true
+  emitWarning: false
   rules:
     - name: block-appclaims-in-system-namespaces
+      skipBackgroundRequests: true
       match:
         any:
           - resources:
@@ -44,6 +47,7 @@ spec:
                 - code-quality
                 - platform-apps
       validate:
+        allowExistingViolations: true
         message: >-
           AppClaims may not be created or updated in system or platform
           namespaces. Please use an application or team namespace instead.
