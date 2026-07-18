@@ -59,6 +59,17 @@ spec:
 
               CURL="curl --connect-timeout 5 --max-time 30 --retry 2"
 
+              # Harbor error responses contain only API error code/message for
+              # these non-secret payloads. Bound output to keep hook logs safe
+              # and useful without printing auth headers or environment values.
+              print_api_error() {
+                body="$1"
+                if [ -s "${body}" ]; then
+                  summary=$(tr '\n' ' ' < "${body}" | cut -c1-500)
+                  echo "    Harbor API response: ${summary}" >&2
+                fi
+              }
+
               echo "Waiting for Harbor API to be ready..."
               ready=false
               for attempt in $(seq 1 60); do
@@ -98,14 +109,20 @@ spec:
                       echo "ERROR: registry ${name} readback transport failure (curl exit ${curl_exit})" >&2; exit 1
                     fi
                     if [ "${readback_code}" != "200" ]; then
-                      echo "ERROR: could not read back registry ${name} (HTTP ${readback_code})"; exit 1
+                      echo "ERROR: could not read back registry ${name} (HTTP ${readback_code})" >&2
+                      print_api_error "${readback_body}"
+                      exit 1
                     fi
                     existing=$(tr -d '[:space:]' < "${readback_body}")
                     echo "$existing" | grep -Fq "\"type\":\"${rtype}\"" || { echo "ERROR: registry ${name} has wrong type"; exit 1; }
                     echo "$existing" | grep -Fq "\"url\":\"${url}\"" || { echo "ERROR: registry ${name} has wrong URL"; exit 1; }
                     echo "  registry ${name} already exists and matches"
                     ;;
-                  *) echo "ERROR: registry ${name} -> HTTP ${code}"; exit 1 ;;
+                  *)
+                    echo "ERROR: registry ${name} -> HTTP ${code}" >&2
+                    print_api_error "${create_body}"
+                    exit 1
+                    ;;
                 esac
               }
 
@@ -160,13 +177,19 @@ spec:
                       echo "ERROR: project ${project} readback transport failure (curl exit ${curl_exit})" >&2; exit 1
                     fi
                     if [ "${readback_code}" != "200" ]; then
-                      echo "ERROR: could not read back project ${project} (HTTP ${readback_code})"; exit 1
+                      echo "ERROR: could not read back project ${project} (HTTP ${readback_code})" >&2
+                      print_api_error "${readback_body}"
+                      exit 1
                     fi
                     existing=$(tr -d '[:space:]' < "${readback_body}")
                     echo "$existing" | grep -Fq "\"registry_id\":${regid}" || { echo "ERROR: project ${project} is not bound to registry ${regid}"; exit 1; }
                     echo "  proxy project ${project} already exists and matches"
                     ;;
-                  *) echo "ERROR: project ${project} -> HTTP ${code}"; exit 1 ;;
+                  *)
+                    echo "ERROR: project ${project} -> HTTP ${code}" >&2
+                    print_api_error "${create_body}"
+                    exit 1
+                    ;;
                 esac
               }
 
