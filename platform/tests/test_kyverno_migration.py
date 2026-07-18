@@ -48,17 +48,35 @@ class KyvernoCleanInstallTest(unittest.TestCase):
             "clean-install default must not run the CRD migration post-upgrade hook",
         )
 
-    def test_only_api_defaulted_none_conversion_is_ignored(self):
+    def test_crd_api_normalization_ignores_are_exactly_scoped(self):
         rules = _kyverno_app()["spec"].get("ignoreDifferences", [])
-        self.assertEqual(len(rules), 1)
-        self.assertEqual(rules[0]["group"], "apiextensions.k8s.io")
-        self.assertEqual(rules[0]["kind"], "CustomResourceDefinition")
+        conversion_rules = [rule for rule in rules if "jqPathExpressions" in rule]
+        self.assertEqual(len(conversion_rules), 1)
         self.assertEqual(
-            rules[0]["jqPathExpressions"],
-            [
-                '.spec.conversion | select(.strategy == "None")',
-                ".metadata.labels | select(length == 0)",
-            ],
+            conversion_rules[0]["jqPathExpressions"],
+            ['.spec.conversion | select(.strategy == "None")'],
+        )
+        expected_empty_label_crds = {
+            "deletingpolicies.policies.kyverno.io",
+            "generatingpolicies.policies.kyverno.io",
+            "imagevalidatingpolicies.policies.kyverno.io",
+            "mutatingpolicies.policies.kyverno.io",
+            "namespaceddeletingpolicies.policies.kyverno.io",
+            "namespacedgeneratingpolicies.policies.kyverno.io",
+            "namespacedimagevalidatingpolicies.policies.kyverno.io",
+            "namespacedmutatingpolicies.policies.kyverno.io",
+            "namespacedvalidatingpolicies.policies.kyverno.io",
+            "policyexceptions.policies.kyverno.io",
+            "validatingpolicies.policies.kyverno.io",
+        }
+        label_rules = [rule for rule in rules if rule.get("jsonPointers") == ["/metadata/labels"]]
+        self.assertEqual({rule.get("name") for rule in label_rules}, expected_empty_label_crds)
+        self.assertTrue(
+            all(
+                rule.get("group") == "apiextensions.k8s.io"
+                and rule.get("kind") == "CustomResourceDefinition"
+                for rule in label_rules
+            )
         )
 
     def test_policy_api_defaults_are_declared(self):
