@@ -5,3 +5,4 @@ resources:
   - provider-kubernetes.yaml
   - provider-helm.yaml
   - provider-http.yaml
+  - function-patch-and-transform.yaml

@@ -12,6 +12,13 @@ config:
       pvc:
         enabled: true
         size: 1Gi
+        # Match API-defaulted fields persisted inside StatefulSet
+        # volumeClaimTemplates so Argo CD does not report false drift.
+        merge:
+          apiVersion: v1
+          kind: PersistentVolumeClaim
+          spec:
+            volumeMode: Filesystem
 
   # Single-node for local dev (no clustering needed)
   cluster:
@@ -37,6 +44,15 @@ config:
 # Disable nats-box utility container (not needed)
 natsBox:
   enabled: false
+
+# Keep pod-template annotations non-null. Chart 2.14.2 otherwise renders
+# `metadata.annotations: null`; Kubernetes drops that null map and Argo CD 3.4.5
+# reports the StatefulSet OutOfSync after every successful apply (issue #279).
+podTemplate:
+  merge:
+    metadata:
+      annotations:
+        platform.digiorg.io/component: nats
 
 # Resource limits for the NATS container
 # Use container.merge (not podTemplate.merge.spec.containers) to avoid

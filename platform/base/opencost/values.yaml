@@ -16,7 +16,7 @@ opencost:
       enabled: false
     external:
       enabled: true
-      url: "http://prometheus-server.monitoring.svc.cluster.local:80"
+      url: "http://prometheus-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090"
 
   exporter:
     defaultClusterId: digiorg-core-dev

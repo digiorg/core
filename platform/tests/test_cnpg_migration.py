@@ -351,6 +351,15 @@ class CoexistenceSafetyTest(unittest.TestCase):
         self.assertIn("backup_dir=./pgbackup-final", text)
         self.assertIn("rpo", text)
 
+    def test_idle_backup_pvc_does_not_block_argocd_health(self):
+        pvc = _find(_docs(INIT_YAML), "PersistentVolumeClaim", "postgresql-cnpg-backups")
+        if pvc is None:
+            self.fail("CNPG backup PVC is missing")
+        self.assertEqual(
+            pvc["metadata"].get("annotations", {}).get("argocd.argoproj.io/ignore-healthcheck"),
+            "true",
+        )
+
     def test_logical_backups_are_private_verified_atomic_and_retained(self):
         cron = _find(_docs(INIT_YAML), "CronJob")
         if cron is None:

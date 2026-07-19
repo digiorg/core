@@ -167,14 +167,30 @@ applicationSet:
       memory: 256Mi
 
 # -- Repo server
+# Issue #279: the app-of-apps root Application triggers many concurrent
+# Git/Helm/Kustomize comparisons at once. Under the original 50m/64Mi request
+# (500m/256Mi limit) with the chart's default 1s probe timeout, repo-server
+# missed its /healthz?full=true liveness deadline during that initial burst,
+# kubelet restarted it mid-render, and the severed gRPC stream surfaced as
+# `ComparisonError ... rpc error: code = Unavailable desc = error reading from
+# server: EOF` on whichever Application was rendering at that moment
+# (confirmed on both Windows and Linux KinD). Raised requests/limits and probe
+# timeouts so repo-server survives the initial render burst instead of
+# flapping.
 repoServer:
   resources:
     requests:
-      cpu: 50m
-      memory: 64Mi
-    limits:
-      cpu: 500m
+      cpu: 200m
       memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+  readinessProbe:
+    timeoutSeconds: 5
+    failureThreshold: 5
+  livenessProbe:
+    timeoutSeconds: 5
+    failureThreshold: 5
 
 # -- Redis
 redis:

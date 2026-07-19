@@ -20,11 +20,26 @@ spec:
       values: |
         # Kyverno Helm values for local development
         # Reduced resource requests for KinD
-        # Keep the chart's v1.18 CRD migration hook explicit for this upgrade.
         # The removed policyReportsCleanup value is intentionally not used.
+        #
+        # Issue #279: crds.migration.enabled renders a Helm post-upgrade hook
+        # (kyverno-migrate-resources). Helm itself only runs post-upgrade hooks
+        # on `helm upgrade`, never on a fresh `helm install` — but Argo CD
+        # renders via `helm template` and maps post-upgrade/post-install hooks
+        # onto PostSync for every sync, with no install-vs-upgrade distinction.
+        # On a brand-new disposable cluster there is no prior Kyverno CRD state
+        # to migrate, so the hook was pure churn. Disabled for this clean-install
+        # baseline; see docs/guides/platform-versions.md for how to re-enable it
+        # for a real upgrade with prior Kyverno state.
         crds:
           migration:
-            enabled: true
+            enabled: false
+        # The kyverno-api subchart otherwise emits labels: {} on policy-v2
+        # CRDs, which kube-apiserver normalizes away and Argo CD reports as
+        # perpetual drift. Render one stable label instead of ignoring metadata.
+        kyverno-api:
+          labels:
+            app.kubernetes.io/managed-by: kyverno
         admissionController:
           replicas: 1
           container:
@@ -81,6 +96,14 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: kyverno
+
+  # Kubernetes defaults absent CRD conversion blocks to strategy=None. Ignore
+  # only that API-added object; any declared webhook conversion remains managed.
+  ignoreDifferences:
+    - group: apiextensions.k8s.io
+      kind: CustomResourceDefinition
+      jqPathExpressions:
+        - '.spec.conversion | select(.strategy == "None")'
 
   syncPolicy:
     automated:

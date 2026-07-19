@@ -83,7 +83,7 @@ Third-party images record a human-readable tag **plus** an immutable digest:
 | `docker.gitea.com/gitea` | 1.26.1 | Gitea chart primary/init image |
 | `sonarqube` | 26.5.0.122743-community | SonarQube Community Build |
 | `ghcr.io/kyverno/readiness-checker` | v1.18.1 | Kyverno chart test/cleanup hooks |
-| `ghcr.io/digiorg/core-portal` | 48d262e | Backstage (release tag + digest, was `latest`) |
+| `ghcr.io/digiorg/core-portal` | b77e94a | Backstage — core-portal `main` HEAD (Issue #279; was initial-scaffold commit `48d262e`) |
 | `ghcr.io/digiorg/core-landingpage` | 32a6777 | Landing page (release tag + digest, was `main`) |
 
 ### Tier-1 DigiOrg-built images (allow-listed, kind-loaded)
@@ -174,6 +174,28 @@ where noted (this environment has no cluster — see section 7).
   compatible for the fake-provider dev store). Verify every `SecretStore`/
   `ExternalSecret` in downstream repos is on `v1` before upgrading.
 - **Rollback:** revert the chart pin; v1 CRs are also accepted by 0.14.x.
+
+### Kyverno 3.8.1 CRD migration hook — clean install vs. upgrade (Issue #279)
+- `crds.migration.enabled` (chart default `true`) renders a Helm
+  **post-upgrade** hook Job (`kyverno-migrate-resources`) that migrates CRD
+  contents from a prior Kyverno release. Helm only runs `post-upgrade` hooks on
+  `helm upgrade`, never on a fresh `helm install` — but Argo CD renders every
+  chart with `helm template` and maps `post-upgrade`/`post-install` hooks onto
+  `PostSync` for **every** sync, with no install-vs-upgrade distinction. On a
+  brand-new disposable cluster there is no prior Kyverno CRD state, so the hook
+  fired as pure churn on every sync of a clean bootstrap (confirmed in issue
+  #279).
+- `apps/platform/kyverno.yaml` therefore pins `crds.migration.enabled: false`
+  as the clean-install baseline used by `nu scripts/local-setup.nu up` and by
+  default on any freshly-provisioned cluster.
+- **To perform a real upgrade** of an existing cluster that has prior Kyverno
+  CRD data (e.g. hopping across a Kyverno release that changes CRD storage):
+  1. In a dedicated commit, set `crds.migration.enabled: true` in
+     `apps/platform/kyverno.yaml`.
+  2. Sync only the `kyverno` Application and confirm the
+     `kyverno-migrate-resources` Job completes successfully.
+  3. Revert `crds.migration.enabled` back to `false` in a follow-up commit so
+     the next clean bootstrap does not re-run the migration hook.
 
 ### kube-prometheus-stack 72.6.2 → 87.17.0
 - CRDs are pre-installed at prometheus-operator **v0.92.1** by `local-setup.nu`

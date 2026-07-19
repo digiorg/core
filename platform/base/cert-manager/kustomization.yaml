@@ -7,3 +7,17 @@ resources:
   # Issuers and certificates (applied after cert-manager CRDs are ready)
   - cluster-issuers.yaml
   - certificate-dev.yaml
+
+# The upstream bundle includes Namespace/cert-manager, but namespace ownership is
+# centralized in platform/base/namespaces. Remove the duplicate resource.
+patches:
+  - target:
+      version: v1
+      kind: Namespace
+      name: cert-manager
+    patch: |-
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: cert-manager
+      $patch: delete

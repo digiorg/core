@@ -68,7 +68,14 @@ class KyvernoHookImagePinsTest(unittest.TestCase):
         self.assertRegex(self.values["webhooksCleanup"]["image"]["tag"], DIGEST_TAG)
 
     def test_current_crd_migration_key_is_explicit(self):
-        self.assertTrue(self.values["crds"]["migration"]["enabled"])
+        # Issue #279 supersedes #275's blanket "keep it explicit and on": a
+        # clean-install cluster has no prior Kyverno CRD state to migrate, and
+        # Argo CD's helm-template rendering runs this post-upgrade hook on
+        # every sync (no install-vs-upgrade distinction), so it churned on a
+        # fresh bootstrap. The key must still be explicit — just off by
+        # default. See test_kyverno_migration.py and
+        # docs/guides/platform-versions.md for the upgrade-path override.
+        self.assertIs(self.values["crds"]["migration"]["enabled"], False)
         self.assertNotIn("replicaCount", self.values)
         self.assertNotIn("policyReportsCleanup", self.values)
 

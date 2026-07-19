@@ -59,6 +59,17 @@ spec:
 
               CURL="curl --connect-timeout 5 --max-time 30 --retry 2"
 
+              # Harbor error responses contain only API error code/message for
+              # these non-secret payloads. Bound output to keep hook logs safe
+              # and useful without printing auth headers or environment values.
+              print_api_error() {
+                body="$1"
+                if [ -s "${body}" ]; then
+                  summary=$(tr '\n' ' ' < "${body}" | cut -c1-500)
+                  echo "    Harbor API response: ${summary}" >&2
+                fi
+              }
+
               echo "Waiting for Harbor API to be ready..."
               ready=false
               for attempt in $(seq 1 60); do
@@ -74,26 +85,66 @@ spec:
               # Create or verify an upstream registry endpoint.
               create_registry() {
                 name="$1"; rtype="$2"; url="$3"
-                code=$(${CURL} -s -o /dev/null -w "%{http_code}" -X POST \
+                create_body="/tmp/harbor-registry-create-${name}.json"
+                set +e
+                code=$(${CURL} -s -o "${create_body}" -w "%{http_code}" -X POST \
                   -u "${AUTH}" -H "Content-Type: application/json" \
                   -d "{\"name\":\"${name}\",\"type\":\"${rtype}\",\"url\":\"${url}\",\"insecure\":false}" \
                   "${HARBOR_API}/registries")
+                curl_exit=$?
+                set -e
+                if [ "${curl_exit}" -ne 0 ]; then
+                  echo "ERROR: registry ${name} create transport failure (curl exit ${curl_exit})" >&2; exit 1
+                fi
                 case "$code" in
                   201) echo "  registry ${name} created" ;;
                   409)
-                    existing=$(${CURL} -sf -u "${AUTH}" "${HARBOR_API}/registries?q=name%3D${name}" | tr -d '[:space:]')
+                    readback_body="/tmp/harbor-registry-${name}.json"
+                    set +e
+                    readback_code=$(${CURL} -s -o "${readback_body}" -w "%{http_code}" \
+                      -u "${AUTH}" "${HARBOR_API}/registries?q=name%3D${name}")
+                    curl_exit=$?
+                    set -e
+                    if [ "${curl_exit}" -ne 0 ]; then
+                      echo "ERROR: registry ${name} readback transport failure (curl exit ${curl_exit})" >&2; exit 1
+                    fi
+                    if [ "${readback_code}" != "200" ]; then
+                      echo "ERROR: could not read back registry ${name} (HTTP ${readback_code})" >&2
+                      print_api_error "${readback_body}"
+                      exit 1
+                    fi
+                    existing=$(tr -d '[:space:]' < "${readback_body}")
                     echo "$existing" | grep -Fq "\"type\":\"${rtype}\"" || { echo "ERROR: registry ${name} has wrong type"; exit 1; }
                     echo "$existing" | grep -Fq "\"url\":\"${url}\"" || { echo "ERROR: registry ${name} has wrong URL"; exit 1; }
                     echo "  registry ${name} already exists and matches"
                     ;;
-                  *) echo "ERROR: registry ${name} -> HTTP ${code}"; exit 1 ;;
+                  *)
+                    echo "ERROR: registry ${name} -> HTTP ${code}" >&2
+                    print_api_error "${create_body}"
+                    exit 1
+                    ;;
                 esac
               }
 
               # Resolve a registry's numeric id by name (curl-only, no jq).
               registry_id() {
-                ${CURL} -sf -u "${AUTH}" "${HARBOR_API}/registries?q=name%3D$1" \
-                  | tr ',' '\n' | grep -o '"id":[0-9]*' | head -1 | grep -o '[0-9]*'
+                registry_name="$1"
+                body="/tmp/harbor-registry-id-${registry_name}.json"
+                set +e
+                code=$(${CURL} -s -o "${body}" -w "%{http_code}" \
+                  -u "${AUTH}" "${HARBOR_API}/registries?q=name%3D${registry_name}")
+                curl_exit=$?
+                set -e
+                if [ "${curl_exit}" -ne 0 ]; then
+                  echo "ERROR: registry ${registry_name} id lookup transport failure (curl exit ${curl_exit})" >&2; return 1
+                fi
+                if [ "${code}" != "200" ]; then
+                  echo "ERROR: could not resolve registry ${registry_name} id (HTTP ${code})" >&2; return 1
+                fi
+                tr -d '[:space:]' < "${body}" \
+                  | tr '}' '\n' \
+                  | grep -F "\"name\":\"${registry_name}\"" \
+                  | grep -o '"id":[0-9]*' | head -1 | grep -o '[0-9]*'
               }
 
               # Create or verify a proxy-cache project bound to the registry.
@@ -102,18 +153,43 @@ spec:
                 if [ -z "${regid}" ]; then
                   echo "ERROR: could not resolve registry id for project ${project}"; exit 1
                 fi
-                code=$(${CURL} -s -o /dev/null -w "%{http_code}" -X POST \
+                create_body="/tmp/harbor-project-create-${project}.json"
+                set +e
+                code=$(${CURL} -s -o "${create_body}" -w "%{http_code}" -X POST \
                   -u "${AUTH}" -H "Content-Type: application/json" \
                   -d "{\"project_name\":\"${project}\",\"registry_id\":${regid},\"public\":true,\"metadata\":{\"public\":\"true\"},\"storage_limit\":-1}" \
                   "${HARBOR_API}/projects")
+                curl_exit=$?
+                set -e
+                if [ "${curl_exit}" -ne 0 ]; then
+                  echo "ERROR: project ${project} create transport failure (curl exit ${curl_exit})" >&2; exit 1
+                fi
                 case "$code" in
                   201) echo "  proxy project ${project} created" ;;
                   409)
-                    existing=$(${CURL} -sf -u "${AUTH}" "${HARBOR_API}/projects/${project}" | tr -d '[:space:]')
+                    readback_body="/tmp/harbor-project-${project}.json"
+                    set +e
+                    readback_code=$(${CURL} -s -o "${readback_body}" -w "%{http_code}" \
+                      -u "${AUTH}" "${HARBOR_API}/projects/${project}")
+                    curl_exit=$?
+                    set -e
+                    if [ "${curl_exit}" -ne 0 ]; then
+                      echo "ERROR: project ${project} readback transport failure (curl exit ${curl_exit})" >&2; exit 1
+                    fi
+                    if [ "${readback_code}" != "200" ]; then
+                      echo "ERROR: could not read back project ${project} (HTTP ${readback_code})" >&2
+                      print_api_error "${readback_body}"
+                      exit 1
+                    fi
+                    existing=$(tr -d '[:space:]' < "${readback_body}")
                     echo "$existing" | grep -Fq "\"registry_id\":${regid}" || { echo "ERROR: project ${project} is not bound to registry ${regid}"; exit 1; }
                     echo "  proxy project ${project} already exists and matches"
                     ;;
-                  *) echo "ERROR: project ${project} -> HTTP ${code}"; exit 1 ;;
+                  *)
+                    echo "ERROR: project ${project} -> HTTP ${code}" >&2
+                    print_api_error "${create_body}"
+                    exit 1
+                    ;;
                 esac
               }
 

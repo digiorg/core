@@ -20,6 +20,14 @@ spec:
     server: https://kubernetes.default.svc
     namespace: platform-db
 
+  # Kubernetes maintains PVC-template status internally on StatefulSets.
+  ignoreDifferences:
+    - group: apps
+      kind: StatefulSet
+      name: postgresql
+      jqPathExpressions:
+        - '.spec.volumeClaimTemplates[]?.status'
+
   syncPolicy:
     automated:
       selfHeal: true

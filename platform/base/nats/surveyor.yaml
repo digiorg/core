@@ -23,6 +23,24 @@ spec:
         app.kubernetes.io/name: nats-surveyor
         app.kubernetes.io/component: observability
     spec:
+      initContainers:
+        - name: wait-for-nats
+          image: busybox:1.37.0@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for NATS to be reachable..."
+              for attempt in $(seq 1 60); do
+                if nc -z nats.messaging.svc.cluster.local 4222; then
+                  echo "NATS is reachable."
+                  exit 0
+                fi
+                echo "  NATS not reachable yet (${attempt}/60), retrying in 5s..."
+                sleep 5
+              done
+              echo "ERROR: NATS did not become reachable within the timeout"
+              exit 1
       containers:
         - name: nats-surveyor
           image: natsio/nats-surveyor:0.9.10@sha256:3ba1d0e1f9e29a9f7481451097e39246d322cfd2e085aadefaec3b5141691746

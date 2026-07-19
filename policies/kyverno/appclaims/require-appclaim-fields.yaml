@@ -9,44 +9,46 @@ metadata:
 spec:
   validationFailureAction: Enforce
   background: true
+  admission: true
+  emitWarning: false
   rules:
     - name: require-appname
+      skipBackgroundRequests: true
       match:
         any:
           - resources:
               kinds:
-                - AppClaim
-              apiGroups:
-                - platform.digiorg.io
+                - platform.digiorg.io/v1alpha1/AppClaim
       validate:
+        allowExistingViolations: true
         message: "AppClaim spec.appName is required and must be non-empty"
         pattern:
           spec:
             appName: "?*"
 
     - name: require-team
+      skipBackgroundRequests: true
       match:
         any:
           - resources:
               kinds:
-                - AppClaim
-              apiGroups:
-                - platform.digiorg.io
+                - platform.digiorg.io/v1alpha1/AppClaim
       validate:
+        allowExistingViolations: true
         message: "AppClaim spec.team is required and must be non-empty"
         pattern:
           spec:
             team: "?*"
 
     - name: require-size
+      skipBackgroundRequests: true
       match:
         any:
           - resources:
               kinds:
-                - AppClaim
-              apiGroups:
-                - platform.digiorg.io
+                - platform.digiorg.io/v1alpha1/AppClaim
       validate:
+        allowExistingViolations: true
         message: "AppClaim spec.size is required and must be non-empty (valid values: S, M, L)"
         pattern:
           spec:

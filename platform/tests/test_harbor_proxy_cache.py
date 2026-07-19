@@ -29,6 +29,8 @@ except ImportError:  # pragma: no cover
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 HARBOR_DIR = os.path.join(REPO_ROOT, "platform", "base", "harbor")
 JOB = os.path.join(HARBOR_DIR, "harbor-proxy-cache-job.yaml")
+VALUES = os.path.join(HARBOR_DIR, "values.yaml")
+APP = os.path.join(REPO_ROOT, "apps", "platform", "harbor.yaml")
 KUSTOMIZATION = os.path.join(HARBOR_DIR, "kustomization.yaml")
 
 # name -> (harbor registry type, upstream url) that MUST be configured.
@@ -95,6 +97,13 @@ class ProxyCacheContentTest(unittest.TestCase):
         self.assertIn("not bound to registry", self.script)
         self.assertIn("already exists and matches", self.script)
 
+    def test_harbor_core_permits_every_configured_proxy_provider(self):
+        values = _docs(VALUES)[0]
+        env = {item["name"]: item["value"] for item in values.get("core", {}).get("extraEnvVars", [])}
+        permitted = set(env.get("PERMITTED_REGISTRY_TYPES_FOR_PROXY_CACHE", "").split(","))
+        expected = {rtype for rtype, _ in EXPECTED_REGISTRIES.values()}
+        self.assertTrue(expected.issubset(permitted), expected - permitted)
+
     def test_every_registry_type_and_url_present(self):
         for name, (rtype, url) in EXPECTED_REGISTRIES.items():
             self.assertIn(rtype, self.script,
@@ -117,6 +126,39 @@ class KustomizationTest(unittest.TestCase):
     def test_job_is_included(self):
         k = _docs(KUSTOMIZATION)[0]
         self.assertIn("harbor-proxy-cache-job.yaml", k.get("resources", []))
+
+
+class GeneratedSecretDriftTest(unittest.TestCase):
+    def test_argocd_ignores_only_chart_generated_secret_material(self):
+        app = _docs(APP)[0]
+        rules = app["spec"].get("ignoreDifferences", [])
+        self.assertIn("RespectIgnoreDifferences=true", app["spec"]["syncPolicy"]["syncOptions"])
+        secret_rules = {
+            rule.get("name"): set(rule.get("jsonPointers", []))
+            for rule in rules
+            if rule.get("kind") == "Secret"
+        }
+        self.assertEqual(
+            secret_rules,
+            {
+                "harbor-core": {"/data/CSRF_KEY", "/data/secret", "/data/tls.crt", "/data/tls.key"},
+                "harbor-jobservice": {"/data/JOBSERVICE_SECRET"},
+                "harbor-registry": {"/data/REGISTRY_HTTP_SECRET"},
+                "harbor-registry-htpasswd": {"/data/REGISTRY_HTPASSWD"},
+            },
+        )
+        self.assertNotIn("/data/REGISTRY_CREDENTIAL_PASSWORD", set().union(*secret_rules.values()))
+        self.assertNotIn("/data/REGISTRY_REDIS_PASSWORD", set().union(*secret_rules.values()))
+
+        deployment_rules = {
+            rule.get("name"): set(rule.get("jsonPointers", []))
+            for rule in rules
+            if rule.get("kind") == "Deployment"
+        }
+        self.assertEqual(set(deployment_rules), {"harbor-core", "harbor-jobservice", "harbor-registry"})
+        for pointers in deployment_rules.values():
+            self.assertTrue(pointers)
+            self.assertTrue(all("/checksum~1secret" in pointer for pointer in pointers))
 
 
 if __name__ == "__main__":

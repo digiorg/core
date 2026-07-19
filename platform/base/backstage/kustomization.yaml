@@ -4,7 +4,6 @@ kind: Kustomization
 namespace: backstage
 
 resources:
-  - namespace.yaml
   - rbac.yaml
   - deployment.yaml
   - service.yaml
