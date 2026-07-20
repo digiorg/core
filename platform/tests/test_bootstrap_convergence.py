@@ -246,6 +246,13 @@ class ConfigurationDependencyTest(unittest.TestCase):
         self.assertEqual(_run_nu("sonarqube_http_status_matches 0 '302' '204'"), "false")
         self.assertEqual(_run_nu("sonarqube_http_status_matches 7 '204' '204'"), "false")
 
+    def test_sonarqube_http_runs_in_cluster_without_host_dns_dependency(self):
+        body = _func_body(self.text, "configure_sonarqube")
+        self.assertIn("sonarqube-sonarqube.code-quality.svc.cluster.local:9000", body)
+        self.assertIn("keycloak.keycloak.svc.cluster.local:8080", body)
+        self.assertIn("exec -i -n code-quality $sonar_pod -c sonarqube -- curl", body)
+        self.assertNotIn("$sonar_auth_config | curl", body)
+
     def test_dependency_wait_is_bounded_and_fail_closed(self):
         helper = _func_body(self.text, "wait_for_configuration_dependencies")
         self.assertIn("error make", helper)

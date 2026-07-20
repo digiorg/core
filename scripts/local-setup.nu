@@ -1722,8 +1722,18 @@ def sonarqube_http_status_matches [exit_code: int, status: string, expected: str
 
 # Configure SonarQube
 def configure_sonarqube [] {
+    # Persisted browser-facing URLs remain public, while bootstrap traffic stays
+    # inside the cluster and does not depend on a host /etc/hosts entry.
     let sonar_url = "https://digiorg.local/sonarqube"
-    let keycloak_saml_descriptor_url = "https://digiorg.local/keycloak/realms/digiorg-core-platform/protocol/saml/descriptor"
+    let sonar_api_url = "http://sonarqube-sonarqube.code-quality.svc.cluster.local:9000/sonarqube"
+    let keycloak_saml_descriptor_url = "http://keycloak.keycloak.svc.cluster.local:8080/keycloak/realms/digiorg-core-platform/protocol/saml/descriptor"
+    let sonar_pod_result = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH get pods -n code-quality -l app=sonarqube -o jsonpath='{.items[0].metadata.name}'
+    } | complete)
+    let sonar_pod = ($sonar_pod_result.stdout | str trim)
+    if $sonar_pod_result.exit_code != 0 or ($sonar_pod | is-empty) {
+        error make {msg: "Failed to find the SonarQube pod for in-cluster configuration"}
+    }
     let admin_pass = (do -i { kubectl --kubeconfig $KUBECONFIG_PATH get secret sonarqube-admin-secret -n code-quality -o jsonpath='{.data.password}' } | complete)
     let password = if $admin_pass.exit_code == 0 {
         try { $admin_pass.stdout | str trim | decode base64 } catch { "" }
@@ -1747,7 +1757,7 @@ def configure_sonarqube [] {
     mut sonar_ready = false
     for attempt in 1..30 {
         let status = (do -i {
-            $sonar_auth_config | curl --config - --noproxy "*" -fsSk $"($sonar_url)/api/system/status"
+            $sonar_auth_config | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n code-quality $sonar_pod -c sonarqube -- curl --config - -fsS $"($sonar_api_url)/api/system/status"
         } | complete)
         if $status.exit_code == 0 and ($status.stdout | str contains '"status":"UP"') {
             $sonar_ready = true
@@ -1762,7 +1772,7 @@ def configure_sonarqube [] {
     }
 
     # Set sonar.core.serverBaseURL via Settings API
-    let result = (do -i { $sonar_auth_config | curl --config - --noproxy "*" -sSk -o /dev/null -w "%{http_code}" -X POST $"($sonar_url)/api/settings/set" --data-urlencode "key=sonar.core.serverBaseURL" --data-urlencode $"value=($sonar_url)" } | complete)
+    let result = (do -i { $sonar_auth_config | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n code-quality $sonar_pod -c sonarqube -- curl --config - -sS -o /dev/null -w "%{http_code}" -X POST $"($sonar_api_url)/api/settings/set" --data-urlencode "key=sonar.core.serverBaseURL" --data-urlencode $"value=($sonar_url)" } | complete)
 
     if (sonarqube_http_status_matches $result.exit_code $result.stdout "204") {
         print $"(ansi green)✓ SonarQube Server Base URL set to ($sonar_url)(ansi reset)"
@@ -1774,7 +1784,7 @@ def configure_sonarqube [] {
     # The SAML metadata descriptor endpoint returns the full X.509 certificate
     # (not just the raw public key), which is what SonarQube requires.
     print "  1. Fetching Keycloak IdP X.509 certificate from SAML descriptor..."
-    let cert_result = (do -i { curl --noproxy "*" -fsSk $keycloak_saml_descriptor_url } | complete)
+    let cert_result = (do -i { kubectl --kubeconfig $KUBECONFIG_PATH exec -n code-quality $sonar_pod -c sonarqube -- curl -fsS $keycloak_saml_descriptor_url } | complete)
     if $cert_result.exit_code != 0 {
         error make {msg: "Failed to reach the Keycloak SAML descriptor endpoint"}
     }
@@ -1802,7 +1812,7 @@ def configure_sonarqube [] {
 
     mut all_ok = true
     for setting in $saml_settings {
-        let r = (do -i { $sonar_auth_config | curl --config - --noproxy "*" -sSk -o /dev/null -w "%{http_code}" -X POST $"($sonar_url)/api/settings/set" --data-urlencode $"key=($setting.key)" --data-urlencode $"value=($setting.value)" } | complete)
+        let r = (do -i { $sonar_auth_config | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n code-quality $sonar_pod -c sonarqube -- curl --config - -sS -o /dev/null -w "%{http_code}" -X POST $"($sonar_api_url)/api/settings/set" --data-urlencode $"key=($setting.key)" --data-urlencode $"value=($setting.value)" } | complete)
         if not (sonarqube_http_status_matches $r.exit_code $r.stdout "204") {
             print $"(ansi red)✗ Failed to set ($setting.key)(ansi reset)"
             $all_ok = false
@@ -1810,7 +1820,7 @@ def configure_sonarqube [] {
     }
 
     # --- Step 4: Enable SAML ---
-    let enable_result = (do -i { $sonar_auth_config | curl --config - --noproxy "*" -sSk -o /dev/null -w "%{http_code}" -X POST $"($sonar_url)/api/settings/set" --data-urlencode "key=sonar.auth.saml.enabled" --data-urlencode "value=true" } | complete)
+    let enable_result = (do -i { $sonar_auth_config | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n code-quality $sonar_pod -c sonarqube -- curl --config - -sS -o /dev/null -w "%{http_code}" -X POST $"($sonar_api_url)/api/settings/set" --data-urlencode "key=sonar.auth.saml.enabled" --data-urlencode "value=true" } | complete)
     if not (sonarqube_http_status_matches $enable_result.exit_code $enable_result.stdout "204") {
         print $"(ansi red)✗ Failed to enable SAML(ansi reset)"
         $all_ok = false
@@ -1839,7 +1849,7 @@ def configure_sonarqube [] {
     let secured_certificate_key = "sonar.auth.saml.certificate.secured"
     let readback_keys = ($expected_readback | columns | append $secured_certificate_key | str join ",")
     let readback = (do -i {
-        $sonar_auth_config | curl --config - --noproxy "*" -sSk -w "\n%{http_code}" --get $"($sonar_url)/api/settings/values" --data-urlencode $"keys=($readback_keys)"
+        $sonar_auth_config | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n code-quality $sonar_pod -c sonarqube -- curl --config - -sS -w "\n%{http_code}" --get $"($sonar_api_url)/api/settings/values" --data-urlencode $"keys=($readback_keys)"
     } | complete)
     let readback_lines = ($readback.stdout | lines)
     let readback_status = ($readback_lines | last | default "")
