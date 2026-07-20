@@ -265,6 +265,8 @@ class ConfigurationDependencyTest(unittest.TestCase):
         body = _func_body(self.text, "configure_gitea")
         self.assertNotIn("--page", body, "the pinned Gitea admin user list command has no pagination flags")
         self.assertNotIn("--page-size", body)
+        self.assertNotIn("--vertical", body, "the pinned Gitea auth list command has no --vertical flag")
+        self.assertIn("su git -c 'gitea admin auth list'", body)
         self.assertIn("$gitea_token | kubectl", body)
         self.assertIn("curl --config -", body)
         self.assertIn("__DIGIORG_TOKEN_PLACEHOLDER__", body)

@@ -1503,7 +1503,7 @@ def configure_gitea [] {
     
     # Check if Keycloak OIDC source already exists (idempotency)
     let existing_oauth = (do {
-        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- su git gitea admin auth list --vertical
+        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- su git -c 'gitea admin auth list'
     } | complete)
 
     mut oidc_exists = false
