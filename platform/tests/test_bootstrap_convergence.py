@@ -21,6 +21,7 @@ plus a couple of real-Nushell behaviour checks of the new pure helper::
     python3 platform/tests/test_bootstrap_convergence.py
 """
 
+import base64
 import os
 import re
 import subprocess
@@ -111,9 +112,19 @@ class ArgocdPrerequisiteTest(unittest.TestCase):
         self.assertIn('"argocd"', body)
         self.assertIn("argocd_client_version_matches", self.text)
 
-    def test_argocd_bootstrap_upgrade_reclaims_self_managed_fields_on_resume(self):
-        body = _func_body(self.text, "install_argocd")
-        self.assertIn("--force-conflicts", body)
+    def test_argocd_bootstrap_upgrade_handles_helm3_and_helm4(self):
+        install = _func_body(self.text, "install_argocd")
+        oidc = _func_body(self.text, "patch_argocd_oidc_ca")
+        self.assertIn("...$helm_conflict_args", install)
+        self.assertIn("...$helm_conflict_args", oidc)
+        self.assertEqual(
+            _run_nu('helm_force_conflicts_args_for_version "v3.12.3+g3a31588" | to json --raw'),
+            "[]",
+        )
+        self.assertEqual(
+            _run_nu('helm_force_conflicts_args_for_version "v4.2.3+gabcdef" | to json --raw'),
+            '["--force-conflicts"]',
+        )
 
     def test_check_prerequisites_verifies_matching_argocd_version(self):
         body = _func_body(self.text, "check_prerequisites")
@@ -280,7 +291,8 @@ class ConfigurationDependencyTest(unittest.TestCase):
         self.assertIn("$gitea_token | kubectl", body)
         self.assertIn("curl --config -", body)
         self.assertIn("gitea-bootstrap-token", body)
-        self.assertIn("--from-file=token=/dev/stdin", body)
+        self.assertIn("persist_gitea_bootstrap_token", body)
+        self.assertNotIn("/dev/stdin", body)
         self.assertIn("/api/v1/orgs/DigiOrg", body)
         self.assertNotIn("tea login", body)
         self.assertNotIn('curl -fsSk -H "Authorization: token ***"', body)
@@ -342,45 +354,74 @@ class GiteaTokenTransportTest(unittest.TestCase):
                 self.assertIn(sentinel, fh.read())
             self.assertNotIn(sentinel, result.stdout + result.stderr)
 
-    def test_kubernetes_secret_receives_token_via_stdin_not_argv(self):
+    def _run_secret_transport(self, scenario):
         sentinel = "sentinel-kubernetes-secret-token-never-in-argv"
         with tempfile.TemporaryDirectory() as tmp:
             fake = os.path.join(tmp, "kubectl")
             argv_log = os.path.join(tmp, "kubectl-argv")
-            token_stdin = os.path.join(tmp, "token-stdin")
-            apply_stdin = os.path.join(tmp, "apply-stdin")
+            manifest_log = os.path.join(tmp, "manifest.json")
             with open(fake, "w", encoding="utf-8") as fh:
                 fh.write(
-                    "#!/bin/sh\n"
-                    "printf '%s\\n' \"$@\" >> \"$KUBECTL_ARGV_LOG\"\n"
-                    "case \"$1\" in\n"
-                    "  create) cat > \"$TOKEN_STDIN_LOG\"; printf 'apiVersion: v1\\nkind: Secret\\n' ;;\n"
-                    "  apply) cat > \"$APPLY_STDIN_LOG\"; printf 'secret/gitea-bootstrap-token configured\\n' ;;\n"
-                    "  *) exit 2 ;;\n"
-                    "esac\n"
+                    "#!/usr/bin/env python3\n"
+                    "import json, os, sys\n"
+                    "args = sys.argv[1:]\n"
+                    "with open(os.environ['KUBECTL_ARGV_LOG'], 'a', encoding='utf-8') as log: "
+                    "log.write(json.dumps(args) + '\\n')\n"
+                    "scenario = os.environ.get('FAKE_SCENARIO', 'success')\n"
+                    "if 'apply' in args:\n"
+                    "    data = sys.stdin.read()\n"
+                    "    if scenario == 'apply_failure': sys.exit(1)\n"
+                    "    open(os.environ['MANIFEST_LOG'], 'w', encoding='utf-8').write(data)\n"
+                    "    print('secret/gitea-bootstrap-token configured')\n"
+                    "elif 'get' in args:\n"
+                    "    if scenario == 'readback_failure': sys.exit(1)\n"
+                    "    obj = json.load(open(os.environ['MANIFEST_LOG'], encoding='utf-8'))\n"
+                    "    value = obj['data']['token']\n"
+                    "    print('d3Jvbmc=' if scenario == 'readback_mismatch' else value, end='')\n"
+                    "else:\n"
+                    "    sys.exit(2)\n"
                 )
             os.chmod(fake, 0o755)
             env = os.environ.copy()
             env["PATH"] = tmp + os.pathsep + env.get("PATH", "")
             env["KUBECTL_ARGV_LOG"] = argv_log
-            env["TOKEN_STDIN_LOG"] = token_stdin
-            env["APPLY_STDIN_LOG"] = apply_stdin
-            shell = (
-                "kubectl create secret generic gitea-bootstrap-token -n gitea "
-                "--from-file=token=/dev/stdin --dry-run=client -o yaml | kubectl apply -f -"
-            )
+            env["MANIFEST_LOG"] = manifest_log
+            env["FAKE_SCENARIO"] = scenario
+            env["TEST_TOKEN"] = sentinel
             result = subprocess.run(
-                ["sh", "-c", shell], input=sentinel + "\n", text=True,
-                capture_output=True, env=env, timeout=10,
+                ["nu", "-c", f"source {SETUP}; persist_gitea_bootstrap_token $env.TEST_TOKEN"],
+                capture_output=True, text=True, env=env, timeout=10,
             )
-            self.assertEqual(result.returncode, 0, result.stderr)
-            with open(argv_log, encoding="utf-8") as fh:
-                self.assertNotIn(sentinel, fh.read())
-            with open(token_stdin, encoding="utf-8") as fh:
-                self.assertIn(sentinel, fh.read())
-            with open(apply_stdin, encoding="utf-8") as fh:
-                self.assertIn("kind: Secret", fh.read())
-            self.assertNotIn(sentinel, result.stdout + result.stderr)
+            argv = ""
+            if os.path.exists(argv_log):
+                with open(argv_log, encoding="utf-8") as fh:
+                    argv = fh.read()
+            manifest = None
+            if os.path.exists(manifest_log):
+                with open(manifest_log, encoding="utf-8") as fh:
+                    manifest = yaml.safe_load(fh)
+            return result, sentinel, argv, manifest
+
+    def test_kubernetes_secret_manifest_is_cross_platform_and_verified(self):
+        result, sentinel, argv, manifest = self._run_secret_transport("success")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn(sentinel, argv)
+        self.assertNotIn("/dev/stdin", _func_body(_read(SETUP), "persist_gitea_bootstrap_token"))
+        self.assertNotIn(sentinel, result.stdout + result.stderr)
+        self.assertIsNotNone(manifest)
+        assert manifest is not None
+        self.assertEqual(manifest["metadata"]["name"], "gitea-bootstrap-token")
+        self.assertEqual(base64.b64decode(manifest["data"]["token"]).decode(), sentinel)
+
+    def test_kubernetes_secret_apply_failure_is_fatal(self):
+        result, _, _, _ = self._run_secret_transport("apply_failure")
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_kubernetes_secret_readback_failure_and_mismatch_are_fatal(self):
+        for scenario in ("readback_failure", "readback_mismatch"):
+            with self.subTest(scenario=scenario):
+                result, _, _, _ = self._run_secret_transport(scenario)
+                self.assertNotEqual(result.returncode, 0)
 
 
 class OidcRestartRuntimeTest(unittest.TestCase):
