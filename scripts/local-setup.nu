@@ -412,6 +412,11 @@ data:
     print $"(ansi green)✓ CoreDNS configured for digiorg.local [($ingress_ip)](ansi reset)"
 }
 
+def kubectl_error_is_exact_not_found [stderr: string, resource: string, name: string] {
+    let expected = (["Error from server (NotFound): " $resource ' "' $name '" not found'] | str join)
+    ($stderr | str trim) == $expected
+}
+
 def secret_value_or_default [namespace: string, secret: string, key: string, override, fallback] {
     let explicit = ($override | default "")
     if ($explicit | into string) != "" {
@@ -429,8 +434,8 @@ def secret_value_or_default [namespace: string, secret: string, key: string, ove
         return $existing
     }
 
-    let secret_missing = ($lookup.stderr | str contains $'secrets "($secret)" not found')
-    let namespace_missing = ($lookup.stderr | str contains $'namespaces "($namespace)" not found')
+    let secret_missing = (kubectl_error_is_exact_not_found $lookup.stderr "secrets" $secret)
+    let namespace_missing = (kubectl_error_is_exact_not_found $lookup.stderr "namespaces" $namespace)
     if $secret_missing or $namespace_missing {
         return ($fallback | into string)
     }
@@ -1651,7 +1656,7 @@ def configure_gitea [] {
         }
         print $"(ansi yellow)✓ Existing Gitea bootstrap token reused(ansi reset)"
         $stored_token
-    } else if ($token_secret.stderr | str contains 'secrets "gitea-bootstrap-token" not found') {
+    } else if (kubectl_error_is_exact_not_found $token_secret.stderr "secrets" "gitea-bootstrap-token") {
         let token_name = $"local-setup-((date now | format date '%Y%m%d%H%M%S'))"
         let token_result = (do {
             kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- su git -c $'gitea admin user generate-access-token --username gitea_admin --token-name "($token_name)" --scopes write:activitypub,write:admin,write:issue,write:misc,write:notification,write:organization,write:package,write:repository,write:user --raw'
@@ -1812,7 +1817,7 @@ def configure_sonarqube [] {
     let admin_pass = (do -i { kubectl --kubeconfig $KUBECONFIG_PATH get secret sonarqube-admin-secret -n code-quality -o jsonpath='{.data.password}' } | complete)
     let password = if $admin_pass.exit_code == 0 {
         try { $admin_pass.stdout | str trim | decode base64 } catch { "" }
-    } else if ($admin_pass.stderr | str contains 'secrets "sonarqube-admin-secret" not found') {
+    } else if (kubectl_error_is_exact_not_found $admin_pass.stderr "secrets" "sonarqube-admin-secret") {
         # The upstream local-development chart starts with the documented default
         # admin password and does not create an admin Secret. Operators can provide
         # SONARQUBE_ADMIN_PASSWORD after changing it. Only exact NotFound falls back;
