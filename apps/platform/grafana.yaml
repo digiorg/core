@@ -21,7 +21,7 @@ spec:
         valueFiles:
           - $values/platform/base/grafana/values.yaml
     - repoURL: https://github.com/digiorg/core.git
-      targetRevision: main
+      targetRevision: test/issue-281-runtime
       ref: values
 
   destination:

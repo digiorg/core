@@ -18,10 +18,10 @@ spec:
         valueFiles:
           - $values/platform/base/harbor/values.yaml
     - repoURL: https://github.com/digiorg/core.git
-      targetRevision: main
+      targetRevision: test/issue-281-runtime
       ref: values
     - repoURL: https://github.com/digiorg/core.git
-      targetRevision: main
+      targetRevision: test/issue-281-runtime
       path: platform/base/harbor
   destination:
     server: https://kubernetes.default.svc
