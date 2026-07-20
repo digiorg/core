@@ -108,10 +108,12 @@ class ArgocdPrerequisiteTest(unittest.TestCase):
 
     def test_check_prerequisites_requires_argocd(self):
         body = _func_body(self.text, "check_prerequisites")
-        self.assertIn('"argocd"', body,
-                      "check_prerequisites must require the argocd CLI so the "
-                      "Healthy/OutOfSync material-diff fallback is never silently "
-                      "unavailable")
+        self.assertIn('"argocd"', body)
+        self.assertIn("argocd_client_version_matches", self.text)
+
+    def test_argocd_bootstrap_upgrade_reclaims_self_managed_fields_on_resume(self):
+        body = _func_body(self.text, "install_argocd")
+        self.assertIn("--force-conflicts", body)
 
     def test_check_prerequisites_verifies_matching_argocd_version(self):
         body = _func_body(self.text, "check_prerequisites")

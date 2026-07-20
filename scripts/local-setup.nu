@@ -609,6 +609,7 @@ def install_argocd [] {
         --values platform/base/argocd/values.yaml
         --set 'server.service.type=ClusterIP'
         --set 'configs.params.server\.insecure=true'
+        --force-conflicts
         --wait --timeout 10m)
 
     print $"(ansi green)✓ ArgoCD installed [Helm](ansi reset)"
