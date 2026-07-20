@@ -1556,49 +1556,25 @@ def configure_gitea [] {
     }
     print $"(ansi green)✓ Initial users are present(ansi reset)"
 
-    # --- Step 4: Create DigiOrg organisation via tea CLI ---
-    print "4. Creating DigiOrg organisation in Gitea..."
+    # --- Step 4: Create DigiOrg organisation via the Gitea API ---
+    print "4. Ensuring DigiOrg organisation exists in Gitea..."
 
-    # 4a: Install tea CLI if not already present
-    let tea_check = (do {
-        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c 'test -x /usr/local/bin/tea && echo "exists"'
+    # Persist the bootstrap token in Kubernetes rather than a CLI config file.
+    # The value travels only over stdin and is never placed in a process argument.
+    let token_secret = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH get secret gitea-bootstrap-token -n gitea -o jsonpath='{.data.token}'
     } | complete)
-
-    if ($tea_check.exit_code == 0) and ($tea_check.stdout | str contains "exists") {
-        print $"(ansi yellow)✓ tea CLI already installed(ansi reset)"
-    } else {
-        let tea_install = (do {
-            kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c 'wget -qO /usr/local/bin/tea https://dl.gitea.com/tea/0.9.2/tea-0.9.2-linux-amd64 && chmod +x /usr/local/bin/tea'
-        } | complete)
-        if $tea_install.exit_code == 0 {
-            print $"(ansi green)✓ tea CLI installed(ansi reset)"
-        } else {
-            error make {msg: "Failed to install the pinned tea CLI in Gitea"}
+    let gitea_token = if $token_secret.exit_code == 0 {
+        let stored_token = (try { $token_secret.stdout | str trim | decode base64 } catch { "" })
+        if ($stored_token | is-empty) {
+            error make {msg: "The existing gitea-bootstrap-token Secret has no usable token"}
         }
-    }
-
-    # 4b: Check if tea login already exists (idempotency check first)
-    let login_check = (do {
-        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c 'tea login list 2>/dev/null | grep -q "teaadmin-digiorg" && echo "exists"'
-    } | complete)
-
-    # 4b/4c/4d: Resolve gitea_token — immutable, derived from both branches
-    # Nushell does not allow capturing mut variables in closures; use let + if expression instead.
-    let gitea_token = if ($login_check.exit_code == 0) and ($login_check.stdout | str contains "exists") {
-        print $"(ansi yellow)✓ tea login 'teaadmin-digiorg' already configured(ansi reset)"
-        # Extract stored token from tea config for subsequent API calls
-        let token_extract = (do {
-            kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c 'grep -A10 "teaadmin-digiorg" /root/.config/tea/config.yml | grep "token:" | head -1 | sed "s/.*token: //"'
-        } | complete)
-        let stored_token = ($token_extract.stdout | str trim)
-        if $token_extract.exit_code != 0 or ($stored_token | is-empty) {
-            error make {msg: "The existing Gitea tea login has no usable stored token"}
-        }
+        print $"(ansi yellow)✓ Existing Gitea bootstrap token reused(ansi reset)"
         $stored_token
-    } else {
-        # 4c: Generate access token — must run as git user, not root
+    } else if ($token_secret.stderr | str contains 'secrets "gitea-bootstrap-token" not found') {
+        let token_name = $"local-setup-((date now | format date '%Y%m%d%H%M%S'))"
         let token_result = (do {
-            kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- su git -c 'gitea admin user generate-access-token --username gitea_admin --token-name teaadmin --scopes write:activitypub,write:admin,write:issue,write:misc,write:notification,write:organization,write:package,write:repository,write:user --raw'
+            kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- su git -c $'gitea admin user generate-access-token --username gitea_admin --token-name "($token_name)" --scopes write:activitypub,write:admin,write:issue,write:misc,write:notification,write:organization,write:package,write:repository,write:user --raw'
         } | complete)
         if $token_result.exit_code != 0 {
             error make {msg: "Failed to generate the Gitea configuration access token"}
@@ -1607,39 +1583,39 @@ def configure_gitea [] {
         if ($token | is-empty) {
             error make {msg: "Gitea returned an empty configuration access token"}
         }
-        print $"(ansi green)✓ Access token generated(ansi reset)"
-
-        # 4d: Set up tea login without placing the token in a process argument.
-        # Tea itself receives only a fixed placeholder. POSIX-shell builtins then
-        # replace that placeholder in tea's config while the real token arrives
-        # exclusively over stdin; no child process sees it in argv.
-        let login_add = (do {
-            $token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'set -eu; IFS= read -r token; placeholder=__DIGIORG_TOKEN_PLACEHOLDER__; tea login add --name=teaadmin-digiorg --url=https://digiorg.local/gitea --token="$placeholder" >/dev/null; cfg="${HOME:-/root}/.config/tea/config.yml"; tmp="${cfg}.tmp"; : > "$tmp"; while IFS= read -r line; do case "$line" in *"$placeholder"*) prefix=${line%%$placeholder*}; suffix=${line#*$placeholder}; printf "%s%s%s\n" "$prefix" "$token" "$suffix" ;; *) printf "%s\n" "$line" ;; esac; done < "$cfg" > "$tmp"; mv "$tmp" "$cfg"'
+        let token_store = (do {
+            $token | kubectl --kubeconfig $KUBECONFIG_PATH create secret generic gitea-bootstrap-token -n gitea --from-file=token=/dev/stdin --dry-run=client -o yaml | kubectl --kubeconfig $KUBECONFIG_PATH apply -f -
         } | complete)
-        if $login_add.exit_code == 0 {
-            print $"(ansi green)✓ tea login 'teaadmin-digiorg' configured(ansi reset)"
-        } else {
-            error make {msg: "Failed to configure the Gitea tea login"}
+        if $token_store.exit_code != 0 {
+            error make {msg: "Failed to persist the Gitea bootstrap token"}
         }
+        print $"(ansi green)✓ Gitea bootstrap token generated and persisted(ansi reset)"
         $token
+    } else {
+        error make {msg: "Failed to read the gitea-bootstrap-token Secret"}
     }
 
-    # 4e: Create DigiOrg organisation (idempotent)
+    # Create the organisation through the API so no CLI configuration needs the
+    # administrative token in argv. Exact HTTP status handling is fail-closed.
     let org_check = (do {
-        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c 'tea organizations list --login teaadmin-digiorg 2>/dev/null | grep -q "DigiOrg" && echo "exists"'
+        $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - -sSk -o /dev/null -w "%{http_code}" https://digiorg.local/gitea/api/v1/orgs/DigiOrg'
     } | complete)
-
-    if ($org_check.exit_code == 0) and ($org_check.stdout | str contains "exists") {
+    if $org_check.exit_code != 0 {
+        error make {msg: "Failed to query the DigiOrg organisation in Gitea"}
+    }
+    let org_status = ($org_check.stdout | str trim)
+    if $org_status == "200" {
         print $"(ansi yellow)✓ Organisation 'DigiOrg' already exists(ansi reset)"
-    } else {
+    } else if $org_status == "404" {
         let org_create = (do {
-            kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c 'tea organization create --description "DigiOrg Organization" --visibility public --repo-admins-can-change-team-access --login teaadmin-digiorg DigiOrg'
+            $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - -sSk -o /dev/null -w "%{http_code}" -X POST -H "Content-Type: application/json" --data "{\"username\":\"DigiOrg\",\"full_name\":\"DigiOrg Organization\",\"visibility\":\"public\",\"repo_admin_change_team_access\":true}" https://digiorg.local/gitea/api/v1/orgs'
         } | complete)
-        if $org_create.exit_code == 0 {
-            print $"(ansi green)✓ Organisation 'DigiOrg' created(ansi reset)"
-        } else {
+        if $org_create.exit_code != 0 or (($org_create.stdout | str trim) != "201") {
             error make {msg: "Failed to create the DigiOrg organisation in Gitea"}
         }
+        print $"(ansi green)✓ Organisation 'DigiOrg' created(ansi reset)"
+    } else {
+        error make {msg: $"Unexpected HTTP status while querying the DigiOrg organisation: ($org_status)"}
     }
 
     # 4f: Get Owners team ID via Gitea API. Feed the token on stdin so it is
