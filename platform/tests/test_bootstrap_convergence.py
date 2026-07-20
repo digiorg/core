@@ -185,6 +185,10 @@ class NonReadyDiagnosticsTest(unittest.TestCase):
             "status table must be reachable on both success and timeout paths",
         )
 
+    def test_bootstrap_summary_does_not_print_default_credentials(self):
+        disallowed = "admin" + " / " + "admin"
+        self.assertNotIn(disallowed, self.text)
+
 
 class NonReadyReportHelperTest(unittest.TestCase):
     """The pure formatter turns app-state records into bounded redacted lines."""
