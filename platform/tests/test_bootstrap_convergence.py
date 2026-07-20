@@ -294,6 +294,11 @@ class ConfigurationDependencyTest(unittest.TestCase):
         self.assertIn('"digiorgadmin" "digiorgdeveloper"', body)
         self.assertIn("Required Gitea Owners team members are missing", body)
 
+    def test_gitea_membership_get_uses_exact_http_200(self):
+        body = _func_body(self.text, "configure_gitea")
+        self.assertIn('($admin_check.stdout | str trim) == "200"', body)
+        self.assertIn('($dev_check.stdout | str trim) == "200"', body)
+
 
 class GiteaTokenTransportTest(unittest.TestCase):
     """The real token travels over stdin/config, never through child argv."""

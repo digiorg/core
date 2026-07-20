@@ -1640,7 +1640,7 @@ def configure_gitea [] {
         $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c $'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - -sSk -o /dev/null -w "%{http_code}" https://digiorg.local/gitea/api/v1/teams/($owners_team_id)/members/digiorgadmin'
     } | complete)
 
-    if ($admin_check.exit_code == 0) and (($admin_check.stdout | str trim) == "204") {
+    if ($admin_check.exit_code == 0) and (($admin_check.stdout | str trim) == "200") {
         print $"(ansi yellow)✓ 'digiorgadmin' already member of Owners team(ansi reset)"
     } else {
         let admin_add = (do {
@@ -1658,7 +1658,7 @@ def configure_gitea [] {
         $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c $'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - -sSk -o /dev/null -w "%{http_code}" https://digiorg.local/gitea/api/v1/teams/($owners_team_id)/members/digiorgdeveloper'
     } | complete)
 
-    if ($dev_check.exit_code == 0) and (($dev_check.stdout | str trim) == "204") {
+    if ($dev_check.exit_code == 0) and (($dev_check.stdout | str trim) == "200") {
         print $"(ansi yellow)✓ 'digiorgdeveloper' already member of Owners team(ansi reset)"
     } else {
         let dev_add = (do {
