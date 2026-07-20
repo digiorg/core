@@ -5,6 +5,13 @@
 
 replicaCount: 1
 
+# A single Gitea replica owns LevelDB-backed queues on the shared /data volume.
+# RollingUpdate starts a second pod before terminating the first; the new pod
+# cannot acquire the queue lock and the rollout deadlocks. Recreate is required
+# for this single-writer persistent deployment.
+strategy:
+  type: Recreate
+
 image:
   # Chart 12 changed the default registry/repository layout from the historical
   # Docker Hub-style gitea/gitea path. Pin the actual 1.26.1 OCI index so the

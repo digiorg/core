@@ -330,6 +330,12 @@ class ConfigurationDependencyTest(unittest.TestCase):
         ):
             self.assertIn(key, body)
 
+    def test_single_replica_gitea_uses_recreate_strategy_for_shared_data(self):
+        values_path = os.path.join(REPO_ROOT, "platform", "base", "gitea", "values.yaml")
+        values = yaml.safe_load(_read(values_path))
+        self.assertEqual(values.get("replicaCount"), 1)
+        self.assertEqual(values.get("strategy", {}).get("type"), "Recreate")
+
 
 class SecretResumeStabilityTest(unittest.TestCase):
     """Generated values are reused; only exact NotFound permits a fallback."""
