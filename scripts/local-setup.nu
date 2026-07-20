@@ -592,6 +592,26 @@ type: kubernetes.io/service-account-token" | save --force $token_secret_file
     print $"(ansi green)✓ Platform namespaces and secrets created.(ansi reset)"
 }
 
+def helm_force_conflicts_args_for_version [version: string] {
+    let parsed = ($version | str trim | parse --regex '^v(?P<major>[0-9]+)\.[0-9]+\.[0-9]+(?:[+-].*)?$')
+    if ($parsed | length) != 1 {
+        error make {msg: $"Could not parse Helm version: ($version | str trim)"}
+    }
+    let major = ($parsed | get major | first | into int)
+    if $major >= 4 { ["--force-conflicts"] } else { [] }
+}
+
+def helm_force_conflicts_args [] {
+    let version = (do { helm version --short } | complete)
+    if $version.exit_code != 0 {
+        error make {msg: "Failed to determine the Helm version"}
+    }
+    helm_force_conflicts_args_for_version $version.stdout
+}
+
+# Helm 4 uses server-side apply and needs explicit conflict ownership when the
+# self-managed Argo CD Application has touched Helm-owned fields. Helm 3 does
+# not support that flag, so compute a version-aware optional argument list.
 def install_argocd [] {
     kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
 
@@ -602,6 +622,7 @@ def install_argocd [] {
     # reproducible. argo-cd 10.1.4 ships Argo CD app v3.4.5. Keep in sync with
     # the ARGOCD_CHART_VERSION comment in docs/guides/platform-versions.md and
     # the second (OIDC CA) helm upgrade below.
+    let helm_conflict_args = (helm_force_conflicts_args)
     (helm upgrade --install argocd argo/argo-cd
         --version 10.1.4
         --namespace argocd
@@ -609,7 +630,7 @@ def install_argocd [] {
         --values platform/base/argocd/values.yaml
         --set 'server.service.type=ClusterIP'
         --set 'configs.params.server\.insecure=true'
-        --force-conflicts
+        ...$helm_conflict_args
         --wait --timeout 10m)
 
     print $"(ansi green)✓ ArgoCD installed [Helm](ansi reset)"
@@ -1456,6 +1477,39 @@ def wait_for_configuration_dependencies [phase: string, apps: list, certificates
     error make {msg: $"($phase) configuration dependencies did not become ready: ($bounded)"}
 }
 
+def persist_gitea_bootstrap_token [token: string] {
+    if ($token | is-empty) {
+        error make {msg: "Refusing to persist an empty Gitea bootstrap token"}
+    }
+    let manifest = ({
+        apiVersion: "v1"
+        kind: "Secret"
+        metadata: {name: "gitea-bootstrap-token", namespace: "gitea"}
+        type: "Opaque"
+        data: {token: ($token | encode base64)}
+    } | to json)
+    let apply_result = (do {
+        $manifest | kubectl --kubeconfig $KUBECONFIG_PATH apply -f -
+    } | complete)
+    if $apply_result.exit_code != 0 {
+        error make {msg: "Failed to persist the Gitea bootstrap token"}
+    }
+
+    # Read back and compare without printing either value. This catches apply
+    # transport failures and malformed persistence while keeping the token out of
+    # argv and remaining portable across Linux, macOS and Windows hosts.
+    let readback = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH get secret gitea-bootstrap-token -n gitea -o jsonpath='{.data.token}'
+    } | complete)
+    if $readback.exit_code != 0 {
+        error make {msg: "Failed to verify the persisted Gitea bootstrap token"}
+    }
+    let persisted = (try { $readback.stdout | str trim | decode base64 | decode utf-8 } catch { "" })
+    if ($persisted | is-empty) or ($persisted != $token) {
+        error make {msg: "Persisted Gitea bootstrap token did not match its source"}
+    }
+}
+
 # Configure Gitea (register self-signed CA cert + add Keycloak OIDC provider + create initial users/org)
 def configure_gitea [] {
     $env.KUBECONFIG = $KUBECONFIG_PATH
@@ -1565,7 +1619,7 @@ def configure_gitea [] {
         kubectl --kubeconfig $KUBECONFIG_PATH get secret gitea-bootstrap-token -n gitea -o jsonpath='{.data.token}'
     } | complete)
     let gitea_token = if $token_secret.exit_code == 0 {
-        let stored_token = (try { $token_secret.stdout | str trim | decode base64 } catch { "" })
+        let stored_token = (try { $token_secret.stdout | str trim | decode base64 | decode utf-8 } catch { "" })
         if ($stored_token | is-empty) {
             error make {msg: "The existing gitea-bootstrap-token Secret has no usable token"}
         }
@@ -1583,12 +1637,7 @@ def configure_gitea [] {
         if ($token | is-empty) {
             error make {msg: "Gitea returned an empty configuration access token"}
         }
-        let token_store = (do {
-            $token | kubectl --kubeconfig $KUBECONFIG_PATH create secret generic gitea-bootstrap-token -n gitea --from-file=token=/dev/stdin --dry-run=client -o yaml | kubectl --kubeconfig $KUBECONFIG_PATH apply -f -
-        } | complete)
-        if $token_store.exit_code != 0 {
-            error make {msg: "Failed to persist the Gitea bootstrap token"}
-        }
+        persist_gitea_bootstrap_token $token
         print $"(ansi green)✓ Gitea bootstrap token generated and persisted(ansi reset)"
         $token
     } else {
@@ -1983,8 +2032,9 @@ rootCA: |\n($indented_cert)
     # Re-run helm upgrade with the override — embeds CA cert in the Helm release
     # so ArgoCD self-sync will not overwrite it
     print "  Running helm upgrade to embed CA cert in ArgoCD release..."
+    let helm_conflict_args = (helm_force_conflicts_args)
     let helm_result = (do {
-        helm upgrade argocd argo/argo-cd --version 10.1.4 --namespace argocd --reuse-values --values platform/base/argocd/values.yaml --values ./argocd-oidc-override.yaml --force-conflicts --wait --timeout 5m
+        helm upgrade argocd argo/argo-cd --version 10.1.4 --namespace argocd --reuse-values --values platform/base/argocd/values.yaml --values ./argocd-oidc-override.yaml ...$helm_conflict_args --wait --timeout 5m
     } | complete)
     if $helm_result.exit_code != 0 {
         error make {msg: "Failed to update the ArgoCD OIDC CA configuration via Helm"}
