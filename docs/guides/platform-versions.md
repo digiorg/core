@@ -164,6 +164,18 @@ where noted (this environment has no cluster — see section 7).
   patch-and-transform — any P&T Composition there must be converted to the
   function pipeline (`crossplane beta convert pipeline-composition`). Out of
   scope for this repo; validate `core-catalog` separately before promoting.
+- **core-catalog pin (Issue #281 Phase 4):** `apps/platform/core-catalog.yaml`
+  pins the **canonical reviewed merge commit** of core-catalog PR #17,
+  `13b7a3b4a0b7a5f5e692dc6d5a3fa416852c4273`. This supersedes the earlier
+  implementation SHA `4c30d9c3…`, which the merge commit is one commit ahead of
+  with **no changed files** (identical deployed content) — the change is
+  traceability only. The Application stays manually gated
+  (`platform.digiorg.io/upgrade-gate: issue-275-manual`, no `syncPolicy.automated`);
+  do not enable automatic catalog sync. `test_crossplane_migration.py`
+  (`CoreCatalogCanonicalPinTest`) locks the canonical pin, the immutable 40-hex
+  format, the manual gate, and that the superseded SHA is referenced nowhere.
+  When the reviewed revision advances, update the manifest, this line, and that
+  test's `CANONICAL_CATALOG_REVISION` together.
 - **Rollback:** revert the chart pin (2.3.3 → 1.19.0) and provider pins; v2→v1
   downgrade of a cluster with namespaced XRs is unsupported, but this repo keeps
   LegacyCluster semantics so no XR conversion occurs.
