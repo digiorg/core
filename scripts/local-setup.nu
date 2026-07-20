@@ -1707,13 +1707,13 @@ def sonarqube_settings_match [settings_json: string, expected_json: string] {
     }
 }
 
-def sonarqube_setting_present [settings_json: string, required_key: string] {
-    let parsed = (try { $settings_json | from json } catch { null })
+def sonarqube_setting_definition_present [definitions_json: string, required_key: string] {
+    let parsed = (try { $definitions_json | from json } catch { null })
     if (($parsed | describe | str starts-with "record") == false) {
         return false
     }
-    let settings = ($parsed | get -o settings | default [])
-    $settings | any {|setting| ($setting | get -o key | default "") == $required_key }
+    let definitions = ($parsed | get -o definitions | default [])
+    $definitions | any {|definition| ($definition | get -o key | default "") == $required_key }
 }
 
 def sonarqube_http_status_matches [exit_code: int, status: string, expected: string] {
@@ -1847,15 +1847,28 @@ def configure_sonarqube [] {
         "sonar.auth.saml.enabled": "true"
     }
     let secured_certificate_key = "sonar.auth.saml.certificate.secured"
-    let readback_keys = ($expected_readback | columns | append $secured_certificate_key | str join ",")
+    let readback_keys = ($expected_readback | columns | str join ",")
     let readback = (do -i {
         $sonar_auth_config | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n code-quality $sonar_pod -c sonarqube -- curl --config - -sS -w "\n%{http_code}" --get $"($sonar_api_url)/api/settings/values" --data-urlencode $"keys=($readback_keys)"
     } | complete)
     let readback_lines = ($readback.stdout | lines)
     let readback_status = ($readback_lines | last | default "")
     let readback_body = ($readback_lines | drop 1 | str join "\n")
-    if not (sonarqube_http_status_matches $readback.exit_code $readback_status "200") or not (sonarqube_settings_match $readback_body ($expected_readback | to json)) or not (sonarqube_setting_present $readback_body $secured_certificate_key) {
+    if not (sonarqube_http_status_matches $readback.exit_code $readback_status "200") or not (sonarqube_settings_match $readback_body ($expected_readback | to json)) {
         error make {msg: "SonarQube settings readback did not match the required SAML configuration"}
+    }
+
+    # Secured values are intentionally omitted from /api/settings/values even
+    # when configured. Verify the non-secret setting definition instead; together
+    # with the exact 204 mutation status this is the strongest available signal.
+    let definitions = (do -i {
+        $sonar_auth_config | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n code-quality $sonar_pod -c sonarqube -- curl --config - -sS -w "\n%{http_code}" $"($sonar_api_url)/api/settings/list_definitions"
+    } | complete)
+    let definition_lines = ($definitions.stdout | lines)
+    let definition_status = ($definition_lines | last | default "")
+    let definition_body = ($definition_lines | drop 1 | str join "\n")
+    if not (sonarqube_http_status_matches $definitions.exit_code $definition_status "200") or not (sonarqube_setting_definition_present $definition_body $secured_certificate_key) {
+        error make {msg: "SonarQube does not expose the required secured SAML certificate setting definition"}
     }
 
     print $"(ansi green)✓ SAML fully configured, enabled and verified in SonarQube(ansi reset)"

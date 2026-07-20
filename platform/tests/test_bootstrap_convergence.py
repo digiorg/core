@@ -228,8 +228,9 @@ class ConfigurationDependencyTest(unittest.TestCase):
         self.assertIn('default "admin"', body)
         self.assertIn("Failed to read the SonarQube admin password", body)
         self.assertIn("/api/settings/values", body)
+        self.assertIn("/api/settings/list_definitions", body)
         self.assertIn("sonarqube_settings_match", body)
-        self.assertIn("sonarqube_setting_present", body)
+        self.assertIn("sonarqube_setting_definition_present", body)
         self.assertIn("sonarqube_http_status_matches", body)
         self.assertIn("SonarQube settings readback did not match", body)
         good = '{"settings":[{"key":"sonar.auth.saml.enabled","value":"true"},{"key":"sonar.auth.saml.certificate.secured"}]}'
@@ -240,8 +241,10 @@ class ConfigurationDependencyTest(unittest.TestCase):
         self.assertEqual(_run_nu(f"sonarqube_settings_match '{bad}' '{expected}'"), "false")
         self.assertEqual(_run_nu(f"sonarqube_settings_match '{missing}' '{expected}'"), "false")
         self.assertEqual(_run_nu("sonarqube_settings_match 'not-json' '{\"x\":\"y\"}'"), "false")
-        self.assertEqual(_run_nu(f"sonarqube_setting_present '{good}' 'sonar.auth.saml.certificate.secured'"), "true")
-        self.assertEqual(_run_nu(f"sonarqube_setting_present '{missing}' 'sonar.auth.saml.certificate.secured'"), "false")
+        definitions = '{"definitions":[{"key":"sonar.auth.saml.certificate.secured","type":"PASSWORD"}]}'
+        no_definitions = '{"definitions":[]}'
+        self.assertEqual(_run_nu(f"sonarqube_setting_definition_present '{definitions}' 'sonar.auth.saml.certificate.secured'"), "true")
+        self.assertEqual(_run_nu(f"sonarqube_setting_definition_present '{no_definitions}' 'sonar.auth.saml.certificate.secured'"), "false")
         self.assertEqual(_run_nu("sonarqube_http_status_matches 0 '204' '204'"), "true")
         self.assertEqual(_run_nu("sonarqube_http_status_matches 0 '302' '204'"), "false")
         self.assertEqual(_run_nu("sonarqube_http_status_matches 7 '204' '204'"), "false")
