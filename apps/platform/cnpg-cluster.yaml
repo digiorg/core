@@ -25,9 +25,14 @@ spec:
     namespace: platform-db
 
   syncPolicy:
-    automated:
-      selfHeal: true
-      prune: true
+    # Issue #281: script-driven, NOT automated. On a clean bootstrap an automated
+    # sync applied Cluster/postgresql-cnpg before the CNPG operator's admission
+    # webhook accepted connections (`connection refused`), and the failed
+    # operation then stayed Running behind a Pending backup PVC so Argo's retry
+    # never recovered. scripts/local-setup.nu (`promote_cnpg_cluster`) instead
+    # waits for the operator Deployment to be Available and the webhook endpoint
+    # to be ready, then syncs with a fresh operation. Shared/production clusters
+    # follow docs/guides/postgres-cnpg-migration.md.
     syncOptions:
       - CreateNamespace=true
       - ServerSideApply=true

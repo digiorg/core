@@ -13,6 +13,7 @@ This guide walks you through setting up the DigiOrg Core Platform.
 | [Helm](https://helm.sh/docs/intro/install/) | >= 3.12 | Package manager |
 | [KinD](https://kind.sigs.k8s.io/) | >= 0.20 | Local Kubernetes |
 | [Nushell](https://www.nushell.sh/book/installation.html) | >= 0.90 | Setup scripts |
+| [Argo CD CLI](https://argo-cd.readthedocs.io/en/stable/cli_installation/) | v3.4.5 (matches server) | Required — final readiness verifies a stale `Healthy/OutOfSync` Application via `argocd app diff --core`; a missing or mismatched CLI fails the preflight instead of silently stalling bootstrap readiness (Issue #281) |
 
 ### Optional Tools
 

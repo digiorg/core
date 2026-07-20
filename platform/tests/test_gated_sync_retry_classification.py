@@ -144,6 +144,10 @@ class DiagnosticRedactionTest(unittest.TestCase):
                 self.assertNotIn(sensitive, out)
                 self.assertIn("[REDACTED]", out)
 
+    def test_redacted_diagnostic_is_length_bounded(self):
+        out = _run_nu(f'redact_sync_diagnostic "{"x" * 5000}"')
+        self.assertLessEqual(len(out), 1024)
+
 
 class RetryWiringStructureTest(unittest.TestCase):
     @classmethod

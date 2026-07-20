@@ -165,6 +165,72 @@ spec:
     requests:
       storage: 5Gi
 ---
+# =============================================================================
+# One-shot backup-PVC bind Job (Issue #281)
+# =============================================================================
+# The backup PVC above is provisioned WaitForFirstConsumer (kind's default
+# `standard`/local-path StorageClass), so with no running consumer it stays
+# Pending. A Pending PVC kept the `cnpg-cluster` sync operation in `Running`
+# indefinitely — Argo waits for the PVC to become healthy even with the
+# `ignore-healthcheck` annotation on the object itself — which prevented the
+# configured retry from ever starting a fresh operation after the admission
+# webhook came up. This idempotent one-shot Job mounts the PVC exactly once so
+# the provisioner binds the volume; a Bound PVC is healthy, letting the sync
+# operation reach a terminal state. Re-running is a no-op (the Job spec is
+# unchanged, and a bound PVC stays bound).
+#
+# Sync-wave: this Job MUST share the backup PVC's wave (both wave 0), NOT a later
+# one. Argo CD syncs wave by wave and blocks each wave on its resources' health,
+# and the deployed Argo (v3.4.5) waits on the Pending PVC even with
+# `ignore-healthcheck`. A Job in a later wave would never be applied — the sync
+# would stall on the Pending PVC before reaching it — which is exactly the #281
+# deadlock. Applied in the same wave, the Job mounts the PVC, the
+# WaitForFirstConsumer provisioner binds it, and the wave can go healthy.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: postgresql-cnpg-backups-init
+  namespace: platform-db
+  annotations:
+    # Same wave (0) as the backup PVC above so the Sync hook is created
+    # together with it and binds it within the wave, instead of being gated
+    # behind the very PVC it is meant to make healthy. Delete the successful
+    # hook and recreate it before a future sync so Job immutability cannot break
+    # an idempotent resume or later manifest update.
+    argocd.argoproj.io/sync-wave: "0"
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+spec:
+  backoffLimit: 6
+  activeDeadlineSeconds: 300
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgresql-cnpg-backups-init
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: bind
+          image: ghcr.io/cloudnative-pg/postgresql:16.9@sha256:cca50a94e2da46ddcaefb23260c805ed3b466763bd2a25e1617410176d5fd0ab
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              # Scheduling a Pod that mounts the claim is the consumer signal
+              # required by WaitForFirstConsumer. Do not write into the volume:
+              # the pinned PostgreSQL image runs unprivileged and a freshly
+              # provisioned local-path volume may initially be root-owned.
+              test -d /backups
+              echo "backup PVC mounted and bound"
+          volumeMounts:
+            - name: backups
+              mountPath: /backups
+      volumes:
+        - name: backups
+          persistentVolumeClaim:
+            claimName: postgresql-cnpg-backups
+---
 # Scheduled logical backup: nightly pg_dump of all six databases to the PVC
 # above. See docs/guides/postgres-cnpg-migration.md for restore steps.
 apiVersion: batch/v1
