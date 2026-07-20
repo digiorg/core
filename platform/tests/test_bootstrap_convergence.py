@@ -239,7 +239,8 @@ class ConfigurationDependencyTest(unittest.TestCase):
 
     def test_sonarqube_configuration_is_verified_by_readback(self):
         body = _func_body(self.text, "configure_sonarqube")
-        self.assertIn('secrets "sonarqube-admin-secret" not found', body)
+        self.assertIn("kubectl_error_is_exact_not_found", body)
+        self.assertIn('"sonarqube-admin-secret"', body)
         self.assertIn('default "admin"', body)
         self.assertIn("Failed to read the SonarQube admin password", body)
         self.assertIn("/api/settings/values", body)
@@ -334,6 +335,11 @@ class ConfigurationDependencyTest(unittest.TestCase):
         ):
             self.assertIn(key, body)
 
+    def test_all_secret_fallbacks_use_exact_notfound_classifier(self):
+        self.assertIn("kubectl_error_is_exact_not_found", _func_body(self.text, "secret_value_or_default"))
+        self.assertIn("kubectl_error_is_exact_not_found", _func_body(self.text, "configure_gitea"))
+        self.assertIn("kubectl_error_is_exact_not_found", _func_body(self.text, "configure_sonarqube"))
+
     def test_single_replica_gitea_uses_recreate_strategy_for_shared_data(self):
         values_path = os.path.join(REPO_ROOT, "platform", "base", "gitea", "values.yaml")
         values = yaml.safe_load(_read(values_path))
@@ -356,6 +362,12 @@ class SecretResumeStabilityTest(unittest.TestCase):
                     "    print(base64.b64encode(b'existing-value').decode(), end='')\n"
                     "elif scenario == 'notfound':\n"
                     "    print('Error from server (NotFound): secrets \\\"sample\\\" not found', file=sys.stderr); sys.exit(1)\n"
+                    "elif scenario == 'namespace_notfound':\n"
+                    "    print('Error from server (NotFound): namespaces \\\"testns\\\" not found', file=sys.stderr); sys.exit(1)\n"
+                    "elif scenario == 'wrong_name_notfound':\n"
+                    "    print('Error from server (NotFound): secrets \\\"other\\\" not found', file=sys.stderr); sys.exit(1)\n"
+                    "elif scenario == 'mixed_forbidden':\n"
+                    "    print('Error from server (Forbidden): audit context: secrets \\\"sample\\\" not found', file=sys.stderr); sys.exit(1)\n"
                     "else:\n"
                     "    print('forbidden', file=sys.stderr); sys.exit(1)\n"
                 )
@@ -378,10 +390,17 @@ class SecretResumeStabilityTest(unittest.TestCase):
         result = self._run("notfound")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "fallback-value")
+        namespace = self._run("namespace_notfound")
+        self.assertEqual(namespace.returncode, 0, namespace.stderr)
+        self.assertEqual(namespace.stdout.strip(), "fallback-value")
 
     def test_lookup_failure_is_fatal_and_override_wins(self):
         failed = self._run("forbidden")
         self.assertNotEqual(failed.returncode, 0)
+        mixed = self._run("mixed_forbidden")
+        self.assertNotEqual(mixed.returncode, 0)
+        wrong_name = self._run("wrong_name_notfound")
+        self.assertNotEqual(wrong_name.returncode, 0)
         overridden = self._run("forbidden", "explicit-value")
         self.assertEqual(overridden.returncode, 0, overridden.stderr)
         self.assertEqual(overridden.stdout.strip(), "explicit-value")
