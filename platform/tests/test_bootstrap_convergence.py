@@ -261,6 +261,8 @@ class ConfigurationDependencyTest(unittest.TestCase):
 
     def test_gitea_api_uses_generated_token_without_process_arg_exposure(self):
         body = _func_body(self.text, "configure_gitea")
+        self.assertNotIn("--page", body, "the pinned Gitea admin user list command has no pagination flags")
+        self.assertNotIn("--page-size", body)
         self.assertIn("$gitea_token | kubectl", body)
         self.assertIn("curl --config -", body)
         self.assertIn("__DIGIORG_TOKEN_PLACEHOLDER__", body)
