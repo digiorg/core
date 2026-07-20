@@ -321,6 +321,61 @@ class ConfigurationDependencyTest(unittest.TestCase):
         self.assertIn('($admin_check.stdout | str trim) == "200"', body)
         self.assertIn('($dev_check.stdout | str trim) == "200"', body)
 
+    def test_generated_platform_secrets_are_reused_on_resume(self):
+        body = _func_body(self.text, "create_platform_namespaces_secrets")
+        self.assertIn("secret_value_or_default", body)
+        for key in (
+            "POSTGRES_PASSWORD", "KEYCLOAK_DB_PASSWORD", "BACKSTAGE_DB_PASSWORD",
+            "GITEA_DB_PASSWORD", "SONARQUBE_DB_PASSWORD", "HARBOR_DB_PASSWORD",
+        ):
+            self.assertIn(key, body)
+
+
+class SecretResumeStabilityTest(unittest.TestCase):
+    """Generated values are reused; only exact NotFound permits a fallback."""
+
+    def _run(self, scenario, override=""):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = os.path.join(tmp, "kubectl")
+            with open(fake, "w", encoding="utf-8") as fh:
+                fh.write(
+                    "#!/usr/bin/env python3\n"
+                    "import base64, os, sys\n"
+                    "scenario = os.environ['FAKE_SCENARIO']\n"
+                    "if scenario == 'existing':\n"
+                    "    print(base64.b64encode(b'existing-value').decode(), end='')\n"
+                    "elif scenario == 'notfound':\n"
+                    "    print('Error from server (NotFound): secrets \\\"sample\\\" not found', file=sys.stderr); sys.exit(1)\n"
+                    "else:\n"
+                    "    print('forbidden', file=sys.stderr); sys.exit(1)\n"
+                )
+            os.chmod(fake, 0o755)
+            env = os.environ.copy()
+            env["PATH"] = tmp + os.pathsep + env.get("PATH", "")
+            env["FAKE_SCENARIO"] = scenario
+            env["TEST_OVERRIDE"] = override
+            return subprocess.run(
+                ["nu", "-c", f"source {SETUP}; secret_value_or_default testns sample TOKEN $env.TEST_OVERRIDE fallback-value"],
+                capture_output=True, text=True, timeout=10, env=env,
+            )
+
+    def test_existing_value_is_reused(self):
+        result = self._run("existing")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "existing-value")
+
+    def test_exact_notfound_uses_fallback(self):
+        result = self._run("notfound")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "fallback-value")
+
+    def test_lookup_failure_is_fatal_and_override_wins(self):
+        failed = self._run("forbidden")
+        self.assertNotEqual(failed.returncode, 0)
+        overridden = self._run("forbidden", "explicit-value")
+        self.assertEqual(overridden.returncode, 0, overridden.stderr)
+        self.assertEqual(overridden.stdout.strip(), "explicit-value")
+
 
 class GiteaTokenTransportTest(unittest.TestCase):
     """The real token travels over stdin/config, never through child argv."""
