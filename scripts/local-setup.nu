@@ -1530,7 +1530,7 @@ def configure_gitea [] {
     print "3. Ensuring initial users exist in Gitea..."
 
     let users_result = (do {
-        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- su git -c 'gitea admin user list --page 1 --page-size 1000'
+        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- su git -c 'gitea admin user list'
     } | complete)
     if $users_result.exit_code != 0 {
         error make {msg: "Failed to list existing Gitea users"}
