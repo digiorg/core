@@ -412,21 +412,47 @@ data:
     print $"(ansi green)✓ CoreDNS configured for digiorg.local [($ingress_ip)](ansi reset)"
 }
 
+def secret_value_or_default [namespace: string, secret: string, key: string, override, fallback] {
+    let explicit = ($override | default "")
+    if ($explicit | into string) != "" {
+        return ($explicit | into string)
+    }
+
+    let lookup = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH get secret $secret -n $namespace -o $"jsonpath={.data.($key)}"
+    } | complete)
+    if $lookup.exit_code == 0 {
+        let existing = (try { $lookup.stdout | str trim | decode base64 | decode utf-8 } catch { "" })
+        if ($existing | is-empty) {
+            error make {msg: $"Existing Secret ($namespace)/($secret) has no usable ($key) value"}
+        }
+        return $existing
+    }
+
+    let secret_missing = ($lookup.stderr | str contains $'secrets "($secret)" not found')
+    let namespace_missing = ($lookup.stderr | str contains $'namespaces "($namespace)" not found')
+    if $secret_missing or $namespace_missing {
+        return ($fallback | into string)
+    }
+    error make {msg: $"Failed to read Secret ($namespace)/($secret) while resolving ($key)"}
+}
+
 def create_platform_namespaces_secrets [] {
-    # Generate passwords (can be overridden via environment variables)
-    let postgres_password = ($env.POSTGRES_PASSWORD? | default (generate_password))
-    let keycloak_db_password = ($env.KEYCLOAK_DB_PASSWORD? | default (generate_password))
-    let backstage_db_password = ($env.BACKSTAGE_DB_PASSWORD? | default (generate_password))
-    let backstage_session_secret = ($env.AUTH_SESSION_SECRET? | default (generate_password))
-    let backstage_oidc_secret = ($env.AUTH_OIDC_CLIENT_SECRET? | default "backstage-client-secret")
-    let gitea_db_password = ($env.GITEA_DB_PASSWORD? | default (generate_password))
-    let gitea_oidc_secret = ($env.GITEA_OIDC_CLIENT_SECRET? | default "gitea-client-secret")
-    let sonarqube_db_password = ($env.SONARQUBE_DB_PASSWORD? | default (generate_password))
-    let sonarqube_monitoring_passcode = ($env.SONARQUBE_MONITORING_PASSCODE? | default (generate_password))
-    let harbor_admin_password = ($env.HARBOR_ADMIN_PASSWORD? | default "Harbor12345")
-    let harbor_secret_key = ($env.HARBOR_SECRET_KEY? | default "not-a-secure-key")
-    let harbor_db_password = ($env.HARBOR_DB_PASSWORD? | default (generate_password))
-    let harbor_oidc_secret = ($env.HARBOR_OIDC_CLIENT_SECRET? | default "harbor-client-secret")
+    # Preserve existing values on resume. Environment variables are explicit
+    # rotation requests; random/default values are used only on a clean cluster.
+    let postgres_password = (secret_value_or_default "platform-db" "postgresql-secrets" "POSTGRES_PASSWORD" $env.POSTGRES_PASSWORD? (generate_password))
+    let keycloak_db_password = (secret_value_or_default "platform-db" "postgresql-secrets" "KEYCLOAK_DB_PASSWORD" $env.KEYCLOAK_DB_PASSWORD? (generate_password))
+    let backstage_db_password = (secret_value_or_default "platform-db" "postgresql-secrets" "BACKSTAGE_DB_PASSWORD" $env.BACKSTAGE_DB_PASSWORD? (generate_password))
+    let backstage_session_secret = (secret_value_or_default "backstage" "backstage-secrets" "AUTH_SESSION_SECRET" $env.AUTH_SESSION_SECRET? (generate_password))
+    let backstage_oidc_secret = (secret_value_or_default "backstage" "backstage-secrets" "AUTH_OIDC_CLIENT_SECRET" $env.AUTH_OIDC_CLIENT_SECRET? "backstage-client-secret")
+    let gitea_db_password = (secret_value_or_default "platform-db" "postgresql-secrets" "GITEA_DB_PASSWORD" $env.GITEA_DB_PASSWORD? (generate_password))
+    let gitea_oidc_secret = (secret_value_or_default "gitea" "gitea-secrets" "AUTH_OIDC_CLIENT_SECRET" $env.GITEA_OIDC_CLIENT_SECRET? "gitea-client-secret")
+    let sonarqube_db_password = (secret_value_or_default "platform-db" "postgresql-secrets" "SONARQUBE_DB_PASSWORD" $env.SONARQUBE_DB_PASSWORD? (generate_password))
+    let sonarqube_monitoring_passcode = (secret_value_or_default "code-quality" "sonarqube-monitoring-secret" "SONAR_WEB_SYSTEMPASSCODE" $env.SONARQUBE_MONITORING_PASSCODE? (generate_password))
+    let harbor_admin_password = (secret_value_or_default "harbor" "harbor-admin-secret" "HARBOR_ADMIN_PASSWORD" $env.HARBOR_ADMIN_PASSWORD? "Harbor12345")
+    let harbor_secret_key = (secret_value_or_default "harbor" "harbor-secret-key" "secretKey" $env.HARBOR_SECRET_KEY? "not-a-secure-key")
+    let harbor_db_password = (secret_value_or_default "platform-db" "postgresql-secrets" "HARBOR_DB_PASSWORD" $env.HARBOR_DB_PASSWORD? (generate_password))
+    let harbor_oidc_secret = (secret_value_or_default "harbor" "harbor-oidc-secret" "client-secret" $env.HARBOR_OIDC_CLIENT_SECRET? "harbor-client-secret")
     
     # Platform-db namespace and PostgreSQL secrets (shared database for Keycloak + Backstage + Gitea)
     kubectl create namespace platform-db --dry-run=client -o yaml | kubectl apply -f -
@@ -562,8 +588,8 @@ type: kubernetes.io/service-account-token" | save --force $token_secret_file
     kubectl create namespace tracing --dry-run=client -o yaml | kubectl apply -f -
 
     # Jaeger oauth2-proxy secret (Keycloak OIDC client + cookie encryption)
-    let jaeger_oidc_secret = ($env.JAEGER_OIDC_CLIENT_SECRET? | default "jaeger-client-secret")
-    let jaeger_cookie_secret = ($env.JAEGER_COOKIE_SECRET? | default (generate_password | str substring 0..31 | encode base64))
+    let jaeger_oidc_secret = (secret_value_or_default "tracing" "jaeger-oauth2-proxy-secrets" "client-secret" $env.JAEGER_OIDC_CLIENT_SECRET? "jaeger-client-secret")
+    let jaeger_cookie_secret = (secret_value_or_default "tracing" "jaeger-oauth2-proxy-secrets" "cookie-secret" $env.JAEGER_COOKIE_SECRET? (generate_password | str substring 0..31 | encode base64))
     (kubectl create secret generic jaeger-oauth2-proxy-secrets -n tracing
         --from-literal=client-secret=($jaeger_oidc_secret)
         --from-literal=cookie-secret=($jaeger_cookie_secret)
@@ -571,15 +597,15 @@ type: kubernetes.io/service-account-token" | save --force $token_secret_file
 
     # cost-monitoring namespace + OpenCost oauth2-proxy secrets
     kubectl create namespace cost-monitoring --dry-run=client -o yaml | kubectl apply -f -
-    let opencost_oidc_secret = ($env.OPENCOST_OIDC_CLIENT_SECRET? | default "opencost-client-secret")
-    let opencost_cookie_secret = ($env.OPENCOST_COOKIE_SECRET? | default (generate_password | str substring 0..31 | encode base64))
+    let opencost_oidc_secret = (secret_value_or_default "cost-monitoring" "opencost-oauth2-proxy-secrets" "client-secret" $env.OPENCOST_OIDC_CLIENT_SECRET? "opencost-client-secret")
+    let opencost_cookie_secret = (secret_value_or_default "cost-monitoring" "opencost-oauth2-proxy-secrets" "cookie-secret" $env.OPENCOST_COOKIE_SECRET? (generate_password | str substring 0..31 | encode base64))
     (kubectl create secret generic opencost-oauth2-proxy-secrets -n cost-monitoring
         --from-literal=client-secret=($opencost_oidc_secret)
         --from-literal=cookie-secret=($opencost_cookie_secret)
         --dry-run=client -o yaml | kubectl apply -f -)
 
     # OpenSearch secret (admin password for observability backend)
-    let opensearch_admin_password = ($env.OPENSEARCH_ADMIN_PASSWORD? | default (generate_password))
+    let opensearch_admin_password = (secret_value_or_default "platform-db" "opensearch-secrets" "OPENSEARCH_ADMIN_PASSWORD" $env.OPENSEARCH_ADMIN_PASSWORD? (generate_password))
     # Secret in platform-db namespace (for OpenSearch itself)
     (kubectl create secret generic opensearch-secrets -n platform-db
         --from-literal=OPENSEARCH_ADMIN_PASSWORD=($opensearch_admin_password)
