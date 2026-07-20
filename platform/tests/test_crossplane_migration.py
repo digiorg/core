@@ -36,10 +36,21 @@ except ImportError:  # pragma: no cover
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 APP = os.path.join(REPO_ROOT, "apps", "platform", "crossplane.yaml")
+CATALOG_APP = os.path.join(REPO_ROOT, "apps", "platform", "core-catalog.yaml")
 PKG_DIR = os.path.join(REPO_ROOT, "crossplane", "providers", "packages")
 XRD = os.path.join(REPO_ROOT, "crossplane", "xrds", "application.yaml")
 FUNCTION = os.path.join(PKG_DIR, "function-patch-and-transform.yaml")
 PROVIDER_KUSTOMIZATION = os.path.join(PKG_DIR, "kustomization.yaml")
+VERSIONS_DOC = os.path.join(REPO_ROOT, "docs", "guides", "platform-versions.md")
+
+# core-catalog PR #17 merged as this commit; a GitHub comparison shows it one
+# commit ahead of the old implementation SHA with NO changed files, and
+# core-catalog/main points at it. Pin the canonical *reviewed merge* commit for
+# traceability (Issue #281 Phase 4). Update this constant, the manifest, and the
+# versions doc together when the reviewed revision advances.
+CANONICAL_CATALOG_REVISION = "13b7a3b4a0b7a5f5e692dc6d5a3fa416852c4273"
+# The prior (non-canonical) implementation SHA must no longer be referenced.
+SUPERSEDED_CATALOG_REVISION = "4c30d9c3fa5c3c401c19f26b66a025854c65ee02"
 
 # Revalidated compatible provider package versions (exact pins).
 EXPECTED_PROVIDERS = {
@@ -52,6 +63,11 @@ EXPECTED_PROVIDERS = {
 def _docs(path):
     with open(path, encoding="utf-8") as fh:
         return [d for d in yaml.safe_load_all(fh) if d]
+
+
+def _read(path):
+    with open(path, encoding="utf-8") as fh:
+        return fh.read()
 
 
 class ChartPinTest(unittest.TestCase):
@@ -126,6 +142,47 @@ class XrdLegacyClusterCompatTest(unittest.TestCase):
                       "claimNames must be retained for LegacyCluster claim support")
         self.assertNotEqual(self.xrd["spec"].get("scope"), "Namespaced",
                             "Namespaced scope drops Claims support in Crossplane v2")
+
+
+class CoreCatalogCanonicalPinTest(unittest.TestCase):
+    """core-catalog must pin the canonical reviewed merge commit, stay immutable,
+    and remain manually gated (Issue #281 Phase 4)."""
+
+    def setUp(self):
+        self.app = _docs(CATALOG_APP)[0]
+
+    def test_pins_canonical_merge_commit(self):
+        rev = str(self.app["spec"]["source"]["targetRevision"])
+        self.assertEqual(
+            rev, CANONICAL_CATALOG_REVISION,
+            "core-catalog must pin the canonical reviewed merge commit",
+        )
+
+    def test_superseded_revision_not_referenced_anywhere(self):
+        # The old implementation SHA must be gone from the manifest and the doc.
+        self.assertNotIn(SUPERSEDED_CATALOG_REVISION, _read(CATALOG_APP))
+        self.assertNotIn(SUPERSEDED_CATALOG_REVISION, _read(VERSIONS_DOC))
+
+    def test_revision_is_immutable_40_hex(self):
+        rev = str(self.app["spec"]["source"]["targetRevision"])
+        self.assertRegex(rev, r"^[0-9a-f]{40}$",
+                         "catalog revision must be an immutable 40-hex commit")
+
+    def test_remains_manually_gated(self):
+        # Manual promotion must be preserved: no automated sync, gate annotation kept.
+        policy = self.app["spec"].get("syncPolicy", {})
+        self.assertNotIn("automated", policy,
+                         "core-catalog must not auto-sync (manual promotion gate)")
+        self.assertEqual(
+            self.app["metadata"].get("annotations", {}).get("platform.digiorg.io/upgrade-gate"),
+            "issue-275-manual",
+        )
+
+    def test_versions_doc_records_canonical_revision(self):
+        # The reviewed revision must be documented so the pin is traceable.
+        self.assertIn(CANONICAL_CATALOG_REVISION,
+                      _read(VERSIONS_DOC),
+                      "platform-versions.md must record the canonical catalog revision")
 
 
 if __name__ == "__main__":

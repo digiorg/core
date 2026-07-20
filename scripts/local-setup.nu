@@ -56,16 +56,27 @@ def "main up" [] {
     print "────────────────────────────────────"
     deploy_root_app
     
-    # Configure Gitea (Keycloak OIDC integration + initial users/org) — requires Gitea to be up and running
+    # Configure Gitea only after its direct Applications and certificate resources
+    # are converged. This gate is independent of unrelated late-wave Apps and is
+    # safe to re-enter on an interrupted `up` run.
     print ""
     print $"(ansi cyan_bold)Phase 3: Configure Gitea(ansi reset)"
     print "────────────────────────────────────"
+    wait_for_configuration_dependencies "Gitea" ["gitea" "keycloak" "cert-manager"] [
+        {namespace: "cert-manager", name: "digiorg-local-ca"}
+        {namespace: "ingress-nginx", name: "digiorg-local-tls"}
+    ]
     configure_gitea
 
-    # Configure SonarQube (SAML + base URL)
+    # Configure SonarQube only after its direct Applications and the same local
+    # trust chain are ready; a CNPG or other unrelated drift cannot skip it.
     print ""
     print $"(ansi cyan_bold)Phase 4: Configure SonarQube(ansi reset)"
     print "────────────────────────────────────"
+    wait_for_configuration_dependencies "SonarQube" ["sonarqube" "keycloak" "cert-manager"] [
+        {namespace: "cert-manager", name: "digiorg-local-ca"}
+        {namespace: "ingress-nginx", name: "digiorg-local-tls"}
+    ]
     configure_sonarqube
 
     # Restart OIDC-dependent pods after Keycloak is ready
@@ -73,7 +84,17 @@ def "main up" [] {
     print $"(ansi cyan_bold)Phase 5: Restart OIDC dependent PODs(ansi reset)"
     print "────────────────────────────────────"
     restart_oidc_dependent_pods
-    
+
+    # Issue #281: run the strict all-Application convergence gate LAST, so a
+    # genuine unresolved Application failure still blocks the final success
+    # banner (fail-closed), but unrelated late-wave drift no longer skips the
+    # identity configuration phases above. The dependency-aware, idempotent
+    # configuration phases have already run and are safe to resume on a rerun.
+    print ""
+    print $"(ansi cyan_bold)Phase 6: Final Platform Convergence Gate(ansi reset)"
+    print "────────────────────────────────────"
+    wait_for_argocd_apps
+
     print ""
     print $"(ansi green_bold)╔════════════════════════════════════════════════════════════════╗(ansi reset)"
     print $"(ansi green_bold)║  ✓ Platform Ready!                                             ║(ansi reset)"
@@ -84,7 +105,7 @@ def "main up" [] {
     print ""
     print "Access services (all via https://digiorg.local):"
     print "  Landing Page: https://digiorg.local/          (Login via Keycloak)"
-    print "  Keycloak:     https://digiorg.local/keycloak  (admin / admin)"
+    print "  Keycloak:     https://digiorg.local/keycloak  (admin console)"
     print "  Backstage:    https://digiorg.local/backstage (Login via Keycloak)"
     print "  Gitea:        https://digiorg.local/gitea     (Login via Keycloak)"
     print "  SonarQube:    https://digiorg.local/sonarqube (Login via Keycloak)"
@@ -391,21 +412,52 @@ data:
     print $"(ansi green)✓ CoreDNS configured for digiorg.local [($ingress_ip)](ansi reset)"
 }
 
+def kubectl_error_is_exact_not_found [stderr: string, resource: string, name: string] {
+    let expected = (["Error from server (NotFound): " $resource ' "' $name '" not found'] | str join)
+    ($stderr | str trim) == $expected
+}
+
+def secret_value_or_default [namespace: string, secret: string, key: string, override, fallback] {
+    let explicit = ($override | default "")
+    if ($explicit | into string) != "" {
+        return ($explicit | into string)
+    }
+
+    let lookup = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH get secret $secret -n $namespace -o $"jsonpath={.data.($key)}"
+    } | complete)
+    if $lookup.exit_code == 0 {
+        let existing = (try { $lookup.stdout | str trim | decode base64 | decode utf-8 } catch { "" })
+        if ($existing | is-empty) {
+            error make {msg: $"Existing Secret ($namespace)/($secret) has no usable ($key) value"}
+        }
+        return $existing
+    }
+
+    let secret_missing = (kubectl_error_is_exact_not_found $lookup.stderr "secrets" $secret)
+    let namespace_missing = (kubectl_error_is_exact_not_found $lookup.stderr "namespaces" $namespace)
+    if $secret_missing or $namespace_missing {
+        return ($fallback | into string)
+    }
+    error make {msg: $"Failed to read Secret ($namespace)/($secret) while resolving ($key)"}
+}
+
 def create_platform_namespaces_secrets [] {
-    # Generate passwords (can be overridden via environment variables)
-    let postgres_password = ($env.POSTGRES_PASSWORD? | default (generate_password))
-    let keycloak_db_password = ($env.KEYCLOAK_DB_PASSWORD? | default (generate_password))
-    let backstage_db_password = ($env.BACKSTAGE_DB_PASSWORD? | default (generate_password))
-    let backstage_session_secret = ($env.AUTH_SESSION_SECRET? | default (generate_password))
-    let backstage_oidc_secret = ($env.AUTH_OIDC_CLIENT_SECRET? | default "backstage-client-secret")
-    let gitea_db_password = ($env.GITEA_DB_PASSWORD? | default (generate_password))
-    let gitea_oidc_secret = ($env.GITEA_OIDC_CLIENT_SECRET? | default "gitea-client-secret")
-    let sonarqube_db_password = ($env.SONARQUBE_DB_PASSWORD? | default (generate_password))
-    let sonarqube_monitoring_passcode = ($env.SONARQUBE_MONITORING_PASSCODE? | default (generate_password))
-    let harbor_admin_password = ($env.HARBOR_ADMIN_PASSWORD? | default "Harbor12345")
-    let harbor_secret_key = ($env.HARBOR_SECRET_KEY? | default "not-a-secure-key")
-    let harbor_db_password = ($env.HARBOR_DB_PASSWORD? | default (generate_password))
-    let harbor_oidc_secret = ($env.HARBOR_OIDC_CLIENT_SECRET? | default "harbor-client-secret")
+    # Preserve existing values on resume. Environment variables are explicit
+    # rotation requests; random/default values are used only on a clean cluster.
+    let postgres_password = (secret_value_or_default "platform-db" "postgresql-secrets" "POSTGRES_PASSWORD" $env.POSTGRES_PASSWORD? (generate_password))
+    let keycloak_db_password = (secret_value_or_default "platform-db" "postgresql-secrets" "KEYCLOAK_DB_PASSWORD" $env.KEYCLOAK_DB_PASSWORD? (generate_password))
+    let backstage_db_password = (secret_value_or_default "platform-db" "postgresql-secrets" "BACKSTAGE_DB_PASSWORD" $env.BACKSTAGE_DB_PASSWORD? (generate_password))
+    let backstage_session_secret = (secret_value_or_default "backstage" "backstage-secrets" "AUTH_SESSION_SECRET" $env.AUTH_SESSION_SECRET? (generate_password))
+    let backstage_oidc_secret = (secret_value_or_default "backstage" "backstage-secrets" "AUTH_OIDC_CLIENT_SECRET" $env.AUTH_OIDC_CLIENT_SECRET? "backstage-client-secret")
+    let gitea_db_password = (secret_value_or_default "platform-db" "postgresql-secrets" "GITEA_DB_PASSWORD" $env.GITEA_DB_PASSWORD? (generate_password))
+    let gitea_oidc_secret = (secret_value_or_default "gitea" "gitea-secrets" "AUTH_OIDC_CLIENT_SECRET" $env.GITEA_OIDC_CLIENT_SECRET? "gitea-client-secret")
+    let sonarqube_db_password = (secret_value_or_default "platform-db" "postgresql-secrets" "SONARQUBE_DB_PASSWORD" $env.SONARQUBE_DB_PASSWORD? (generate_password))
+    let sonarqube_monitoring_passcode = (secret_value_or_default "code-quality" "sonarqube-monitoring-secret" "SONAR_WEB_SYSTEMPASSCODE" $env.SONARQUBE_MONITORING_PASSCODE? (generate_password))
+    let harbor_admin_password = (secret_value_or_default "harbor" "harbor-admin-secret" "HARBOR_ADMIN_PASSWORD" $env.HARBOR_ADMIN_PASSWORD? "Harbor12345")
+    let harbor_secret_key = (secret_value_or_default "harbor" "harbor-secret-key" "secretKey" $env.HARBOR_SECRET_KEY? "not-a-secure-key")
+    let harbor_db_password = (secret_value_or_default "platform-db" "postgresql-secrets" "HARBOR_DB_PASSWORD" $env.HARBOR_DB_PASSWORD? (generate_password))
+    let harbor_oidc_secret = (secret_value_or_default "harbor" "harbor-oidc-secret" "client-secret" $env.HARBOR_OIDC_CLIENT_SECRET? "harbor-client-secret")
     
     # Platform-db namespace and PostgreSQL secrets (shared database for Keycloak + Backstage + Gitea)
     kubectl create namespace platform-db --dry-run=client -o yaml | kubectl apply -f -
@@ -541,8 +593,8 @@ type: kubernetes.io/service-account-token" | save --force $token_secret_file
     kubectl create namespace tracing --dry-run=client -o yaml | kubectl apply -f -
 
     # Jaeger oauth2-proxy secret (Keycloak OIDC client + cookie encryption)
-    let jaeger_oidc_secret = ($env.JAEGER_OIDC_CLIENT_SECRET? | default "jaeger-client-secret")
-    let jaeger_cookie_secret = ($env.JAEGER_COOKIE_SECRET? | default (generate_password | str substring 0..31 | encode base64))
+    let jaeger_oidc_secret = (secret_value_or_default "tracing" "jaeger-oauth2-proxy-secrets" "client-secret" $env.JAEGER_OIDC_CLIENT_SECRET? "jaeger-client-secret")
+    let jaeger_cookie_secret = (secret_value_or_default "tracing" "jaeger-oauth2-proxy-secrets" "cookie-secret" $env.JAEGER_COOKIE_SECRET? (generate_password | str substring 0..31 | encode base64))
     (kubectl create secret generic jaeger-oauth2-proxy-secrets -n tracing
         --from-literal=client-secret=($jaeger_oidc_secret)
         --from-literal=cookie-secret=($jaeger_cookie_secret)
@@ -550,15 +602,15 @@ type: kubernetes.io/service-account-token" | save --force $token_secret_file
 
     # cost-monitoring namespace + OpenCost oauth2-proxy secrets
     kubectl create namespace cost-monitoring --dry-run=client -o yaml | kubectl apply -f -
-    let opencost_oidc_secret = ($env.OPENCOST_OIDC_CLIENT_SECRET? | default "opencost-client-secret")
-    let opencost_cookie_secret = ($env.OPENCOST_COOKIE_SECRET? | default (generate_password | str substring 0..31 | encode base64))
+    let opencost_oidc_secret = (secret_value_or_default "cost-monitoring" "opencost-oauth2-proxy-secrets" "client-secret" $env.OPENCOST_OIDC_CLIENT_SECRET? "opencost-client-secret")
+    let opencost_cookie_secret = (secret_value_or_default "cost-monitoring" "opencost-oauth2-proxy-secrets" "cookie-secret" $env.OPENCOST_COOKIE_SECRET? (generate_password | str substring 0..31 | encode base64))
     (kubectl create secret generic opencost-oauth2-proxy-secrets -n cost-monitoring
         --from-literal=client-secret=($opencost_oidc_secret)
         --from-literal=cookie-secret=($opencost_cookie_secret)
         --dry-run=client -o yaml | kubectl apply -f -)
 
     # OpenSearch secret (admin password for observability backend)
-    let opensearch_admin_password = ($env.OPENSEARCH_ADMIN_PASSWORD? | default (generate_password))
+    let opensearch_admin_password = (secret_value_or_default "platform-db" "opensearch-secrets" "OPENSEARCH_ADMIN_PASSWORD" $env.OPENSEARCH_ADMIN_PASSWORD? (generate_password))
     # Secret in platform-db namespace (for OpenSearch itself)
     (kubectl create secret generic opensearch-secrets -n platform-db
         --from-literal=OPENSEARCH_ADMIN_PASSWORD=($opensearch_admin_password)
@@ -571,6 +623,26 @@ type: kubernetes.io/service-account-token" | save --force $token_secret_file
     print $"(ansi green)✓ Platform namespaces and secrets created.(ansi reset)"
 }
 
+def helm_force_conflicts_args_for_version [version: string] {
+    let parsed = ($version | str trim | parse --regex '^v(?P<major>[0-9]+)\.[0-9]+\.[0-9]+(?:[+-].*)?$')
+    if ($parsed | length) != 1 {
+        error make {msg: $"Could not parse Helm version: ($version | str trim)"}
+    }
+    let major = ($parsed | get major | first | into int)
+    if $major >= 4 { ["--force-conflicts"] } else { [] }
+}
+
+def helm_force_conflicts_args [] {
+    let version = (do { helm version --short } | complete)
+    if $version.exit_code != 0 {
+        error make {msg: "Failed to determine the Helm version"}
+    }
+    helm_force_conflicts_args_for_version $version.stdout
+}
+
+# Helm 4 uses server-side apply and needs explicit conflict ownership when the
+# self-managed Argo CD Application has touched Helm-owned fields. Helm 3 does
+# not support that flag, so compute a version-aware optional argument list.
 def install_argocd [] {
     kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
 
@@ -581,6 +653,7 @@ def install_argocd [] {
     # reproducible. argo-cd 10.1.4 ships Argo CD app v3.4.5. Keep in sync with
     # the ARGOCD_CHART_VERSION comment in docs/guides/platform-versions.md and
     # the second (OIDC CA) helm upgrade below.
+    let helm_conflict_args = (helm_force_conflicts_args)
     (helm upgrade --install argocd argo/argo-cd
         --version 10.1.4
         --namespace argocd
@@ -588,6 +661,7 @@ def install_argocd [] {
         --values platform/base/argocd/values.yaml
         --set 'server.service.type=ClusterIP'
         --set 'configs.params.server\.insecure=true'
+        ...$helm_conflict_args
         --wait --timeout 10m)
 
     print $"(ansi green)✓ ArgoCD installed [Helm](ansi reset)"
@@ -672,13 +746,21 @@ def deploy_root_app [] {
     # them concurrently in a shared cluster. This script targets only the named
     # local KinD environment; invoking `main up` is the explicit approval to sync
     # its gated apps sequentially.
+    # Issue #281: the CNPG Cluster (cnpg-cluster, wave 1) races the CNPG operator
+    # admission webhook on a clean bootstrap — the Cluster apply hit
+    # `connection refused` before the webhook endpoint accepted connections, and
+    # the resulting SyncFailed operation then stayed Running forever behind an
+    # idle Pending backup PVC, so Argo's retry never recovered. Gate the Cluster
+    # apply on operator Deployment availability + a ready webhook endpoint first.
+    promote_cnpg_cluster
+
     sync_gated_apps_for_local_dev
 
-    # Wait for apps to sync
-    print ""
-    print $"(ansi cyan_bold)Phase 3: Waiting for ArgoCD Apps(ansi reset)"
-    print "────────────────────────────────────"
-    wait_for_argocd_apps
+    # Issue #281: the ArgoCD OIDC CA patch is independent of the global
+    # convergence gate (which now runs LAST, in `main up`, after identity
+    # configuration). Embedding the CA here keeps ArgoCD's own OIDC working
+    # without coupling it to full-platform convergence.
+    patch_argocd_oidc_ca
 }
 
 # Issue #279: wait for argocd-repo-server to be Ready AND to have stopped
@@ -850,12 +932,15 @@ def is_retryable_sync_error [message: string] {
 # failed webhook or tool can echo request headers, URLs with userinfo, or Secret
 # values. Classification still uses the original text; only output is redacted.
 def redact_sync_diagnostic [message: string] {
-    $message
-    | str replace --all --regex '(?i)authorization\s*[:=]\s*(bearer|basic)\s+[^\s,;]+' 'Authorization: [REDACTED]'
-    | str replace --all --regex '(?i)https?://[^\s/@:]+:[^\s/@]+@' 'https://[REDACTED]@'
-    | str replace --all --regex `(?i)["']?(password|token|api[_-]?key|client[_-]?secret|secret)["']?\s*[:=]\s*["'][^"']*["']` '[REDACTED]'
-    | str replace --all --regex `(?i)["']?(password|token|api[_-]?key|client[_-]?secret|secret)["']?\s*[:=]\s*[^\s,;}]+` '[REDACTED]'
-    | str replace --all --regex '(?i)secret\s+data\s*[:=]\s*[^\s,;]+' 'Secret data: [REDACTED]'
+    let redacted = ($message
+        | str replace --all --regex '(?i)authorization\s*[:=]\s*(bearer|basic)\s+[^\s,;]+' 'Authorization: [REDACTED]'
+        | str replace --all --regex '(?i)https?://[^\s/@:]+:[^\s/@]+@' 'https://[REDACTED]@'
+        | str replace --all --regex `(?i)["']?(password|token|api[_-]?key|client[_-]?secret|secret)["']?\s*[:=]\s*["'][^"']*["']` '[REDACTED]'
+        | str replace --all --regex `(?i)["']?(password|token|api[_-]?key|client[_-]?secret|secret)["']?\s*[:=]\s*[^\s,;}]+` '[REDACTED]'
+        | str replace --all --regex '(?i)secret\s+data\s*[:=]\s*[^\s,;]+' 'Secret data: [REDACTED]')
+    # Controller/admission messages are untrusted and may be arbitrarily large.
+    # Bound every caller to a single 1 KiB diagnostic after redaction.
+    $redacted | str substring 0..1023
 }
 
 # Print operationState.message plus any failed resource/hook messages so a
@@ -1002,6 +1087,193 @@ def sync_gated_apps_for_local_dev [] {
     }
 }
 
+# Issue #281: is the CNPG operator Deployment Available? Accepts either a single
+# Deployment or a (label-selected) DeploymentList JSON. Fail closed: unparseable
+# input or no Available replica yields false.
+def cnpg_operator_available [deployment_json: string] {
+    let parsed = (try { $deployment_json | from json } catch { null })
+    # `from json` accepts a bare scalar as a JSON string, so guard on the type:
+    # only a record is a real Deployment/List object. Fail closed otherwise.
+    if ($parsed | describe | str starts-with "record") == false {
+        return false
+    }
+    let deployments = if ($parsed | get -o kind | default "") == "List" or ($parsed | get -o kind | default "") == "DeploymentList" {
+        $parsed | get -o items | default []
+    } else {
+        [$parsed]
+    }
+    $deployments | any {|dep|
+        let desired = ($dep | get -o spec.replicas | default 0)
+        let available = ($dep | get -o status.availableReplicas | default 0)
+        ($desired > 0) and ($available >= $desired)
+    }
+}
+
+# Issue #281: does the CNPG admission webhook have a ready, addressed endpoint?
+# Parses a discovery.k8s.io/v1 EndpointSliceList (NOT the deprecated core
+# Endpoints API). Ready iff some slice has an endpoint with conditions.ready ==
+# true AND at least one address. Fail closed on unparseable input.
+def cnpg_webhook_endpoint_ready [endpointslices_json: string] {
+    let parsed = (try { $endpointslices_json | from json } catch { null })
+    # `from json` accepts a bare scalar as a JSON string, so guard on the type:
+    # only a record is a real EndpointSliceList object. Fail closed otherwise.
+    if ($parsed | describe | str starts-with "record") == false {
+        return false
+    }
+    let slices = ($parsed | get -o items | default [])
+    $slices | any {|slice|
+        ($slice | get -o endpoints | default []) | any {|ep|
+            let ready = ($ep | get -o conditions.ready | default false)
+            let addresses = ($ep | get -o addresses | default [])
+            $ready and (($addresses | length) > 0)
+        }
+    }
+}
+
+# Issue #281: block the CNPG Cluster apply until the operator Deployment is
+# Available AND its admission webhook endpoint is serving. On a clean bootstrap
+# the Cluster otherwise raced the webhook and hit `connection refused`, leaving a
+# non-terminal Running operation that Argo never retried. Bounded and fails
+# closed with a redacted diagnostic.
+def wait_for_cnpg_webhook_ready [] {
+    $env.KUBECONFIG = $KUBECONFIG_PATH
+
+    let operator_ns = "cnpg-system"
+    let webhook_service = "cnpg-webhook-service"
+    mut last_diagnostic = "cnpg operator/webhook readiness was not observed"
+    for attempt in 1..60 {
+        let dep_result = (do {
+            kubectl get deployment -n $operator_ns -l app.kubernetes.io/name=cloudnative-pg -o json
+        } | complete)
+        # discovery.k8s.io/v1 EndpointSlices for the webhook Service — the core
+        # Endpoints API is deprecated and must not be used here.
+        let slice_result = (do {
+            kubectl get endpointslices.discovery.k8s.io -n $operator_ns -l $"kubernetes.io/service-name=($webhook_service)" -o json
+        } | complete)
+
+        if $dep_result.exit_code == 0 and $slice_result.exit_code == 0 {
+            let operator_ok = (cnpg_operator_available $dep_result.stdout)
+            let webhook_ok = (cnpg_webhook_endpoint_ready $slice_result.stdout)
+            $last_diagnostic = $"operatorAvailable=($operator_ok) webhookEndpointReady=($webhook_ok)"
+            print $"  cnpg readiness: ($last_diagnostic) [attempt ($attempt)/60]"
+            if $operator_ok and $webhook_ok {
+                print $"(ansi green)✓ CNPG operator is Available and the webhook endpoint is ready(ansi reset)"
+                return
+            }
+        } else {
+            $last_diagnostic = (redact_sync_diagnostic (($dep_result.stderr + " " + $slice_result.stderr) | str trim))
+        }
+        sleep 5sec
+    }
+    error make {msg: $"CNPG operator Deployment/webhook endpoint did not become ready before the CNPG Cluster apply: ($last_diagnostic)"}
+}
+
+# Issue #281: promote the script-driven `cnpg-cluster` Application only after the
+# operator webhook is ready, then sync it with a genuinely fresh operation (new
+# startedAt — never re-read a stale terminal operation). Rerunning is safe: an
+# already Synced/Healthy Cluster reconciles as a no-op. Fails closed.
+def promote_cnpg_cluster [poll_interval: duration = 10sec] {
+    $env.KUBECONFIG = $KUBECONFIG_PATH
+
+    print ""
+    print $"(ansi cyan_bold)Promoting CNPG Cluster after operator/webhook readiness(ansi reset)"
+
+    mut exists = false
+    for attempt in 1..60 {
+        let get_result = (do { kubectl get application cnpg-cluster -n argocd -o name } | complete)
+        if $get_result.exit_code == 0 {
+            $exists = true
+            break
+        }
+        sleep 2sec
+    }
+    if not $exists {
+        error make {msg: "ArgoCD Application cnpg-cluster was not created by the root app"}
+    }
+
+    # Order the Cluster apply strictly AFTER the operator webhook is serving.
+    wait_for_cnpg_webhook_ready
+
+    let sync_payload = '{"operation":{"sync":{"prune":true,"syncOptions":["CreateNamespace=true","ServerSideApply=true"]}}}'
+    let initial_state = (kubectl get application cnpg-cluster -n argocd -o json | from json)
+    let previous_started = ($initial_state | get -o status.operationState.startedAt | default "")
+    let initial_phase = ($initial_state | get -o status.operationState.phase | default "")
+    let initial_sync = ($initial_state | get -o status.sync.status | default "")
+    let initial_health = ($initial_state | get -o status.health.status | default "")
+
+    # A resumed setup must not overwrite an operation that the previous invocation
+    # already started: Argo rejects that with "another operation is already in
+    # progress". Observe it to completion instead. Conversely, a terminal stale
+    # operation is never accepted as fresh; patching below must produce a changed
+    # startedAt. An already converged Application is a true idempotent no-op.
+    if $initial_phase == "Succeeded" and $initial_sync == "Synced" and $initial_health == "Healthy" {
+        print $"(ansi green)  ✓ cnpg-cluster is already Synced and Healthy(ansi reset)"
+        return
+    }
+
+    mut resuming_existing_operation = false
+    if $initial_phase == "Running" {
+        if ($previous_started | is-empty) {
+            error make {msg: "Running cnpg-cluster operation has no startedAt identity; refusing to overwrite an unidentifiable in-flight operation"}
+        }
+        $resuming_existing_operation = true
+        print $"  Resuming observation of in-flight cnpg-cluster operation started at ($previous_started)..."
+    } else {
+        print "  Syncing cnpg-cluster with a fresh operation..."
+        let sync_result = (do {
+            kubectl patch application cnpg-cluster -n argocd --type merge -p $sync_payload
+        } | complete)
+        if $sync_result.exit_code != 0 {
+            error make {msg: $"Could not start CNPG Cluster sync: (redact_sync_diagnostic ($sync_result.stderr | str trim))"}
+        }
+    }
+
+    mut completed = false
+    mut saw_new_operation = $resuming_existing_operation
+    mut succeeded = false
+    mut last_state = {}
+    for attempt in 1..90 {
+        let state_result = (do { kubectl get application cnpg-cluster -n argocd -o json } | complete)
+        if $state_result.exit_code == 0 {
+            let state = ($state_result.stdout | from json)
+            $last_state = $state
+            let phase = ($state | get -o status.operationState.phase | default "")
+            let started = ($state | get -o status.operationState.startedAt | default "")
+            let sync = ($state | get -o status.sync.status | default "")
+            let health = ($state | get -o status.health.status | default "")
+            if not $resuming_existing_operation and not ($started | is-empty) and $started != $previous_started {
+                $saw_new_operation = true
+            }
+            if $resuming_existing_operation and $started != $previous_started {
+                error make {msg: "The in-flight CNPG operation identity changed unexpectedly during resume"}
+            }
+            if $saw_new_operation and $phase in ["Failed" "Error"] {
+                $completed = true
+                break
+            }
+            if $saw_new_operation and $phase == "Succeeded" and $sync == "Synced" and $health == "Healthy" {
+                $completed = true
+                $succeeded = true
+                break
+            }
+        }
+        sleep $poll_interval
+    }
+
+    if not $completed {
+        if not ($last_state | is-empty) {
+            print_sync_diagnostics $last_state
+        }
+        error make {msg: "CNPG Cluster did not reach a fresh Synced+Healthy operation before the timeout"}
+    }
+    if not $succeeded {
+        print_sync_diagnostics $last_state
+        let message = ($last_state | get -o status.operationState.message | default "")
+        error make {msg: $"CNPG Cluster sync failed: (redact_sync_diagnostic $message)"}
+    }
+    print $"(ansi green)  ✓ cnpg-cluster sync Succeeded, Synced and Healthy(ansi reset)"
+}
+
 # Argo CD 3.x can retain stale per-resource OutOfSync status after a successful
 # Helm sync even when its own diff engine reports no material difference (seen
 # with API-defaulted CRD fields). Use the CLI only as a fail-closed secondary
@@ -1033,15 +1305,38 @@ def argocd_app_has_no_material_diff [app: string] {
     }
 }
 
+# Render a bounded, redacted one-line-per-app report of the non-ready
+# Applications. Input is a list of {name, health, sync, phase} records; only
+# those enum-like status fields are printed (never operation messages, which
+# can echo credentials), and each line is still passed through the shared
+# redaction as defence-in-depth. Empty input yields an empty string.
+def format_non_ready_report [non_ready: list] {
+    $non_ready
+    | each {|a|
+        let name = ($a | get -o name | default "")
+        let health = ($a | get -o health | default "")
+        let sync = ($a | get -o sync | default "")
+        let phase = ($a | get -o phase | default "")
+        redact_sync_diagnostic $"    ($name): health=($health) sync=($sync) phase=($phase)"
+    }
+    | str join "\n"
+}
+
 # Wait for ArgoCD apps to become healthy
 def wait_for_argocd_apps [] {
     $env.KUBECONFIG = $KUBECONFIG_PATH
-    
+
     print "Waiting for ArgoCD applications to sync (this may take 10-20 minutes)..."
     print ""
-    
-    # Apps to wait for (in wave order) — must match apps/platform/*.yaml exactly
+
+    # Apps to wait for — this client-side readiness inventory must match
+    # apps/platform/*.yaml EXACTLY (one entry per child Application, including
+    # `namespaces`). A contract test (test_bootstrap_convergence.py) fails if
+    # this list drifts from the manifests, so a stale inventory can no longer
+    # silently under-count readiness (issue #281: the omitted `namespaces`).
     let apps = [
+        # Wave -1
+        "namespaces",
         # Wave 0
         "cert-manager", "cnpg", "external-secrets", "nats", "postgresql",
         # Wave 1
@@ -1061,64 +1356,190 @@ def wait_for_argocd_apps [] {
         # Wave 8
         "core-catalog"
     ]
-    
+
     mut all_healthy = false
     mut attempts = 0
     let max_attempts = 150  # 25 minutes with 10sec intervals — platform has grown
-    
+    mut last_non_ready = []
+
     loop {
         $attempts = $attempts + 1
         if $attempts > $max_attempts {
-            error make {msg: "Timeout waiting for every required ArgoCD Application to become Synced and Healthy"}
+            # Fail closed, but first name every blocking Application with bounded,
+            # redacted health/sync/phase, then print the full status table — both
+            # were previously unreachable once the timeout aborted (issue #281).
+            print ""
+            print $"(ansi red)Non-ready ArgoCD Applications at timeout:(ansi reset)"
+            print (format_non_ready_report $last_non_ready)
+            print ""
+            print "ArgoCD Application Status:"
+            kubectl get applications -n argocd -o wide
+            let blocking = ($last_non_ready | get -o name | default [] | str join ", ")
+            error make {msg: $"Timeout waiting for every required ArgoCD Application to become Synced and Healthy; non-ready: ($blocking)"}
         }
-        
+
         mut ready_count = 0
-        
+        mut non_ready = []
+
         for app in $apps {
             let status = (do {
                 kubectl get application $app -n argocd -o json
             } | complete)
+            mut is_ready = false
+            mut health = "Unknown"
+            mut sync = "Unknown"
+            mut phase = ""
             if $status.exit_code == 0 {
                 let state = ($status.stdout | from json)
-                let health = ($state | get -o status.health.status | default "")
-                let sync = ($state | get -o status.sync.status | default "")
+                $health = ($state | get -o status.health.status | default "")
+                $sync = ($state | get -o status.sync.status | default "")
+                $phase = ($state | get -o status.operationState.phase | default "")
                 if $health == "Healthy" and $sync == "Synced" {
-                    $ready_count = $ready_count + 1
+                    $is_ready = true
                 } else if $health == "Healthy" and $sync == "OutOfSync" and (argocd_app_has_no_material_diff $app) {
                     # Count only a successful, fresh Argo core diff with zero
                     # material changes; every tool/error path remains closed.
                     print $"  ($app): stale OutOfSync status, but Argo reports no material diff"
-                    $ready_count = $ready_count + 1
+                    $is_ready = true
                 }
             }
+            if $is_ready {
+                $ready_count = $ready_count + 1
+            } else {
+                $non_ready = ($non_ready | append {name: $app, health: $health, sync: $sync, phase: $phase})
+            }
         }
+        $last_non_ready = $non_ready
 
         print $"  Apps Synced+Healthy: ($ready_count)/($apps | length) [attempt ($attempts)/($max_attempts)]"
+        # Surface which Applications are blocking during the final attempts so a
+        # stall is diagnosable well before the timeout error fires.
+        if ($non_ready | is-not-empty) and $attempts > ($max_attempts - 5) {
+            print (format_non_ready_report $non_ready)
+        }
 
         if $ready_count == ($apps | length) {
             $all_healthy = true
             break
         }
-        
+
         sleep 10sec
     }
-    
+
     if $all_healthy {
         print $"(ansi green)✓ All ArgoCD applications are healthy!(ansi reset)"
     }
-    
-    # Show final status
+
+    # Show final status (success path — the timeout path prints its own table)
     print ""
     print "ArgoCD Application Status:"
     kubectl get applications -n argocd -o wide
-
-    # Patch ArgoCD OIDC config with self-signed CA cert
-    patch_argocd_oidc_ca
 }
 
 # -----------------------------------------------------------------------------
 # Phase 3: Configure Apps Functions
 # -----------------------------------------------------------------------------
+
+# Wait only for the direct dependencies of an identity-configuration phase.
+# This lets Gitea/SonarQube configuration proceed independently of unrelated
+# late-wave drift while remaining bounded and fail-closed. App and Certificate
+# names are trusted repository constants; no untrusted operation messages or
+# Secret data are emitted.
+def wait_for_configuration_dependencies [phase: string, apps: list, certificates: list] {
+    $env.KUBECONFIG = $KUBECONFIG_PATH
+
+    mut last_non_ready = []
+    for attempt in 1..60 {
+        mut non_ready = []
+
+        for app in $apps {
+            let result = (do { kubectl get application $app -n argocd -o json } | complete)
+            if $result.exit_code != 0 {
+                $non_ready = ($non_ready | append $"Application/($app)=missing")
+                continue
+            }
+            let state = (try { $result.stdout | from json } catch { null })
+            if ($state | describe | str starts-with "record") == false {
+                $non_ready = ($non_ready | append $"Application/($app)=invalid-status")
+                continue
+            }
+            let health = ($state | get -o status.health.status | default "Unknown")
+            let sync = ($state | get -o status.sync.status | default "Unknown")
+            if not ($health == "Healthy" and $sync == "Synced") {
+                $non_ready = ($non_ready | append $"Application/($app)=health:($health),sync:($sync)")
+            }
+        }
+
+        for cert in $certificates {
+            let namespace = ($cert | get namespace)
+            let name = ($cert | get name)
+            let result = (do { kubectl get certificate $name -n $namespace -o json } | complete)
+            if $result.exit_code != 0 {
+                $non_ready = ($non_ready | append $"Certificate/($namespace)/($name)=missing")
+                continue
+            }
+            let resource = (try { $result.stdout | from json } catch { null })
+            if ($resource | describe | str starts-with "record") == false {
+                $non_ready = ($non_ready | append $"Certificate/($namespace)/($name)=invalid-status")
+                continue
+            }
+            let conditions = ($resource | get -o status.conditions | default [])
+            let ready = ($conditions | any {|condition|
+                (($condition | get -o type | default "") == "Ready") and (($condition | get -o status | default "") == "True")
+            })
+            if not $ready {
+                $non_ready = ($non_ready | append $"Certificate/($namespace)/($name)=Ready:False")
+            }
+        }
+
+        $last_non_ready = $non_ready
+        if ($non_ready | is-empty) {
+            print $"(ansi green)✓ ($phase) configuration dependencies are ready(ansi reset)"
+            return
+        }
+
+        if $attempt > 55 {
+            print $"  ($phase) dependencies pending: (($non_ready | str join ', ')) [attempt ($attempt)/60]"
+        }
+        sleep 5sec
+    }
+
+    let bounded = ($last_non_ready | first 20 | str join ", ")
+    error make {msg: $"($phase) configuration dependencies did not become ready: ($bounded)"}
+}
+
+def persist_gitea_bootstrap_token [token: string] {
+    if ($token | is-empty) {
+        error make {msg: "Refusing to persist an empty Gitea bootstrap token"}
+    }
+    let manifest = ({
+        apiVersion: "v1"
+        kind: "Secret"
+        metadata: {name: "gitea-bootstrap-token", namespace: "gitea"}
+        type: "Opaque"
+        data: {token: ($token | encode base64)}
+    } | to json)
+    let apply_result = (do {
+        $manifest | kubectl --kubeconfig $KUBECONFIG_PATH apply -f -
+    } | complete)
+    if $apply_result.exit_code != 0 {
+        error make {msg: "Failed to persist the Gitea bootstrap token"}
+    }
+
+    # Read back and compare without printing either value. This catches apply
+    # transport failures and malformed persistence while keeping the token out of
+    # argv and remaining portable across Linux, macOS and Windows hosts.
+    let readback = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH get secret gitea-bootstrap-token -n gitea -o jsonpath='{.data.token}'
+    } | complete)
+    if $readback.exit_code != 0 {
+        error make {msg: "Failed to verify the persisted Gitea bootstrap token"}
+    }
+    let persisted = (try { $readback.stdout | str trim | decode base64 | decode utf-8 } catch { "" })
+    if ($persisted | is-empty) or ($persisted != $token) {
+        error make {msg: "Persisted Gitea bootstrap token did not match its source"}
+    }
+}
 
 # Configure Gitea (register self-signed CA cert + add Keycloak OIDC provider + create initial users/org)
 def configure_gitea [] {
@@ -1142,15 +1563,24 @@ def configure_gitea [] {
         sleep 10sec
     }
     if not $gitea_ready {
-        print $"(ansi yellow)Warning: Gitea pod not ready, skipping OIDC configuration(ansi reset)"
-        return
+        error make {msg: "Gitea pod did not become ready for OIDC configuration"}
     }
     let gitea_pod = (kubectl --kubeconfig $KUBECONFIG_PATH get pods -n gitea -l app.kubernetes.io/name=gitea -o jsonpath='{.items[0].metadata.name}' | str trim)
 
     # Extract CA cert from cert-manager secret
-    # Copy CA cert into Gitea container and update trust store
-    kubectl --kubeconfig $KUBECONFIG_PATH cp digiorg-local-ca.crt -c gitea gitea/($gitea_pod):/usr/local/share/ca-certificates/digiorg-local-ca.crt | complete
-    kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- update-ca-certificates | complete
+    # Copy CA cert into Gitea container and update trust store.
+    let ca_copy = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH cp digiorg-local-ca.crt -c gitea gitea/($gitea_pod):/usr/local/share/ca-certificates/digiorg-local-ca.crt
+    } | complete)
+    if $ca_copy.exit_code != 0 {
+        error make {msg: "Failed to copy the local CA certificate into Gitea"}
+    }
+    let ca_update = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- update-ca-certificates
+    } | complete)
+    if $ca_update.exit_code != 0 {
+        error make {msg: "Failed to update the Gitea trust store"}
+    }
     print $"(ansi green)✓ CA cert registered in Gitea trust store(ansi reset)"
 
     # --- Step 2: Add Keycloak as OIDC authentication source ---
@@ -1158,7 +1588,7 @@ def configure_gitea [] {
     
     # Check if Keycloak OIDC source already exists (idempotency)
     let existing_oauth = (do {
-        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- su git gitea admin auth list --vertical
+        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- su git -c 'gitea admin auth list'
     } | complete)
 
     mut oidc_exists = false
@@ -1176,183 +1606,238 @@ def configure_gitea [] {
         if $add_result.exit_code == 0 {
             print $"(ansi green)✓ Keycloak OIDC provider added to Gitea(ansi reset)"
         } else {
-            print $"(ansi red)✗ Failed to add Keycloak OIDC provider: ($add_result.stderr)(ansi reset)"
-            return
+            error make {msg: "Failed to add the Keycloak OIDC provider to Gitea"}
         }
     } else {
         print $"(ansi yellow)✓ Keycloak OIDC provider already exists in Gitea(ansi reset)"
     }
 
-    # --- Step 3: Create initial users in Gitea ---
-    print "3. Creating initial users in Gitea..."
+    # --- Step 3: Create initial users in Gitea (resume-safe) ---
+    print "3. Ensuring initial users exist in Gitea..."
 
-    kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- su git -c 'gitea admin user create --username "digiorgadmin" --email "admin@digiorg.local" --password "digiorgadmin" --must-change-password false --admin true'
-    kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- su git -c 'gitea admin user create --username "digiorgdeveloper" --email "developer@digiorg.local" --password "digiorgdeveloper" --must-change-password false --admin false'
-    print $"(ansi green)✓ Initial users created(ansi reset)"
-
-    # --- Step 4: Create DigiOrg organisation via tea CLI ---
-    print "4. Creating DigiOrg organisation in Gitea..."
-
-    # 4a: Install tea CLI if not already present
-    let tea_check = (do {
-        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c 'test -x /usr/local/bin/tea && echo "exists"'
+    let users_result = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- su git -c 'gitea admin user list'
     } | complete)
+    if $users_result.exit_code != 0 {
+        error make {msg: "Failed to list existing Gitea users"}
+    }
 
-    if ($tea_check.exit_code == 0) and ($tea_check.stdout | str contains "exists") {
-        print $"(ansi yellow)✓ tea CLI already installed(ansi reset)"
-    } else {
-        let tea_install = (do {
-            kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c 'wget -qO /usr/local/bin/tea https://dl.gitea.com/tea/0.9.2/tea-0.9.2-linux-amd64 && chmod +x /usr/local/bin/tea'
+    if not ($users_result.stdout | lines | any {|line| $line | str contains "digiorgadmin" }) {
+        let create_admin = (do {
+            kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- su git -c 'gitea admin user create --username "digiorgadmin" --email "admin@digiorg.local" --password "digiorgadmin" --must-change-password false --admin true'
         } | complete)
-        if $tea_install.exit_code == 0 {
-            print $"(ansi green)✓ tea CLI installed(ansi reset)"
-        } else {
-            print $"(ansi red)✗ Failed to install tea CLI: ($tea_install.stderr)(ansi reset)"
-            return
+        if $create_admin.exit_code != 0 {
+            error make {msg: "Failed to create the initial Gitea administrator"}
         }
     }
 
-    # 4b: Check if tea login already exists (idempotency check first)
-    let login_check = (do {
-        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c 'tea login list 2>/dev/null | grep -q "teaadmin-digiorg" && echo "exists"'
-    } | complete)
-
-    # 4b/4c/4d: Resolve gitea_token — immutable, derived from both branches
-    # Nushell does not allow capturing mut variables in closures; use let + if expression instead.
-    let gitea_token = if ($login_check.exit_code == 0) and ($login_check.stdout | str contains "exists") {
-        print $"(ansi yellow)✓ tea login 'teaadmin-digiorg' already configured(ansi reset)"
-        # Extract stored token from tea config for subsequent API calls
-        let token_extract = (do {
-            kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c 'grep -A10 "teaadmin-digiorg" /root/.config/tea/config.yml | grep "token:" | head -1 | sed "s/.*token: //"'
+    if not ($users_result.stdout | lines | any {|line| $line | str contains "digiorgdeveloper" }) {
+        let create_developer = (do {
+            kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- su git -c 'gitea admin user create --username "digiorgdeveloper" --email "developer@digiorg.local" --password "digiorgdeveloper" --must-change-password false --admin false'
         } | complete)
-        $token_extract.stdout | str trim
-    } else {
-        # 4c: Generate access token — must run as git user, not root
+        if $create_developer.exit_code != 0 {
+            error make {msg: "Failed to create the initial Gitea developer"}
+        }
+    }
+    print $"(ansi green)✓ Initial users are present(ansi reset)"
+
+    # --- Step 4: Create DigiOrg organisation via the Gitea API ---
+    print "4. Ensuring DigiOrg organisation exists in Gitea..."
+
+    # Persist the bootstrap token in Kubernetes rather than a CLI config file.
+    # The value travels only over stdin and is never placed in a process argument.
+    let token_secret = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH get secret gitea-bootstrap-token -n gitea -o jsonpath='{.data.token}'
+    } | complete)
+    let gitea_token = if $token_secret.exit_code == 0 {
+        let stored_token = (try { $token_secret.stdout | str trim | decode base64 | decode utf-8 } catch { "" })
+        if ($stored_token | is-empty) {
+            error make {msg: "The existing gitea-bootstrap-token Secret has no usable token"}
+        }
+        print $"(ansi yellow)✓ Existing Gitea bootstrap token reused(ansi reset)"
+        $stored_token
+    } else if (kubectl_error_is_exact_not_found $token_secret.stderr "secrets" "gitea-bootstrap-token") {
+        let token_name = $"local-setup-((date now | format date '%Y%m%d%H%M%S'))"
         let token_result = (do {
-            kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- su git -c 'gitea admin user generate-access-token --username gitea_admin --token-name teaadmin --scopes write:activitypub,write:admin,write:issue,write:misc,write:notification,write:organization,write:package,write:repository,write:user --raw'
+            kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- su git -c $'gitea admin user generate-access-token --username gitea_admin --token-name "($token_name)" --scopes write:activitypub,write:admin,write:issue,write:misc,write:notification,write:organization,write:package,write:repository,write:user --raw'
         } | complete)
         if $token_result.exit_code != 0 {
-            print $"(ansi red)✗ Failed to generate access token: ($token_result.stderr)(ansi reset)"
-            return
+            error make {msg: "Failed to generate the Gitea configuration access token"}
         }
         let token = ($token_result.stdout | str trim)
-        print $"(ansi green)✓ Access token generated(ansi reset)"
-
-        # 4d: Set up tea login (token-based, using immutable $token — capturable in closures)
-        let login_add = (do {
-            kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c $"tea login add --name=teaadmin-digiorg --url=https://digiorg.local/gitea --token=($token)"
-        } | complete)
-        if $login_add.exit_code == 0 {
-            print $"(ansi green)✓ tea login 'teaadmin-digiorg' configured(ansi reset)"
-        } else {
-            print $"(ansi red)✗ Failed to configure tea login: ($login_add.stderr)(ansi reset)"
-            return
+        if ($token | is-empty) {
+            error make {msg: "Gitea returned an empty configuration access token"}
         }
+        persist_gitea_bootstrap_token $token
+        print $"(ansi green)✓ Gitea bootstrap token generated and persisted(ansi reset)"
         $token
-    }
-
-    # 4e: Create DigiOrg organisation (idempotent)
-    let org_check = (do {
-        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c 'tea organizations list --login teaadmin-digiorg 2>/dev/null | grep -q "DigiOrg" && echo "exists"'
-    } | complete)
-
-    if ($org_check.exit_code == 0) and ($org_check.stdout | str contains "exists") {
-        print $"(ansi yellow)✓ Organisation 'DigiOrg' already exists(ansi reset)"
     } else {
-        let org_create = (do {
-            kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c 'tea organization create --description "DigiOrg Organization" --visibility public --repo-admins-can-change-team-access --login teaadmin-digiorg DigiOrg'
-        } | complete)
-        if $org_create.exit_code == 0 {
-            print $"(ansi green)✓ Organisation 'DigiOrg' created(ansi reset)"
-        } else {
-            print $"(ansi red)✗ Failed to create organisation 'DigiOrg': ($org_create.stderr)(ansi reset)"
-            return
-        }
+        error make {msg: "Failed to read the gitea-bootstrap-token Secret"}
     }
 
-    # 4f: Get Owners team ID via Gitea API
-    let teams_result = (do {
-        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c $"curl -sk -H 'Authorization: token ($gitea_token)' https://digiorg.local/gitea/api/v1/orgs/DigiOrg/teams"
+    # Create the organisation through the API so no CLI configuration needs the
+    # administrative token in argv. Exact HTTP status handling is fail-closed.
+    let org_check = (do {
+        $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - -sSk -o /dev/null -w "%{http_code}" https://digiorg.local/gitea/api/v1/orgs/DigiOrg'
     } | complete)
+    if $org_check.exit_code != 0 {
+        error make {msg: "Failed to query the DigiOrg organisation in Gitea"}
+    }
+    let org_status = ($org_check.stdout | str trim)
+    if $org_status == "200" {
+        print $"(ansi yellow)✓ Organisation 'DigiOrg' already exists(ansi reset)"
+    } else if $org_status == "404" {
+        let org_create = (do {
+            $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - -sSk -o /dev/null -w "%{http_code}" -X POST -H "Content-Type: application/json" --data "{\"username\":\"DigiOrg\",\"full_name\":\"DigiOrg Organization\",\"visibility\":\"public\",\"repo_admin_change_team_access\":true}" https://digiorg.local/gitea/api/v1/orgs'
+        } | complete)
+        if $org_create.exit_code != 0 or (($org_create.stdout | str trim) != "201") {
+            error make {msg: "Failed to create the DigiOrg organisation in Gitea"}
+        }
+        print $"(ansi green)✓ Organisation 'DigiOrg' created(ansi reset)"
+    } else {
+        error make {msg: $"Unexpected HTTP status while querying the DigiOrg organisation: ($org_status)"}
+    }
+
+    # 4f: Get Owners team ID via Gitea API. Feed the token on stdin so it is
+    # never embedded in a process argument or printed command; --fail turns
+    # every HTTP 4xx/5xx response into a fail-closed command result.
+    let teams_result = (do {
+        $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - -fsSk https://digiorg.local/gitea/api/v1/orgs/DigiOrg/teams'
+    } | complete)
+
     if $teams_result.exit_code != 0 {
-        print $"(ansi red)✗ Failed to retrieve DigiOrg teams: ($teams_result.stderr)(ansi reset)"
-        return
+        error make {msg: "Failed to retrieve the DigiOrg teams from Gitea"}
     }
     let owners_team = ($teams_result.stdout | from json | where name == "Owners")
     if ($owners_team | is-empty) {
-        print $"(ansi red)✗ Could not find Owners team in DigiOrg(ansi reset)"
-        return
+        error make {msg: "Could not find the Owners team in the DigiOrg organisation"}
     }
     let owners_team_id = ($owners_team | get id | first)
     print $"(ansi green)✓ DigiOrg Owners team ID: ($owners_team_id)(ansi reset)"
 
     # 4g: Add digiorgadmin to Owners team (idempotent)
     let admin_check = (do {
-        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c $"curl -sk -o /dev/null -w '%{http_code}' -H 'Authorization: token ($gitea_token)' https://digiorg.local/gitea/api/v1/teams/($owners_team_id)/members/digiorgadmin"
+        $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c $'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - -sSk -o /dev/null -w "%{http_code}" https://digiorg.local/gitea/api/v1/teams/($owners_team_id)/members/digiorgadmin'
     } | complete)
 
-    if ($admin_check.exit_code == 0) and (($admin_check.stdout | str trim) == "204") {
+    if ($admin_check.exit_code == 0) and (($admin_check.stdout | str trim) == "200") {
         print $"(ansi yellow)✓ 'digiorgadmin' already member of Owners team(ansi reset)"
     } else {
         let admin_add = (do {
-            kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c $"curl -sk -X PUT -H 'Authorization: token ($gitea_token)' https://digiorg.local/gitea/api/v1/teams/($owners_team_id)/members/digiorgadmin"
+            $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c $'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - -fsSk -X PUT https://digiorg.local/gitea/api/v1/teams/($owners_team_id)/members/digiorgadmin'
         } | complete)
         if $admin_add.exit_code == 0 {
             print $"(ansi green)✓ 'digiorgadmin' added to Owners team(ansi reset)"
         } else {
-            print $"(ansi red)✗ Failed to add 'digiorgadmin' to Owners team: ($admin_add.stderr)(ansi reset)"
-            return
+            error make {msg: "Failed to add digiorgadmin to the Gitea Owners team"}
         }
     }
 
     # 4h: Add digiorgdeveloper to Owners team (idempotent)
     let dev_check = (do {
-        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c $"curl -sk -o /dev/null -w '%{http_code}' -H 'Authorization: token ($gitea_token)' https://digiorg.local/gitea/api/v1/teams/($owners_team_id)/members/digiorgdeveloper"
+        $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c $'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - -sSk -o /dev/null -w "%{http_code}" https://digiorg.local/gitea/api/v1/teams/($owners_team_id)/members/digiorgdeveloper'
     } | complete)
 
-    if ($dev_check.exit_code == 0) and (($dev_check.stdout | str trim) == "204") {
+    if ($dev_check.exit_code == 0) and (($dev_check.stdout | str trim) == "200") {
         print $"(ansi yellow)✓ 'digiorgdeveloper' already member of Owners team(ansi reset)"
     } else {
         let dev_add = (do {
-            kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c $"curl -sk -X PUT -H 'Authorization: token ($gitea_token)' https://digiorg.local/gitea/api/v1/teams/($owners_team_id)/members/digiorgdeveloper"
+            $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c $'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - -fsSk -X PUT https://digiorg.local/gitea/api/v1/teams/($owners_team_id)/members/digiorgdeveloper'
         } | complete)
         if $dev_add.exit_code == 0 {
             print $"(ansi green)✓ 'digiorgdeveloper' added to Owners team(ansi reset)"
         } else {
-            print $"(ansi red)✗ Failed to add 'digiorgdeveloper' to Owners team: ($dev_add.stderr)(ansi reset)"
-            return
+            error make {msg: "Failed to add digiorgdeveloper to the Gitea Owners team"}
         }
     }
 
     # 4i: Verification — list Owners team members
     let verify = (do {
-        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- sh -c $"curl -sk -H 'Authorization: token ($gitea_token)' https://digiorg.local/gitea/api/v1/teams/($owners_team_id)/members"
+        $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c $'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - -fsSk https://digiorg.local/gitea/api/v1/teams/($owners_team_id)/members'
     } | complete)
     if $verify.exit_code == 0 {
-        let members = ($verify.stdout | from json | get login | str join ", ")
-        print $"(ansi green)✓ DigiOrg Owners team members: ($members)(ansi reset)"
+        let members = ($verify.stdout | from json | get login)
+        let required_members = ["digiorgadmin" "digiorgdeveloper"]
+        let missing_members = ($required_members | where {|username| $username not-in $members })
+        if not ($missing_members | is-empty) {
+            error make {msg: $"Required Gitea Owners team members are missing: ($missing_members | str join ', ')"}
+        }
+        print $"(ansi green)✓ DigiOrg Owners team members: ($members | str join ', ')(ansi reset)"
+    } else {
+        error make {msg: "Failed to verify the Gitea Owners team membership"}
     }
 
     print $"(ansi green)✓ Gitea OIDC integration configured(ansi reset)"
 }
 
+# Compare SonarQube's /api/settings/values response with an expected JSON record.
+# The secured certificate itself is intentionally excluded from readback because
+# SonarQube does not return secured values. Invalid/missing JSON fails closed.
+def sonarqube_settings_match [settings_json: string, expected_json: string] {
+    let parsed = (try { $settings_json | from json } catch { null })
+    let expected = (try { $expected_json | from json } catch { null })
+    if (($parsed | describe | str starts-with "record") == false) or (($expected | describe | str starts-with "record") == false) {
+        return false
+    }
+    let settings = ($parsed | get -o settings | default [])
+    $expected | transpose key value | all {|entry|
+        $settings | any {|setting|
+            (($setting | get -o key | default "") == $entry.key) and (($setting | get -o value | default "") == $entry.value)
+        }
+    }
+}
+
+def sonarqube_setting_definition_present [definitions_json: string, required_key: string] {
+    let parsed = (try { $definitions_json | from json } catch { null })
+    if (($parsed | describe | str starts-with "record") == false) {
+        return false
+    }
+    let definitions = ($parsed | get -o definitions | default [])
+    $definitions | any {|definition| ($definition | get -o key | default "") == $required_key }
+}
+
+def sonarqube_http_status_matches [exit_code: int, status: string, expected: string] {
+    $exit_code == 0 and ($status | str trim) == $expected
+}
+
 # Configure SonarQube
 def configure_sonarqube [] {
+    # Persisted browser-facing URLs remain public, while bootstrap traffic stays
+    # inside the cluster and does not depend on a host /etc/hosts entry.
     let sonar_url = "https://digiorg.local/sonarqube"
-    let keycloak_saml_descriptor_url = "https://digiorg.local/keycloak/realms/digiorg-core-platform/protocol/saml/descriptor"
-    let admin_pass = (do -i { kubectl --kubeconfig $KUBECONFIG_PATH get secret sonarqube-admin-secret -n code-quality -o jsonpath='{.data.password}' } | complete)
-
-    let password = if $admin_pass.exit_code == 0 {
-        $admin_pass.stdout | str trim | decode base64
-    } else {
-        ($env.SONARQUBE_ADMIN_PASSWORD? | default "admin")
+    let sonar_api_url = "http://sonarqube-sonarqube.code-quality.svc.cluster.local:9000/sonarqube"
+    let keycloak_saml_descriptor_url = "http://keycloak.keycloak.svc.cluster.local:8080/keycloak/realms/digiorg-core-platform/protocol/saml/descriptor"
+    let sonar_pod_result = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH get pods -n code-quality -l app=sonarqube -o jsonpath='{.items[0].metadata.name}'
+    } | complete)
+    let sonar_pod = ($sonar_pod_result.stdout | str trim)
+    if $sonar_pod_result.exit_code != 0 or ($sonar_pod | is-empty) {
+        error make {msg: "Failed to find the SonarQube pod for in-cluster configuration"}
     }
+    let admin_pass = (do -i { kubectl --kubeconfig $KUBECONFIG_PATH get secret sonarqube-admin-secret -n code-quality -o jsonpath='{.data.password}' } | complete)
+    let password = if $admin_pass.exit_code == 0 {
+        try { $admin_pass.stdout | str trim | decode base64 } catch { "" }
+    } else if (kubectl_error_is_exact_not_found $admin_pass.stderr "secrets" "sonarqube-admin-secret") {
+        # The upstream local-development chart starts with the documented default
+        # admin password and does not create an admin Secret. Operators can provide
+        # SONARQUBE_ADMIN_PASSWORD after changing it. Only exact NotFound falls back;
+        # auth, kubeconfig and transport errors remain fatal.
+        $env.SONARQUBE_ADMIN_PASSWORD? | default "admin"
+    } else {
+        error make {msg: "Failed to read the SonarQube admin password from sonarqube-admin-secret"}
+    }
+    if ($password | is-empty) {
+        error make {msg: "Failed to read the SonarQube admin password from sonarqube-admin-secret"}
+    }
+    # Feed curl credentials through stdin config so the password is not exposed
+    # in a process argument. Never print this value.
+    let sonar_auth_config = $"user = \"admin:($password)\"\n"
 
     # Wait for SonarQube to be ready (up to 5 min)
     mut sonar_ready = false
     for attempt in 1..30 {
         let status = (do -i {
-            curl --noproxy "*" -sk -u $"admin:($password)" $"($sonar_url)/api/system/status"
+            $sonar_auth_config | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n code-quality $sonar_pod -c sonarqube -- curl --config - -fsS $"($sonar_api_url)/api/system/status"
         } | complete)
         if $status.exit_code == 0 and ($status.stdout | str contains '"status":"UP"') {
             $sonar_ready = true
@@ -1363,32 +1848,29 @@ def configure_sonarqube [] {
     }
 
     if not $sonar_ready {
-        print $"(ansi yellow)Warning: SonarQube not ready, skipping Server Base URL configuration(ansi reset)"
-        return
+        error make {msg: "SonarQube did not become ready for SAML configuration"}
     }
 
     # Set sonar.core.serverBaseURL via Settings API
-    let result = (do -i { curl --noproxy "*" -sk -u $"admin:($password)" -X POST $"($sonar_url)/api/settings/set" --data-urlencode "key=sonar.core.serverBaseURL" --data-urlencode $"value=($sonar_url)" } | complete)
+    let result = (do -i { $sonar_auth_config | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n code-quality $sonar_pod -c sonarqube -- curl --config - -sS -o /dev/null -w "%{http_code}" -X POST $"($sonar_api_url)/api/settings/set" --data-urlencode "key=sonar.core.serverBaseURL" --data-urlencode $"value=($sonar_url)" } | complete)
 
-    if $result.exit_code == 0 {
+    if (sonarqube_http_status_matches $result.exit_code $result.stdout "204") {
         print $"(ansi green)✓ SonarQube Server Base URL set to ($sonar_url)(ansi reset)"
     } else {
-        print $"(ansi red)✗ Failed to set Server Base URL: ($result.stderr)(ansi reset)"
+        error make {msg: "Failed to set the SonarQube Server Base URL"}
     }
 
     # --- Step 1: Fetch Keycloak IdP X.509 certificate from SAML descriptor ---
     # The SAML metadata descriptor endpoint returns the full X.509 certificate
     # (not just the raw public key), which is what SonarQube requires.
     print "  1. Fetching Keycloak IdP X.509 certificate from SAML descriptor..."
-    let cert_result = (do -i { curl --noproxy "*" -sk $keycloak_saml_descriptor_url } | complete)
+    let cert_result = (do -i { kubectl --kubeconfig $KUBECONFIG_PATH exec -n code-quality $sonar_pod -c sonarqube -- curl -fsS $keycloak_saml_descriptor_url } | complete)
     if $cert_result.exit_code != 0 {
-        print $"(ansi red)✗ Failed to reach Keycloak SAML descriptor endpoint: ($cert_result.stderr)(ansi reset)"
-        return
+        error make {msg: "Failed to reach the Keycloak SAML descriptor endpoint"}
     }
     let keycloak_cert = ($cert_result.stdout | parse --regex '(?s)<ds:X509Certificate>(.*?)</ds:X509Certificate>' | get capture0 | first | str trim)
     if ($keycloak_cert | is-empty) {
-        print $"(ansi red)✗ Could not extract X509Certificate from SAML descriptor(ansi reset)"
-        return
+        error make {msg: "Could not extract the X509Certificate from the Keycloak SAML descriptor"}
     }
     print $"(ansi green)✓ Keycloak IdP X.509 certificate fetched(ansi reset)"
 
@@ -1410,72 +1892,109 @@ def configure_sonarqube [] {
 
     mut all_ok = true
     for setting in $saml_settings {
-        let r = (do -i { curl --noproxy "*" -sk -u $"admin:($password)" -X POST $"($sonar_url)/api/settings/set" --data-urlencode $"key=($setting.key)" --data-urlencode $"value=($setting.value)" } | complete)
-        if $r.exit_code != 0 {
-            print $"(ansi red)✗ Failed to set ($setting.key): ($r.stderr)(ansi reset)"
+        let r = (do -i { $sonar_auth_config | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n code-quality $sonar_pod -c sonarqube -- curl --config - -sS -o /dev/null -w "%{http_code}" -X POST $"($sonar_api_url)/api/settings/set" --data-urlencode $"key=($setting.key)" --data-urlencode $"value=($setting.value)" } | complete)
+        if not (sonarqube_http_status_matches $r.exit_code $r.stdout "204") {
+            print $"(ansi red)✗ Failed to set ($setting.key)(ansi reset)"
             $all_ok = false
         }
     }
 
     # --- Step 4: Enable SAML ---
-    let enable_result = (do -i { curl --noproxy "*" -sk -u $"admin:($password)" -X POST $"($sonar_url)/api/settings/set" --data-urlencode "key=sonar.auth.saml.enabled" --data-urlencode "value=true" } | complete)
-    if $enable_result.exit_code != 0 {
-        print $"(ansi red)✗ Failed to enable SAML: ($enable_result.stderr)(ansi reset)"
+    let enable_result = (do -i { $sonar_auth_config | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n code-quality $sonar_pod -c sonarqube -- curl --config - -sS -o /dev/null -w "%{http_code}" -X POST $"($sonar_api_url)/api/settings/set" --data-urlencode "key=sonar.auth.saml.enabled" --data-urlencode "value=true" } | complete)
+    if not (sonarqube_http_status_matches $enable_result.exit_code $enable_result.stdout "204") {
+        print $"(ansi red)✗ Failed to enable SAML(ansi reset)"
         $all_ok = false
     }
 
-    if $all_ok {
-        print $"(ansi green)✓ SAML fully configured and enabled in SonarQube(ansi reset)"
-    } else {
-        print $"(ansi yellow)Warning: Some SAML settings may not have been applied(ansi reset)"
+    if not $all_ok {
+        error make {msg: "One or more SonarQube SAML settings could not be applied"}
     }
+
+    # Mandatory readback of every non-secured setting. Successful POST status is
+    # insufficient: proxies or API compatibility errors can otherwise leave the
+    # platform unconfigured while the bootstrap reports success.
+    let expected_readback = {
+        "sonar.core.serverBaseURL": $sonar_url
+        "sonar.auth.saml.applicationId": "sonarqube"
+        "sonar.auth.saml.providerName": "Keycloak"
+        "sonar.auth.saml.providerId": "https://digiorg.local/keycloak/realms/digiorg-core-platform"
+        "sonar.auth.saml.loginUrl": "https://digiorg.local/keycloak/realms/digiorg-core-platform/protocol/saml"
+        "sonar.auth.saml.user.login": "login"
+        "sonar.auth.saml.user.name": "name"
+        "sonar.auth.saml.user.email": "email"
+        "sonar.auth.saml.group.name": "groups"
+        "sonar.auth.saml.allowUsersToSignUp": "true"
+        "sonar.auth.saml.enabled": "true"
+    }
+    let secured_certificate_key = "sonar.auth.saml.certificate.secured"
+    let readback_keys = ($expected_readback | columns | str join ",")
+    let readback = (do -i {
+        $sonar_auth_config | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n code-quality $sonar_pod -c sonarqube -- curl --config - -sS -w "\n%{http_code}" --get $"($sonar_api_url)/api/settings/values" --data-urlencode $"keys=($readback_keys)"
+    } | complete)
+    let readback_lines = ($readback.stdout | lines)
+    let readback_status = ($readback_lines | last | default "")
+    let readback_body = ($readback_lines | drop 1 | str join "\n")
+    if not (sonarqube_http_status_matches $readback.exit_code $readback_status "200") or not (sonarqube_settings_match $readback_body ($expected_readback | to json)) {
+        error make {msg: "SonarQube settings readback did not match the required SAML configuration"}
+    }
+
+    # Secured values are intentionally omitted from /api/settings/values even
+    # when configured. Verify the non-secret setting definition instead; together
+    # with the exact 204 mutation status this is the strongest available signal.
+    let definitions = (do -i {
+        $sonar_auth_config | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n code-quality $sonar_pod -c sonarqube -- curl --config - -sS -w "\n%{http_code}" $"($sonar_api_url)/api/settings/list_definitions"
+    } | complete)
+    let definition_lines = ($definitions.stdout | lines)
+    let definition_status = ($definition_lines | last | default "")
+    let definition_body = ($definition_lines | drop 1 | str join "\n")
+    if not (sonarqube_http_status_matches $definitions.exit_code $definition_status "200") or not (sonarqube_setting_definition_present $definition_body $secured_certificate_key) {
+        error make {msg: "SonarQube does not expose the required secured SAML certificate setting definition"}
+    }
+
+    print $"(ansi green)✓ SAML fully configured, enabled and verified in SonarQube(ansi reset)"
 }
 
-# Restart pods that depend on OIDC/Keycloak
+# Restart one existing OIDC-dependent deployment and fail closed if either the
+# restart request or rollout cannot complete. A missing deployment is left to the
+# final Application convergence gate; it must not be reported as restarted.
+def restart_oidc_deployment [namespace: string, deployment: string, timeout: string] {
+    let exists = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH get deployment $deployment -n $namespace -o name
+    } | complete)
+    if $exists.exit_code != 0 {
+        error make {msg: $"Required OIDC-dependent deployment ($namespace)/($deployment) is not present"}
+    }
+
+    let restart = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH rollout restart deployment $deployment -n $namespace
+    } | complete)
+    if $restart.exit_code != 0 {
+        error make {msg: $"Failed to restart OIDC-dependent deployment ($namespace)/($deployment)"}
+    }
+
+    let rollout = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH rollout status deployment $deployment -n $namespace $"--timeout=($timeout)"
+    } | complete)
+    if $rollout.exit_code != 0 {
+        error make {msg: $"OIDC-dependent deployment ($namespace)/($deployment) did not complete its rollout"}
+    }
+    print $"(ansi green)✓ ($namespace)/($deployment) restarted(ansi reset)"
+}
+
+# Restart pods that depend on OIDC/Keycloak. This function is called only after
+# both Gitea and SonarQube configuration returned successfully.
 def restart_oidc_dependent_pods [] {
     $env.KUBECONFIG = $KUBECONFIG_PATH
     print "Restarting OIDC-dependent pods to refresh DNS/config..."
-    
-    
-    # ArgoCD Server
-    try {
-        kubectl rollout restart deployment argocd-server -n argocd
-        kubectl rollout status deployment argocd-server -n argocd --timeout=120s
-        print $"(ansi green)✓ ArgoCD Server restarted(ansi reset)"
-    } catch {
-        print $"(ansi yellow)Warning: Could not restart ArgoCD Server(ansi reset)"
-    }
-    
-    # Grafana
-    try {
-        let grafana_exists = (do { kubectl get deployment prometheus-grafana -n monitoring } | complete)
-        if $grafana_exists.exit_code == 0 {
-            kubectl rollout restart deployment prometheus-grafana -n monitoring
-            kubectl rollout status deployment prometheus-grafana -n monitoring --timeout=120s
-            print $"(ansi green)✓ Grafana restarted(ansi reset)"
-        }
-    } catch { }
-    
-    # Backstage
-    try {
-        let backstage_exists = (do { kubectl get deployment backstage -n backstage } | complete)
-        if $backstage_exists.exit_code == 0 {
-            kubectl rollout restart deployment backstage -n backstage
-            kubectl rollout status deployment backstage -n backstage --timeout=180s
-            print $"(ansi green)✓ Backstage restarted(ansi reset)"
-        }
-    } catch { }
 
-    # Landing Page
-    try {
-        let lp_exists = (do { kubectl get deployment landingpage -n platform-apps } | complete)
-        if $lp_exists.exit_code == 0 {
-            kubectl rollout restart deployment landingpage -n platform-apps
-            print $"(ansi green)✓ Landing Page restarted(ansi reset)"
-        }
-    } catch { }
-    
-    print $"(ansi green)✓ OIDC-dependent pods restarted(ansi reset)"
+    wait_for_configuration_dependencies "OIDC restarts" ["argocd" "grafana" "backstage" "landingpage"] []
+
+    restart_oidc_deployment "argocd" "argocd-server" "120s"
+    restart_oidc_deployment "monitoring" "prometheus-grafana" "120s"
+    restart_oidc_deployment "backstage" "backstage" "180s"
+    restart_oidc_deployment "platform-apps" "landingpage" "120s"
+
+    print $"(ansi green)✓ Existing OIDC-dependent deployments restarted(ansi reset)"
 }
 
 # -----------------------------------------------------------------------------
@@ -1496,8 +2015,7 @@ def patch_argocd_oidc_ca [] {
     loop {
         $attempts = $attempts + 1
         if $attempts > 30 {
-            print $"(ansi yellow)Warning: CA cert not available yet, skipping ArgoCD OIDC patch(ansi reset)"
-            return
+            error make {msg: "CA certificate did not become available for the ArgoCD OIDC configuration"}
         }
         let secret_result = (do {
             kubectl get secret digiorg-local-ca-secret -n cert-manager --ignore-not-found -o name
@@ -1514,8 +2032,7 @@ def patch_argocd_oidc_ca [] {
         kubectl get secret digiorg-local-ca-secret -n cert-manager -o jsonpath='{.data.ca\.crt}'
     } | complete)
     if $ca_cert_b64_result.exit_code != 0 or ($ca_cert_b64_result.stdout | str trim | is-empty) {
-        print $"(ansi yellow)Warning: Could not extract CA cert, skipping ArgoCD OIDC patch(ansi reset)"
-        return
+        error make {msg: "Could not extract the CA certificate for the ArgoCD OIDC configuration"}
     }
 
     # Decode using Nushell native decode (portable across macOS and Linux)
@@ -1546,21 +2063,18 @@ rootCA: |\n($indented_cert)
     # Re-run helm upgrade with the override — embeds CA cert in the Helm release
     # so ArgoCD self-sync will not overwrite it
     print "  Running helm upgrade to embed CA cert in ArgoCD release..."
-    (helm upgrade argocd argo/argo-cd
-        --version 10.1.4
-        --namespace argocd
-        --reuse-values
-        --values platform/base/argocd/values.yaml
-        --values ./argocd-oidc-override.yaml
-        --force-conflicts
-        --wait --timeout 5m)
+    let helm_conflict_args = (helm_force_conflicts_args)
+    let helm_result = (do {
+        helm upgrade argocd argo/argo-cd --version 10.1.4 --namespace argocd --reuse-values --values platform/base/argocd/values.yaml --values ./argocd-oidc-override.yaml ...$helm_conflict_args --wait --timeout 5m
+    } | complete)
+    if $helm_result.exit_code != 0 {
+        error make {msg: "Failed to update the ArgoCD OIDC CA configuration via Helm"}
+    }
 
     print $"(ansi green)✓ ArgoCD OIDC config updated with CA cert via Helm(ansi reset)"
 
-    # Restart ArgoCD server to pick up new config immediately
-    kubectl rollout restart deployment argocd-server -n argocd
-    kubectl rollout status deployment argocd-server -n argocd --timeout=120s
-    print $"(ansi green)✓ ArgoCD server restarted(ansi reset)"
+    # Restart ArgoCD server to pick up new config immediately.
+    restart_oidc_deployment "argocd" "argocd-server" "120s"
 
     # Print CA trust instructions
     print ""
@@ -1584,6 +2098,17 @@ rootCA: |\n($indented_cert)
     print $"(ansi yellow)Restart your browser after importing the CA certificate.(ansi reset)"
 }
 
+# Parse the real `argocd version --client --short` output and compare the
+# semantic version exactly. Build metadata is allowed; prefix/suffix versions
+# such as v3.4.50 must not satisfy a v3.4.5 requirement.
+def argocd_client_version_matches [output: string, expected: string] {
+    let parsed = ($output | str trim | parse --regex '^argocd:\s+v(?P<version>[0-9]+\.[0-9]+\.[0-9]+)(?:\+[0-9A-Za-z.-]+)?$')
+    if ($parsed | length) != 1 {
+        return false
+    }
+    (($parsed | get version | first) == $expected)
+}
+
 # Check if prequisite tools (kind, kubectl, helm) are installed before proceeding
 def check_prerequisites [] {
     print "Checking prerequisites..."
@@ -1591,7 +2116,14 @@ def check_prerequisites [] {
     let tools = [
         ["kind", "https://kind.sigs.k8s.io/docs/user/quick-start/#installation"],
         ["kubectl", "https://kubernetes.io/docs/tasks/tools/"],
-        ["helm", "https://helm.sh/docs/intro/install/"]
+        ["helm", "https://helm.sh/docs/intro/install/"],
+        # Issue #281: `argocd` is required, not optional. Final readiness treats a
+        # stale Healthy/OutOfSync Application as ready ONLY when the Argo CD core
+        # diff proves zero material change (see argocd_app_has_no_material_diff).
+        # A missing CLI silently disabled that fallback and stalled the bootstrap
+        # at 24/26 for the full timeout. Pin a CLI that matches the deployed
+        # Argo CD server (v3.4.5 — see docs/guides/platform-versions.md).
+        ["argocd", "https://argo-cd.readthedocs.io/en/stable/cli_installation/"]
     ]
     
     mut missing = []
@@ -1614,6 +2146,16 @@ def check_prerequisites [] {
         print $"(ansi red_bold)Missing required tools. Please install them and try again.(ansi reset)"
         exit 1
     }
+
+    # The zero-diff fallback is part of readiness semantics, so merely finding an
+    # arbitrary argocd binary is insufficient. Match the deployed Argo CD v3.4.5
+    # client exactly on Windows and Linux before any long-running bootstrap work.
+    let expected_argocd_version = "3.4.5"
+    let argocd_version = (do { argocd version --client --short } | complete)
+    if $argocd_version.exit_code != 0 or not (argocd_client_version_matches $argocd_version.stdout $expected_argocd_version) {
+        error make {msg: $"argocd CLI v($expected_argocd_version) is required to match the deployed server"}
+    }
+    print $"(ansi green)✓ argocd CLI v($expected_argocd_version)(ansi reset)"
     
     print ""
 }
