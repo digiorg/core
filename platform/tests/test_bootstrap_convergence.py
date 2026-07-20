@@ -269,9 +269,12 @@ class ConfigurationDependencyTest(unittest.TestCase):
         self.assertIn("su git -c 'gitea admin auth list'", body)
         self.assertIn("$gitea_token | kubectl", body)
         self.assertIn("curl --config -", body)
-        self.assertIn("__DIGIORG_TOKEN_PLACEHOLDER__", body)
-        self.assertNotIn('curl -fsSk -H "Authorization: token ${token}"', body)
-        self.assertNotIn('--token="${token}"', body)
+        self.assertIn("gitea-bootstrap-token", body)
+        self.assertIn("--from-file=token=/dev/stdin", body)
+        self.assertIn("/api/v1/orgs/DigiOrg", body)
+        self.assertNotIn("tea login", body)
+        self.assertNotIn('curl -fsSk -H "Authorization: token ***"', body)
+
         self.assertNotIn("Authorization: token ($gitea_token)", body)
         self.assertNotIn("Authorization: token ***", body)
 
@@ -324,34 +327,32 @@ class GiteaTokenTransportTest(unittest.TestCase):
                 self.assertIn(sentinel, fh.read())
             self.assertNotIn(sentinel, result.stdout + result.stderr)
 
-    def test_tea_receives_only_placeholder_then_shell_rewrites_config(self):
-        sentinel = "sentinel-tea-token-never-in-argv"
+    def test_kubernetes_secret_receives_token_via_stdin_not_argv(self):
+        sentinel = "sentinel-kubernetes-secret-token-never-in-argv"
         with tempfile.TemporaryDirectory() as tmp:
-            fake = os.path.join(tmp, "tea")
-            argv_log = os.path.join(tmp, "tea-argv")
+            fake = os.path.join(tmp, "kubectl")
+            argv_log = os.path.join(tmp, "kubectl-argv")
+            token_stdin = os.path.join(tmp, "token-stdin")
+            apply_stdin = os.path.join(tmp, "apply-stdin")
             with open(fake, "w", encoding="utf-8") as fh:
                 fh.write(
                     "#!/bin/sh\n"
-                    "printf '%s\\n' \"$@\" > \"$TEA_ARGV_LOG\"\n"
-                    "last=\nfor arg do last=$arg; done\n"
-                    "value=${last#--token=}\n"
-                    "mkdir -p \"$HOME/.config/tea\"\n"
-                    "printf 'logins:\\n  - token: %s\\n' \"$value\" > \"$HOME/.config/tea/config.yml\"\n"
+                    "printf '%s\\n' \"$@\" >> \"$KUBECTL_ARGV_LOG\"\n"
+                    "case \"$1\" in\n"
+                    "  create) cat > \"$TOKEN_STDIN_LOG\"; printf 'apiVersion: v1\\nkind: Secret\\n' ;;\n"
+                    "  apply) cat > \"$APPLY_STDIN_LOG\"; printf 'secret/gitea-bootstrap-token configured\\n' ;;\n"
+                    "  *) exit 2 ;;\n"
+                    "esac\n"
                 )
             os.chmod(fake, 0o755)
             env = os.environ.copy()
             env["PATH"] = tmp + os.pathsep + env.get("PATH", "")
-            env["HOME"] = tmp
-            env["TEA_ARGV_LOG"] = argv_log
+            env["KUBECTL_ARGV_LOG"] = argv_log
+            env["TOKEN_STDIN_LOG"] = token_stdin
+            env["APPLY_STDIN_LOG"] = apply_stdin
             shell = (
-                'set -eu; IFS= read -r token; placeholder=__DIGIORG_TOKEN_PLACEHOLDER__; '
-                'tea login add --name=test --url=https://example.invalid --token="$placeholder" >/dev/null; '
-                'cfg="${HOME:-/root}/.config/tea/config.yml"; tmpfile="${cfg}.tmp"; : > "$tmpfile"; '
-                'while IFS= read -r line; do case "$line" in *"$placeholder"*) '
-                'prefix=${line%%$placeholder*}; suffix=${line#*$placeholder}; '
-                'printf "%s%s%s\\n" "$prefix" "$token" "$suffix" ;; '
-                '*) printf "%s\\n" "$line" ;; esac; done < "$cfg" > "$tmpfile"; '
-                'mv "$tmpfile" "$cfg"'
+                "kubectl create secret generic gitea-bootstrap-token -n gitea "
+                "--from-file=token=/dev/stdin --dry-run=client -o yaml | kubectl apply -f -"
             )
             result = subprocess.run(
                 ["sh", "-c", shell], input=sentinel + "\n", text=True,
@@ -359,13 +360,11 @@ class GiteaTokenTransportTest(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             with open(argv_log, encoding="utf-8") as fh:
-                argv = fh.read()
-            self.assertNotIn(sentinel, argv)
-            self.assertIn("__DIGIORG_TOKEN_PLACEHOLDER__", argv)
-            with open(os.path.join(tmp, ".config", "tea", "config.yml"), encoding="utf-8") as fh:
-                config = fh.read()
-            self.assertIn(sentinel, config)
-            self.assertNotIn("__DIGIORG_TOKEN_PLACEHOLDER__", config)
+                self.assertNotIn(sentinel, fh.read())
+            with open(token_stdin, encoding="utf-8") as fh:
+                self.assertIn(sentinel, fh.read())
+            with open(apply_stdin, encoding="utf-8") as fh:
+                self.assertIn("kind: Secret", fh.read())
             self.assertNotIn(sentinel, result.stdout + result.stderr)
 
 
