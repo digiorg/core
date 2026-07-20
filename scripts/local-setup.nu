@@ -105,7 +105,7 @@ def "main up" [] {
     print ""
     print "Access services (all via https://digiorg.local):"
     print "  Landing Page: https://digiorg.local/          (Login via Keycloak)"
-    print "  Keycloak:     https://digiorg.local/keycloak  (admin / admin)"
+    print "  Keycloak:     https://digiorg.local/keycloak  (admin console)"
     print "  Backstage:    https://digiorg.local/backstage (Login via Keycloak)"
     print "  Gitea:        https://digiorg.local/gitea     (Login via Keycloak)"
     print "  SonarQube:    https://digiorg.local/sonarqube (Login via Keycloak)"
