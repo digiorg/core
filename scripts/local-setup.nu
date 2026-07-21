@@ -15,8 +15,8 @@
 #   nu scripts/local-setup.nu future-infra  # Provision CNPG (optional, run after `up`)
 #
 # Architecture:
-#   Phase 1 (this script): KinD → Ingress → CoreDNS → Secrets → ArgoCD → Root App
-#   Phase 2 (ArgoCD):      Root App → ApplicationSet → Platform Components
+#   Phase 1 (this script): KinD → Ingress → CoreDNS → Secrets → ArgoCD → Core Data Gates → Root App
+#   Phase 2 (ArgoCD):      Root App → Applications → Platform Components
 #
 # CNPG (CloudNativePG) is OPTIONAL, future hosted-application database
 # infrastructure — see docs/guides/cnpg-future-app-database.md. `up` never
