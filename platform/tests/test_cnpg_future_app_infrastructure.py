@@ -61,6 +61,8 @@ OPERATIONAL_OVERVIEWS = (
     os.path.join(REPO_ROOT, "scripts", "README.md"),
     os.path.join(REPO_ROOT, "docs", "guides", "local-development.md"),
 )
+APPS_DIR = os.path.join(REPO_ROOT, "apps", "platform")
+PLATFORM_README = os.path.join(REPO_ROOT, "platform", "README.md")
 
 
 def _read(path):
@@ -225,6 +227,27 @@ class OperationalOverviewConsistencyTest(unittest.TestCase):
     def test_obsolete_fifteen_application_count_is_gone(self):
         for path in OPERATIONAL_OVERVIEWS:
             self.assertNotRegex(_read(path), r"(?i)all\s+15\s+ArgoCD", path)
+
+    def test_platform_overview_matches_every_application_wave_and_namespace(self):
+        expected = {}
+        for name in os.listdir(APPS_DIR):
+            if not name.endswith((".yaml", ".yml")):
+                continue
+            app = _docs(os.path.join(APPS_DIR, name))[0]
+            expected[app["metadata"]["name"]] = (
+                str(app["metadata"].get("annotations", {}).get("argocd.argoproj.io/sync-wave", "")),
+                app["spec"]["destination"].get("namespace", ""),
+            )
+
+        documented = {}
+        for line in _read(PLATFORM_README).splitlines():
+            match = re.match(r"^\|\s*(-?\d+)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|$", line)
+            if not match:
+                continue
+            component = re.sub(r"\s*\(\*\*manual\*\*\)$", "", match.group(2).strip())
+            documented[component] = (match.group(1), match.group(3).strip())
+
+        self.assertEqual(documented, expected)
 
 
 if __name__ == "__main__":

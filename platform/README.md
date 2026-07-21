@@ -112,6 +112,7 @@ The 27 child Applications carry the ordering metadata below; ingress is applied 
 
 | Wave | Component | Namespace |
 |------|-----------|-----------|
+| -1 | namespaces | argocd |
 | 0 | cert-manager | cert-manager |
 | 0 | external-secrets | external-secrets |
 | 0 | nats | messaging |
