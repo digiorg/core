@@ -55,17 +55,22 @@ This runs in three phases:
 5. Configure CoreDNS for `digiorg.local`
 6. Create platform secrets (including shared PostgreSQL credentials)
 7. Install ArgoCD (Helm)
-8. Deploy root-app
+8. Apply PostgreSQL and OpenSearch and wait for their real Service paths to become functionally ready
+9. Deploy root-app
 
 **Phase 2 (App-of-Apps):**
-ArgoCD syncs all platform components via sync waves:
+ArgoCD creates the child Applications. Core Applications use sync-wave ordering metadata:
 - Wave 0: cert-manager, external-secrets, nats, opensearch, postgresql
 - Wave 1: keycloak, argocd (self-managed)
-- Wave 2: landingpage, backstage, gitea, grafana, jaeger, sonarqube
+- Wave 2: landingpage, backstage, gitea, grafana, harbor, jaeger, opencost, sonarqube
 - Wave 3: crossplane, kyverno
+- Waves 4–8: provider, policy, monitoring, and catalog extensions
+- Waves 9–10: CNPG operator and Cluster Applications (**manual**, not synced by `up`)
+
+Sync waves do not prove cross-Application readiness. The bootstrap's direct PostgreSQL/OpenSearch Service probes provide that guarantee. To install the optional future hosted-application database infrastructure, run `nu scripts/local-setup.nu future-infra` explicitly.
 
 **Phase 3 (Post-Deployment Configuration):**
-After all apps are healthy, the script runs automated post-deployment steps:
+After all core apps reach their required state, the script runs automated post-deployment steps:
 - **configure_gitea**: Registers the self-signed CA in Gitea's trust store, adds Keycloak as an OIDC provider via the `gitea admin auth` CLI, creates `digiorgadmin` and `digiorgdeveloper` users, and creates the `DigiOrg` organisation via the `tea` CLI.
 - **configure_sonarqube**: Waits for SonarQube to report `UP`, sets `serverBaseURL`, pushes all `sonar.auth.saml.*` settings via the Settings API, and enables SAML.
 - **restart_oidc_dependent_pods**: Restarts ArgoCD Server, Grafana, Backstage, and Landing Page to pick up updated OIDC configuration.
@@ -154,30 +159,24 @@ nu scripts/local-setup.nu reset
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                    Setup Script (Phase 1)                               │
 │                                                                         │
-│  KinD → Ingress → CoreDNS → Secrets → ArgoCD (Helm) → Root App         │
+│  KinD → Ingress → CoreDNS → Secrets → ArgoCD (Helm)                    │
+│       → PostgreSQL/OpenSearch functional gates → Root App              │
 └───────────────────────────────────┬─────────────────────────────────────┘
                                     │
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                    ArgoCD (Phase 2)                                     │
 │                                                                         │
-│  Root App discovers apps/ directory                                     │
-│      │                                                                  │
-│      ├── apps/platform/cert-manager.yaml     → Wave 0                  │
-│      ├── apps/platform/external-secrets.yaml → Wave 0                  │
-│      ├── apps/platform/nats.yaml             → Wave 0                  │
-│      ├── apps/platform/opensearch.yaml       → Wave 0                  │
-│      ├── apps/platform/postgresql.yaml       → Wave 0                  │
-│      ├── apps/platform/keycloak.yaml         → Wave 1                  │
-│      ├── apps/platform/argocd.yaml           → Wave 1 (self-managed)   │
-│      ├── apps/platform/landingpage.yaml      → Wave 2                  │
-│      ├── apps/platform/backstage.yaml        → Wave 2                  │
-│      ├── apps/platform/gitea.yaml            → Wave 2                  │
-│      ├── apps/platform/grafana.yaml          → Wave 2                  │
-│      ├── apps/platform/jaeger.yaml           → Wave 2                  │
-│      ├── apps/platform/sonarqube.yaml        → Wave 2                  │
-│      ├── apps/platform/crossplane.yaml       → Wave 3                  │
-│      └── apps/platform/kyverno.yaml          → Wave 3                  │
+│  Root App creates all 27 child Application CRs:                        │
+│      Wave -1: namespaces                                                │
+│      Wave  0: cert-manager, external-secrets, nats, opensearch,         │
+│               postgresql                                               │
+│      Wave  1: argocd, keycloak                                         │
+│      Wave  2: backstage, gitea, grafana, harbor, jaeger, landingpage,   │
+│               opencost, sonarqube                                      │
+│      Wave  3: crossplane, kyverno                                      │
+│      Waves 4-8: providers, logging, policies, monitoring, catalog       │
+│      Waves 9-10: cnpg, cnpg-cluster (manual; `future-infra` only)       │
 │                                                                         │
 └───────────────────────────────────┬─────────────────────────────────────┘
                                     │
@@ -195,15 +194,25 @@ nu scripts/local-setup.nu reset
 
 | Wave | Applications | Dependencies |
 |------|--------------|--------------|
-| -1 | root-app | Bootstrap (deployed by script) |
+| bootstrap | root-app | Deployed by script after core data-layer gates |
+| -1 | namespaces | Pre-creates every platform namespace |
 | 0 | cert-manager, external-secrets, nats, opensearch, postgresql | Ingress, CoreDNS, Secrets (foundational services) |
 | 1 | keycloak, argocd | keycloak: postgresql, cert-manager; argocd: Ingress (self-managed after Helm install) |
-| 2 | landingpage, backstage, gitea, grafana, jaeger, sonarqube | keycloak (OIDC/SAML); backstage, gitea, sonarqube: postgresql; jaeger: opensearch |
+| 2 | landingpage, backstage, gitea, grafana, harbor, jaeger, opencost, sonarqube | keycloak (OIDC/SAML); SQL consumers: postgresql; jaeger: opensearch |
 | 3 | crossplane, kyverno | All platform services healthy |
+| 4 | crossplane-providers, fluentd, kyverno-policies | Provider, log shipping, and policy extensions |
+| 5 | monitoring-extras | Monitoring CRDs ready |
+| 6 | crossplane-provider-configs | Crossplane providers ready |
+| 7 | crossplane-xrds | Provider configurations ready |
+| 8 | core-catalog | XRDs registered |
+| 9 | cnpg | Manual optional future-app database operator |
+| 10 | cnpg-cluster | Manual optional future-app database cluster |
+
+The normal `up` path does not sync waves 9–10. Run `nu scripts/local-setup.nu future-infra` explicitly; it waits for the operator and admission webhook before syncing the Cluster.
 
 ### Phase 3: Post-Deployment Configuration
 
-`local-setup.nu up` automatically runs the following after all ArgoCD apps are healthy:
+`local-setup.nu up` automatically runs the following after all core ArgoCD apps reach their required state:
 
 | Step | Function | What it does |
 |------|----------|--------------|

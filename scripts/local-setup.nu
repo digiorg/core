@@ -7,15 +7,20 @@
 # ArgoCD then manages all platform components via the App-of-Apps pattern.
 #
 # Usage:
-#   nu scripts/local-setup.nu up        # Bootstrap cluster + deploy root app
-#   nu scripts/local-setup.nu down      # Destroy local cluster
-#   nu scripts/local-setup.nu reset     # Reset cluster (down + up)
-#   nu scripts/local-setup.nu status    # Show cluster status
-#   nu scripts/local-setup.nu bootstrap # Run only Phase 1 bootstrap (no root app)
+#   nu scripts/local-setup.nu up            # Bootstrap cluster + deploy root app
+#   nu scripts/local-setup.nu down          # Destroy local cluster
+#   nu scripts/local-setup.nu reset         # Reset cluster (down + up)
+#   nu scripts/local-setup.nu status        # Show cluster status
+#   nu scripts/local-setup.nu bootstrap     # Run only Phase 1 bootstrap (no root app)
+#   nu scripts/local-setup.nu future-infra  # Provision CNPG (optional, run after `up`)
 #
 # Architecture:
-#   Phase 1 (this script): KinD → Ingress → CoreDNS → Secrets → ArgoCD → Root App
-#   Phase 2 (ArgoCD):      Root App → ApplicationSet → Platform Components
+#   Phase 1 (this script): KinD → Ingress → CoreDNS → Secrets → ArgoCD → Core Data Gates → Root App
+#   Phase 2 (ArgoCD):      Root App → Applications → Platform Components
+#
+# CNPG (CloudNativePG) is OPTIONAL, future hosted-application database
+# infrastructure — see docs/guides/cnpg-future-app-database.md. `up` never
+# provisions it; run `future-infra` explicitly, after `up` has succeeded.
 # =============================================================================
 
 # Configuration
@@ -29,11 +34,12 @@ def main [] {
     print "DigiOrg Core Platform - Local Development"
     print ""
     print "Commands:"
-    print "  up       - Bootstrap cluster and deploy ArgoCD root app"
-    print "  down     - Destroy local cluster"
-    print "  reset    - Reset cluster (down + up)"
-    print "  status   - Show cluster and ArgoCD app status"
-    print "  bootstrap - Run only Phase 1 bootstrap (no root app)"
+    print "  up            - Bootstrap cluster and deploy ArgoCD root app"
+    print "  down          - Destroy local cluster"
+    print "  reset         - Reset cluster (down + up)"
+    print "  status        - Show cluster and ArgoCD app status"
+    print "  bootstrap     - Run only Phase 1 bootstrap (no root app)"
+    print "  future-infra  - Provision CNPG (optional; run after 'up' succeeds)"
     print ""
     print $"Usage: nu scripts/local-setup.nu <command>"
 }
@@ -95,6 +101,14 @@ def "main up" [] {
     print "────────────────────────────────────"
     wait_for_argocd_apps
 
+    # Issue #283: `main up` deliberately does NOT promote CNPG (optional,
+    # future hosted-application database infrastructure) — not even wrapped
+    # in a try/catch. Catching a CNPG sync error does not undo the minutes it
+    # can spend polling operator availability, webhook readiness and the
+    # Cluster's sync operation first; that wait alone would delay this Ready
+    # banner, which is exactly what Issue #283 prohibits. Run
+    # `nu scripts/local-setup.nu future-infra` explicitly, whenever you
+    # actually need CNPG, after core bootstrap has already succeeded.
     print ""
     print $"(ansi green_bold)╔════════════════════════════════════════════════════════════════╗(ansi reset)"
     print $"(ansi green_bold)║  ✓ Platform Ready!                                             ║(ansi reset)"
@@ -118,6 +132,10 @@ def "main up" [] {
     print $"(ansi yellow)Prerequisites:(ansi reset)"
     print $"  1. Add to /etc/hosts: 127.0.0.1 digiorg.local"
     print $"  2. Import CA cert into your OS trust store [see above]"
+    print ""
+    print "Future Application Infrastructure (optional, not part of core readiness):"
+    print "  CNPG is not provisioned by `up`. Run this explicitly whenever you need it:"
+    print "    nu scripts/local-setup.nu future-infra"
 }
 
 # Run only Phase 1 bootstrap (no root app)
@@ -257,6 +275,25 @@ def "main status" [] {
         print ""
         print "Run 'nu scripts/local-setup.nu up' to create the cluster."
     }
+}
+
+# Provision/promote CNPG — OPTIONAL, future hosted-application database
+# infrastructure (Issue #283). Deliberately SEPARATE from `main up`: no
+# internal platform component depends on CNPG (Keycloak, Backstage, Gitea,
+# SonarQube and Harbor permanently use legacy PostgreSQL), so its operator-
+# availability, webhook-readiness and Cluster-sync waits must never run as
+# part of — and therefore never delay — core-platform bootstrap. Run this
+# explicitly, any time after `up` has already succeeded. Unlike the removed
+# best-effort wrapper this had before, it is intentionally fail-closed: a
+# real CNPG problem must surface as a real, non-zero-exit error here.
+def "main future-infra" [] {
+    print $"(ansi cyan_bold)Promoting Future Application Infrastructure \(CNPG, optional\)(ansi reset)"
+    print "────────────────────────────────────"
+    print "CNPG is optional, future hosted-application database infrastructure."
+    print "Keycloak, Backstage, Gitea, SonarQube and Harbor are unaffected either way."
+    print ""
+    promote_cnpg_operator
+    promote_cnpg_cluster
 }
 
 # -----------------------------------------------------------------------------
@@ -442,6 +479,78 @@ def secret_value_or_default [namespace: string, secret: string, key: string, ove
     error make {msg: $"Failed to read Secret ($namespace)/($secret) while resolving ($key)"}
 }
 
+# One-time, secret-safe key migration for a known pre-fix Secret schema. The
+# canonical key always wins. If the Secret exists but only the legacy key is
+# populated, its value is returned and the caller's normal declarative apply
+# writes it back under the canonical key. The caller persists it through stdin,
+# so the value is neither printed nor placed in host process arguments.
+def secret_value_or_legacy_key_or_default [namespace: string, secret: string, key: string, legacy_key: string, override, fallback] {
+    let explicit = ($override | default "")
+    if ($explicit | into string) != "" {
+        return ($explicit | into string)
+    }
+
+    let lookup = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH get secret $secret -n $namespace -o $"jsonpath={.data.($key)}"
+    } | complete)
+    if $lookup.exit_code == 0 {
+        let existing = (try { $lookup.stdout | str trim | decode base64 | decode utf-8 } catch { "" })
+        if not ($existing | is-empty) {
+            return $existing
+        }
+
+        let legacy_lookup = (do {
+            kubectl --kubeconfig $KUBECONFIG_PATH get secret $secret -n $namespace -o $"jsonpath={.data.($legacy_key)}"
+        } | complete)
+        if $legacy_lookup.exit_code != 0 {
+            error make {msg: $"Failed to read existing Secret ($namespace)/($secret) legacy key while resolving ($key)"}
+        }
+        let legacy_existing = (try { $legacy_lookup.stdout | str trim | decode base64 | decode utf-8 } catch { "" })
+        if ($legacy_existing | is-empty) {
+            error make {msg: $"Existing Secret ($namespace)/($secret) has no usable ($key) or legacy key value"}
+        }
+        return $legacy_existing
+    }
+
+    let secret_missing = (kubectl_error_is_exact_not_found $lookup.stderr "secrets" $secret)
+    let namespace_missing = (kubectl_error_is_exact_not_found $lookup.stderr "namespaces" $namespace)
+    if $secret_missing or $namespace_missing {
+        return ($fallback | into string)
+    }
+    error make {msg: $"Failed to read Secret ($namespace)/($secret) while resolving ($key)"}
+}
+
+def persist_harbor_oidc_secret [value: string] {
+    if ($value | is-empty) {
+        error make {msg: "Refusing to persist an empty Harbor OIDC client secret"}
+    }
+    let manifest = ({
+        apiVersion: "v1"
+        kind: "Secret"
+        metadata: {name: "harbor-oidc-secret", namespace: "harbor"}
+        type: "Opaque"
+        data: {OIDC_CLIENT_SECRET: ($value | encode base64)}
+    } | to json)
+    let apply_result = (do {
+        $manifest | kubectl --kubeconfig $KUBECONFIG_PATH apply -f -
+    } | complete)
+    if $apply_result.exit_code != 0 {
+        error make {msg: "Failed to persist the Harbor OIDC client secret"}
+    }
+
+    # Compare in memory: neither source nor readback is printed.
+    let readback = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH get secret harbor-oidc-secret -n harbor -o jsonpath='{.data.OIDC_CLIENT_SECRET}'
+    } | complete)
+    if $readback.exit_code != 0 {
+        error make {msg: "Failed to verify the persisted Harbor OIDC client secret"}
+    }
+    let persisted = (try { $readback.stdout | str trim | decode base64 | decode utf-8 } catch { "" })
+    if ($persisted | is-empty) or ($persisted != $value) {
+        error make {msg: "Persisted Harbor OIDC client secret did not match its source"}
+    }
+}
+
 def create_platform_namespaces_secrets [] {
     # Preserve existing values on resume. Environment variables are explicit
     # rotation requests; random/default values are used only on a clean cluster.
@@ -457,7 +566,7 @@ def create_platform_namespaces_secrets [] {
     let harbor_admin_password = (secret_value_or_default "harbor" "harbor-admin-secret" "HARBOR_ADMIN_PASSWORD" $env.HARBOR_ADMIN_PASSWORD? "Harbor12345")
     let harbor_secret_key = (secret_value_or_default "harbor" "harbor-secret-key" "secretKey" $env.HARBOR_SECRET_KEY? "not-a-secure-key")
     let harbor_db_password = (secret_value_or_default "platform-db" "postgresql-secrets" "HARBOR_DB_PASSWORD" $env.HARBOR_DB_PASSWORD? (generate_password))
-    let harbor_oidc_secret = (secret_value_or_default "harbor" "harbor-oidc-secret" "client-secret" $env.HARBOR_OIDC_CLIENT_SECRET? "harbor-client-secret")
+    let harbor_oidc_secret = (secret_value_or_legacy_key_or_default "harbor" "harbor-oidc-secret" "OIDC_CLIENT_SECRET" "client-secret" $env.HARBOR_OIDC_CLIENT_SECRET? "harbor-client-secret")
     
     # Platform-db namespace and PostgreSQL secrets (shared database for Keycloak + Backstage + Gitea)
     kubectl create namespace platform-db --dry-run=client -o yaml | kubectl apply -f -
@@ -470,18 +579,11 @@ def create_platform_namespaces_secrets [] {
         --from-literal=HARBOR_DB_PASSWORD=($harbor_db_password)
         --dry-run=client -o yaml | kubectl apply -f -)
 
-    # CNPG superuser secret (Issue #275, Tier-3 migration). CloudNativePG requires
-    # its superuserSecret to be a kubernetes.io/basic-auth Secret with
-    # username=postgres + password (the Opaque postgresql-secrets above cannot be
-    # reused: a Secret's type is immutable). Reuse the SAME postgres_password so
-    # the init Job (auths with POSTGRES_PASSWORD) connects. Used by the CNPG
-    # Cluster in platform/base/cnpg/cluster.yaml.
-    (kubectl create secret generic postgresql-cnpg-superuser -n platform-db
-        --type=kubernetes.io/basic-auth
-        --from-literal=username=postgres
-        --from-literal=password=($postgres_password)
-        --dry-run=client -o yaml | kubectl apply -f -)
-    
+    # Issue #283: no CNPG superuser secret is provisioned here. CNPG is optional
+    # future-app database infrastructure and must use only its own,
+    # auto-generated Secrets — never a credential coupled to the legacy
+    # postgres_password. See platform/base/cnpg/cluster.yaml.
+
     # Keycloak namespace and DB credentials secret
     kubectl create namespace keycloak --dry-run=client -o yaml | kubectl apply -f -
     (kubectl create secret generic keycloak-db-credentials -n keycloak
@@ -583,9 +685,7 @@ type: kubernetes.io/service-account-token" | save --force $token_secret_file
     (kubectl create secret generic harbor-db-secret -n harbor
         --from-literal=password=($harbor_db_password)
         --dry-run=client -o yaml | kubectl apply -f -)
-    (kubectl create secret generic harbor-oidc-secret -n harbor
-        --from-literal=client-secret=($harbor_oidc_secret)
-        --dry-run=client -o yaml | kubectl apply -f -)
+    persist_harbor_oidc_secret $harbor_oidc_secret
 
     # Messaging namespace (for NATS server + Surveyor)
     kubectl create namespace messaging --dry-run=client -o yaml | kubectl apply -f -
@@ -710,50 +810,82 @@ def build_tier1_images [] {
 # Phase 2: App Deployment Functions
 # -----------------------------------------------------------------------------
 
+# Issue #283 (P1 correction): apply the core data layer's own Application
+# manifests DIRECTLY — not via root-app's app-of-apps fan-out — and prove both
+# functionally ready before returning. Applying root-app first was
+# insufficient: most child Applications (Keycloak, Jaeger, ...) carry
+# `syncPolicy.automated`, so the instant root-app creates their Application
+# CRs, Argo starts reconciling them concurrently regardless of what this
+# script does afterwards. Applying ONLY postgresql.yaml/opensearch.yaml here
+# means no consumer Application CR exists yet at all — there is nothing for
+# Argo to race. `kubectl apply -f` is idempotent, so a resumed run (or
+# root-app later re-applying the same two manifests) is a no-op.
+def deploy_core_data_layer [] {
+    $env.KUBECONFIG = $KUBECONFIG_PATH
+
+    print ""
+    print $"(ansi cyan_bold)Deploying core data layer \(legacy PostgreSQL + OpenSearch\)(ansi reset)"
+    print "────────────────────────────────────"
+    print "Applying core data-layer Applications directly, before root-app, so no consumer Application can exist yet..."
+
+    let pg_apply = (do { kubectl apply -f apps/platform/postgresql.yaml } | complete)
+    if $pg_apply.exit_code != 0 {
+        error make {msg: $"Failed to apply the postgresql Application: (redact_sync_diagnostic ($pg_apply.stderr | str trim))"}
+    }
+    let os_apply = (do { kubectl apply -f apps/platform/opensearch.yaml } | complete)
+    if $os_apply.exit_code != 0 {
+        error make {msg: $"Failed to apply the opensearch Application: (redact_sync_diagnostic ($os_apply.stderr | str trim))"}
+    }
+    print $"(ansi green)✓ postgresql and opensearch Applications applied(ansi reset)"
+
+    wait_for_postgresql_ready
+    wait_for_opensearch_ready
+}
+
 # Deploy ArgoCD Root App (triggers App-of-Apps)
 def deploy_root_app [] {
     $env.KUBECONFIG = $KUBECONFIG_PATH
 
+    # Issue #279: the root Application immediately fans out into many
+    # concurrent Git/Helm/Kustomize renders. Wait for argocd-repo-server to be
+    # Ready and restart-stable before applying ANY Application (including the
+    # core data layer below), so the first sync doesn't race the initial
+    # render burst (confirmed cause of the repo-server liveness restart that
+    # severed External Secrets' manifest generation with gRPC Unavailable/EOF).
+    print $"(ansi cyan_bold)Waiting for argocd-repo-server to stabilize(ansi reset)"
+    print "────────────────────────────────────"
+    wait_for_repo_server_stable
+
+    # Issue #283 (P1 correction): the core data layer must be applied and
+    # proven functionally ready BEFORE root-app is applied — see
+    # deploy_core_data_layer for why waiting only afterwards does not work.
+    deploy_core_data_layer
+
+    print ""
     print "Deploying ArgoCD Root App..."
     kubectl apply -f platform/base/argocd/applications/root-app.yaml
 
-    print $"(ansi green)✓ Root App deployed - ArgoCD will now sync all platform components(ansi reset)"
+    print $"(ansi green)✓ Root App deployed - ArgoCD will now sync the remaining platform components(ansi reset)"
     print ""
     print "ArgoCD Sync Waves:"
-    print "  Wave -1: root-app (just deployed)"
-    print "  Wave  0: cert-manager, cnpg, external-secrets, nats, postgresql"
-    print "  Wave  1: cnpg-cluster, keycloak, argocd (self-managed)"
+    print "  Wave -1: root-app (just deployed), namespaces"
+    print "  Wave  0: cert-manager, external-secrets, nats, postgresql*, opensearch* (core data layer)"
+    print "  Wave  1: keycloak, argocd (self-managed)"
     print "  Wave  2: backstage, gitea, grafana, harbor, jaeger, landingpage, opencost, sonarqube"
-    print "  Wave  3: crossplane, kyverno, opensearch"
+    print "  Wave  3: crossplane, kyverno"
     print "  Wave  4: crossplane-providers, fluentd, kyverno-policies"
     print "  Wave  5: monitoring-extras (ServiceMonitors)"
     print "  Wave  6: crossplane-provider-configs"
     print "  Wave  7: crossplane-xrds"
     print "  Wave  8: core-catalog"
-
-    # Issue #279: the root Application immediately fans out into many
-    # concurrent Git/Helm/Kustomize renders. Wait for argocd-repo-server to be
-    # Ready and restart-stable before promoting gated syncs, so the first gated
-    # operation doesn't race the initial render burst (confirmed cause of the
-    # repo-server liveness restart that severed External Secrets' manifest
-    # generation with gRPC Unavailable/EOF).
-    print ""
-    print $"(ansi cyan_bold)Waiting for argocd-repo-server to stabilize(ansi reset)"
-    print "────────────────────────────────────"
-    wait_for_repo_server_stable
+    print "  Wave  9: cnpg (optional future-app database infrastructure)"
+    print "  Wave 10: cnpg-cluster (optional future-app database infrastructure)"
+    print "  * postgresql/opensearch were already applied directly and proven ready above"
 
     # The repository keeps major upgrades manual so a Git merge cannot trigger
     # them concurrently in a shared cluster. This script targets only the named
     # local KinD environment; invoking `main up` is the explicit approval to sync
     # its gated apps sequentially.
-    # Issue #281: the CNPG Cluster (cnpg-cluster, wave 1) races the CNPG operator
-    # admission webhook on a clean bootstrap — the Cluster apply hit
-    # `connection refused` before the webhook endpoint accepted connections, and
-    # the resulting SyncFailed operation then stayed Running forever behind an
-    # idle Pending backup PVC, so Argo's retry never recovered. Gate the Cluster
-    # apply on operator Deployment availability + a ready webhook endpoint first.
-    promote_cnpg_cluster
-
     sync_gated_apps_for_local_dev
 
     # Issue #281: the ArgoCD OIDC CA patch is independent of the global
@@ -840,6 +972,135 @@ def wait_for_repo_server_stable [] {
         sleep 5sec
     }
     error make {msg: $"argocd-repo-server did not become Ready and identity-stable within the timeout: ($last_diagnostic)"}
+}
+
+# -----------------------------------------------------------------------------
+# Issue #283: Core data-layer functional readiness
+# -----------------------------------------------------------------------------
+# Legacy PostgreSQL and OpenSearch are the platform's core data layer. Argo CD's
+# generic StatefulSet health (rollout complete / pods Ready) does not prove they
+# are functionally usable by consumers, so these bounded, secret-safe checks run
+# early in deploy_root_app — before any gated Application sync and before CNPG
+# (optional future-app infrastructure) is even attempted — so Keycloak,
+# Backstage, Gitea, SonarQube and Harbor (PostgreSQL) and Jaeger/Fluentd
+# (OpenSearch) have a real, proven-ready data layer as early as possible.
+
+# The internal-platform databases the legacy postgresql StatefulSet's init
+# script creates (platform/base/postgresql/statefulset.yaml): keycloak,
+# backstage, gitea, sonarqube and harbor's database "registry".
+def postgresql_required_databases [] {
+    ["keycloak" "backstage" "gitea" "sonarqube" "registry"]
+}
+
+# Pure predicate: does a newline-separated `datname` list contain every
+# required internal-platform database? Fail closed on anything less.
+def postgresql_has_required_databases [datnames: string] {
+    let present = ($datnames | lines | each { str trim } | where {|x| $x != "" })
+    postgresql_required_databases | all {|db| $db in $present }
+}
+
+# PostgreSQL must accept connections through the real Service/TCP path and each
+# internal application role must authenticate to its own database with the
+# required public-schema privileges. Passwords are expanded only inside the
+# PostgreSQL container from its existing Secret-backed environment variables;
+# no Secret value enters host argv/stdout. Every exec has a hard API timeout.
+def wait_for_postgresql_ready [poll_interval: duration = 5sec] {
+    $env.KUBECONFIG = $KUBECONFIG_PATH
+
+    print ""
+    print $"(ansi cyan_bold)Waiting for PostgreSQL functional readiness(ansi reset)"
+    mut last_diagnostic = "postgresql readiness was not observed"
+    for attempt in 1..60 {
+        let ready = (do {
+            kubectl --request-timeout=10s exec -n platform-db statefulset/postgresql -- pg_isready -h postgresql.platform-db.svc.cluster.local -U postgres
+        } | complete)
+        if $ready.exit_code == 0 {
+            let dbs = (do {
+                kubectl --request-timeout=10s exec -n platform-db statefulset/postgresql -- psql -U postgres -tAc "SELECT datname FROM pg_database"
+            } | complete)
+            if $dbs.exit_code == 0 {
+                if (postgresql_has_required_databases $dbs.stdout) {
+                    let application_targets = [
+                        {role: "keycloak", database: "keycloak", password_env: "KEYCLOAK_DB_PASSWORD"}
+                        {role: "backstage", database: "backstage", password_env: "BACKSTAGE_DB_PASSWORD"}
+                        {role: "gitea", database: "gitea", password_env: "GITEA_DB_PASSWORD"}
+                        {role: "sonarqube", database: "sonarqube", password_env: "SONARQUBE_DB_PASSWORD"}
+                        {role: "harbor", database: "registry", password_env: "HARBOR_DB_PASSWORD"}
+                    ]
+                    mut failed_roles = []
+                    for target in $application_targets {
+                        # Construct only a reference such as $KEYCLOAK_DB_PASSWORD;
+                        # the value is expanded by sh inside the container.
+                        let password_reference = ('$' + $target.password_env)
+                        let privilege_query = "SELECT CASE WHEN has_schema_privilege(current_user, 'public', 'USAGE,CREATE') THEN 1 ELSE 0 END"
+                        let probe_command = $'PGPASSWORD="($password_reference)" psql -v ON_ERROR_STOP=1 -h postgresql.platform-db.svc.cluster.local -U ($target.role) -d ($target.database) -tAc "($privilege_query)"'
+                        let probe = (do {
+                            kubectl --request-timeout=10s exec -n platform-db statefulset/postgresql -- sh -c $probe_command
+                        } | complete)
+                        if $probe.exit_code != 0 or ($probe.stdout | str trim) != "1" {
+                            $failed_roles = ($failed_roles | append $target.role)
+                        }
+                    }
+                    if ($failed_roles | is-empty) {
+                        print $"(ansi green)✓ PostgreSQL Service accepts every platform role and required schema privileges are initialized(ansi reset)"
+                        return
+                    }
+                    $last_diagnostic = $"PostgreSQL application roles not ready: ($failed_roles | str join ', ')"
+                } else {
+                    $last_diagnostic = "PostgreSQL accepts connections but required databases are not yet initialized"
+                }
+            } else {
+                $last_diagnostic = (redact_sync_diagnostic ($dbs.stderr | str trim))
+            }
+        } else {
+            $last_diagnostic = (redact_sync_diagnostic (($ready.stdout + " " + $ready.stderr) | str trim))
+        }
+        print $"  postgresql readiness: ($last_diagnostic) [attempt ($attempt)/60]"
+        sleep $poll_interval
+    }
+    error make {msg: $"PostgreSQL did not become functionally ready before its consumers: ($last_diagnostic)"}
+}
+
+# Pure predicate: is an OpenSearch `_cluster/health` JSON response acceptable?
+# Fail closed on red status or unparseable input.
+def opensearch_cluster_health_acceptable [health_json: string] {
+    let parsed = (try { $health_json | from json } catch { null })
+    if ($parsed | describe | str starts-with "record") == false {
+        return false
+    }
+    let status = ($parsed | get -o status | default "")
+    $status in ["green" "yellow"]
+}
+
+# OpenSearch must answer its real Service-DNS cluster-health request with an acceptable
+# status before its consumers (Jaeger, Fluentd) may be considered safe to
+# start. The security plugin is disabled for local dev (see
+# platform/base/opensearch/values.yaml), so no credential is required; the
+# request stays inside the cluster via `kubectl exec` regardless. Both kubectl
+# and curl have hard timeouts so a stuck API/stream cannot defeat the poll bound.
+def wait_for_opensearch_ready [poll_interval: duration = 5sec] {
+    $env.KUBECONFIG = $KUBECONFIG_PATH
+
+    print ""
+    print $"(ansi cyan_bold)Waiting for OpenSearch functional readiness(ansi reset)"
+    mut last_diagnostic = "opensearch readiness was not observed"
+    for attempt in 1..90 {
+        let result = (do {
+            kubectl --request-timeout=10s exec -n platform-db statefulset/opensearch-cluster-master -- curl -s -m 5 "http://opensearch-cluster-master.platform-db.svc.cluster.local:9200/_cluster/health"
+        } | complete)
+        if $result.exit_code == 0 {
+            if (opensearch_cluster_health_acceptable $result.stdout) {
+                print $"(ansi green)✓ OpenSearch cluster health is acceptable(ansi reset)"
+                return
+            }
+            $last_diagnostic = "OpenSearch cluster health is not yet green/yellow"
+        } else {
+            $last_diagnostic = (redact_sync_diagnostic (($result.stdout + " " + $result.stderr) | str trim))
+        }
+        print $"  opensearch readiness: ($last_diagnostic) [attempt ($attempt)/90]"
+        sleep $poll_interval
+    }
+    error make {msg: $"OpenSearch did not become functionally ready before its consumers: ($last_diagnostic)"}
 }
 
 # Issue #279: classify an Argo CD operationState.message as retryable
@@ -1168,6 +1429,108 @@ def wait_for_cnpg_webhook_ready [] {
     error make {msg: $"CNPG operator Deployment/webhook endpoint did not become ready before the CNPG Cluster apply: ($last_diagnostic)"}
 }
 
+# Issue #283: explicitly promote the manual CNPG operator Application before
+# touching the Cluster Application. The operation identity rules mirror the
+# Cluster promotion: an already converged operator is a no-op, an identifiable
+# Running operation is observed, and a terminal stale operation must be
+# replaced by a genuinely fresh startedAt. All failures remain fail-closed and
+# diagnostics are redacted.
+def promote_cnpg_operator [poll_interval: duration = 10sec] {
+    $env.KUBECONFIG = $KUBECONFIG_PATH
+
+    mut exists = false
+    for attempt in 1..60 {
+        let get_result = (do { kubectl get application cnpg -n argocd -o name } | complete)
+        if $get_result.exit_code == 0 {
+            $exists = true
+            break
+        }
+        sleep 2sec
+    }
+    if not $exists {
+        error make {msg: "ArgoCD Application cnpg was not created by the root app"}
+    }
+
+    let initial_result = (do { kubectl get application cnpg -n argocd -o json } | complete)
+    if $initial_result.exit_code != 0 {
+        error make {msg: $"Could not read CNPG operator Application state: (redact_sync_diagnostic ($initial_result.stderr | str trim))"}
+    }
+    let initial_state = (try { $initial_result.stdout | from json } catch {
+        error make {msg: "Could not parse CNPG operator Application state"}
+    })
+    let previous_started = ($initial_state | get -o status.operationState.startedAt | default "")
+    let initial_phase = ($initial_state | get -o status.operationState.phase | default "")
+    let initial_sync = ($initial_state | get -o status.sync.status | default "")
+    let initial_health = ($initial_state | get -o status.health.status | default "")
+
+    if $initial_phase == "Succeeded" and $initial_sync == "Synced" and $initial_health == "Healthy" {
+        print $"(ansi green)  ✓ cnpg operator is already Synced and Healthy(ansi reset)"
+        return
+    }
+
+    mut resuming_existing_operation = false
+    if $initial_phase == "Running" {
+        if ($previous_started | is-empty) {
+            error make {msg: "Running CNPG operator operation has no startedAt identity; refusing to overwrite it"}
+        }
+        $resuming_existing_operation = true
+        print $"  Resuming observation of in-flight CNPG operator operation started at ($previous_started)..."
+    } else {
+        let sync_payload = '{"operation":{"sync":{"prune":true,"syncOptions":["CreateNamespace=true","ServerSideApply=true"]}}}'
+        let sync_result = (do {
+            kubectl patch application cnpg -n argocd --type merge -p $sync_payload
+        } | complete)
+        if $sync_result.exit_code != 0 {
+            error make {msg: $"Could not start CNPG operator sync: (redact_sync_diagnostic ($sync_result.stderr | str trim))"}
+        }
+    }
+
+    mut completed = false
+    mut succeeded = false
+    mut saw_new_operation = $resuming_existing_operation
+    mut last_state = {}
+    for attempt in 1..90 {
+        let state_result = (do { kubectl get application cnpg -n argocd -o json } | complete)
+        if $state_result.exit_code == 0 {
+            let state = (try { $state_result.stdout | from json } catch { {} })
+            $last_state = $state
+            let phase = ($state | get -o status.operationState.phase | default "")
+            let started = ($state | get -o status.operationState.startedAt | default "")
+            let sync = ($state | get -o status.sync.status | default "")
+            let health = ($state | get -o status.health.status | default "")
+            if not $resuming_existing_operation and not ($started | is-empty) and $started != $previous_started {
+                $saw_new_operation = true
+            }
+            if $resuming_existing_operation and $started != $previous_started {
+                error make {msg: "The in-flight CNPG operator operation identity changed unexpectedly during resume"}
+            }
+            if $saw_new_operation and $phase in ["Failed" "Error"] {
+                $completed = true
+                break
+            }
+            if $saw_new_operation and $phase == "Succeeded" and $sync == "Synced" and $health == "Healthy" {
+                $completed = true
+                $succeeded = true
+                break
+            }
+        }
+        sleep $poll_interval
+    }
+
+    if not $completed {
+        if not ($last_state | is-empty) {
+            print_sync_diagnostics $last_state
+        }
+        error make {msg: "CNPG operator did not reach a fresh Synced+Healthy operation before the timeout"}
+    }
+    if not $succeeded {
+        print_sync_diagnostics $last_state
+        let message = ($last_state | get -o status.operationState.message | default "")
+        error make {msg: $"CNPG operator sync failed: (redact_sync_diagnostic $message)"}
+    }
+    print $"(ansi green)  ✓ cnpg operator sync Succeeded, Synced and Healthy(ansi reset)"
+}
+
 # Issue #281: promote the script-driven `cnpg-cluster` Application only after the
 # operator webhook is ready, then sync it with a genuinely fresh operation (new
 # startedAt — never re-read a stale terminal operation). Rerunning is safe: an
@@ -1283,6 +1646,14 @@ def argocd_app_has_no_material_diff [app: string] {
     if (which argocd | is-empty) {
         return false
     }
+    # Issue #283: the argocd CLI is an optional host tool (only this fallback
+    # needs it). Require MAJOR.MINOR compatibility with the deployed server,
+    # not an exact patch match, so a safe patch-level CLI upgrade cannot
+    # silently disable material-drift detection.
+    let version = (do { argocd version --client --short } | complete)
+    if $version.exit_code != 0 or not (argocd_client_version_compatible $version.stdout "3.4") {
+        return false
+    }
 
     let temp_kubeconfig = (mktemp --tmpdir argocd-core-kubeconfig.XXXXXX | str trim)
     try {
@@ -1329,22 +1700,31 @@ def wait_for_argocd_apps [] {
     print "Waiting for ArgoCD applications to sync (this may take 10-20 minutes)..."
     print ""
 
-    # Apps to wait for — this client-side readiness inventory must match
-    # apps/platform/*.yaml EXACTLY (one entry per child Application, including
-    # `namespaces`). A contract test (test_bootstrap_convergence.py) fails if
-    # this list drifts from the manifests, so a stale inventory can no longer
-    # silently under-count readiness (issue #281: the omitted `namespaces`).
+    # Apps to wait for — this is the fail-closed CORE-PLATFORM gate. This
+    # client-side readiness inventory must match apps/platform/*.yaml EXACTLY,
+    # one entry per child Application, EXCEPT `cnpg` and `cnpg-cluster`. A
+    # contract test (test_bootstrap_convergence.py) fails if this list drifts
+    # from the manifests, so a stale inventory can no longer silently
+    # under-count readiness (issue #281: the omitted `namespaces`).
+    #
+    # Issue #283: `cnpg` and `cnpg-cluster` are deliberately EXCLUDED. CNPG is
+    # optional, future hosted-application database infrastructure — no core
+    # platform component depends on it (Keycloak, Backstage, Gitea, SonarQube
+    # and Harbor permanently use legacy PostgreSQL) — so it must never be able
+    # to time out or fail this core-platform gate. `up` never promotes it at
+    # all; run the separate, explicit `main future-infra` command (which fails
+    # closed) whenever CNPG is actually needed.
     let apps = [
         # Wave -1
         "namespaces",
         # Wave 0
-        "cert-manager", "cnpg", "external-secrets", "nats", "postgresql",
+        "cert-manager", "external-secrets", "nats", "postgresql", "opensearch",
         # Wave 1
-        "cnpg-cluster", "keycloak", "argocd",
+        "keycloak", "argocd",
         # Wave 2
         "backstage", "gitea", "grafana", "harbor", "jaeger", "landingpage", "opencost", "sonarqube",
         # Wave 3
-        "crossplane", "kyverno", "opensearch",
+        "crossplane", "kyverno",
         # Wave 4
         "crossplane-providers", "fluentd", "kyverno-policies",
         # Wave 5
@@ -1355,6 +1735,7 @@ def wait_for_argocd_apps [] {
         "crossplane-xrds",
         # Wave 8
         "core-catalog"
+        # Wave 9/10 (cnpg, cnpg-cluster) intentionally excluded — see above.
     ]
 
     mut all_healthy = false
@@ -2098,40 +2479,38 @@ rootCA: |\n($indented_cert)
     print $"(ansi yellow)Restart your browser after importing the CA certificate.(ansi reset)"
 }
 
-# Parse the real `argocd version --client --short` output and compare the
-# semantic version exactly. Build metadata is allowed; prefix/suffix versions
-# such as v3.4.50 must not satisfy a v3.4.5 requirement.
-def argocd_client_version_matches [output: string, expected: string] {
-    let parsed = ($output | str trim | parse --regex '^argocd:\s+v(?P<version>[0-9]+\.[0-9]+\.[0-9]+)(?:\+[0-9A-Za-z.-]+)?$')
+# Parse the real `argocd version --client --short` output and compare
+# MAJOR.MINOR compatibility with the deployed server. Issue #283: an exact
+# patch match is brittle (it fails a routine, compatible patch upgrade of the
+# CLI) — the client/server compatibility contract that matters here is the
+# minor version line, not the patch. Build metadata is allowed; a different
+# major or minor (e.g. v3.5.0 or v4.4.5) never satisfies "3.4".
+def argocd_client_version_compatible [output: string, expected_minor: string] {
+    let parsed = ($output | str trim | parse --regex '^argocd:\s+v(?P<major>[0-9]+)\.(?P<minor>[0-9]+)\.[0-9]+(?:\+[0-9A-Za-z.-]+)?$')
     if ($parsed | length) != 1 {
         return false
     }
-    (($parsed | get version | first) == $expected)
+    let row = ($parsed | first)
+    ($"($row.major).($row.minor)" == $expected_minor)
 }
 
-# Check if prequisite tools (kind, kubectl, helm) are installed before proceeding
+# Check if prerequisite tools (kind, kubectl, helm) are installed before
+# proceeding. `argocd` is intentionally NOT in this mandatory list — see below.
 def check_prerequisites [] {
     print "Checking prerequisites..."
-    
+
     let tools = [
         ["kind", "https://kind.sigs.k8s.io/docs/user/quick-start/#installation"],
         ["kubectl", "https://kubernetes.io/docs/tasks/tools/"],
-        ["helm", "https://helm.sh/docs/intro/install/"],
-        # Issue #281: `argocd` is required, not optional. Final readiness treats a
-        # stale Healthy/OutOfSync Application as ready ONLY when the Argo CD core
-        # diff proves zero material change (see argocd_app_has_no_material_diff).
-        # A missing CLI silently disabled that fallback and stalled the bootstrap
-        # at 24/26 for the full timeout. Pin a CLI that matches the deployed
-        # Argo CD server (v3.4.5 — see docs/guides/platform-versions.md).
-        ["argocd", "https://argo-cd.readthedocs.io/en/stable/cli_installation/"]
+        ["helm", "https://helm.sh/docs/intro/install/"]
     ]
-    
+
     mut missing = []
-    
+
     for tool in $tools {
         let name = $tool.0
         let url = $tool.1
-        
+
         let exists = (which $name | length) > 0
         if not $exists {
             $missing = ($missing | append $name)
@@ -2140,23 +2519,30 @@ def check_prerequisites [] {
             print $"(ansi green)✓ ($name)(ansi reset)"
         }
     }
-    
+
     if ($missing | length) > 0 {
         print ""
         print $"(ansi red_bold)Missing required tools. Please install them and try again.(ansi reset)"
         exit 1
     }
 
-    # The zero-diff fallback is part of readiness semantics, so merely finding an
-    # arbitrary argocd binary is insufficient. Match the deployed Argo CD v3.4.5
-    # client exactly on Windows and Linux before any long-running bootstrap work.
-    let expected_argocd_version = "3.4.5"
-    let argocd_version = (do { argocd version --client --short } | complete)
-    if $argocd_version.exit_code != 0 or not (argocd_client_version_matches $argocd_version.stdout $expected_argocd_version) {
-        error make {msg: $"argocd CLI v($expected_argocd_version) is required to match the deployed server"}
+    # Issue #283: `argocd` is OPTIONAL. It is used only by
+    # argocd_app_has_no_material_diff, a fail-closed secondary check for the
+    # narrow case of a stale Healthy/OutOfSync Application status — every other
+    # bootstrap path works without it. Its absence or incompatibility must
+    # never block `main up`; report it informationally instead.
+    let expected_argocd_minor = "3.4"
+    if (which argocd | is-empty) {
+        print $"(ansi yellow)  argocd CLI not found (optional) — the stale-status zero-diff fallback will be unavailable(ansi reset)"
+    } else {
+        let argocd_version = (do { argocd version --client --short } | complete)
+        if $argocd_version.exit_code == 0 and (argocd_client_version_compatible $argocd_version.stdout $expected_argocd_minor) {
+            print $"(ansi green)✓ argocd CLI \(compatible with v($expected_argocd_minor).x\)(ansi reset)"
+        } else {
+            print $"(ansi yellow)  argocd CLI found but not compatible with v($expected_argocd_minor).x (optional) — the stale-status zero-diff fallback will be unavailable(ansi reset)"
+        }
     }
-    print $"(ansi green)✓ argocd CLI v($expected_argocd_version)(ansi reset)"
-    
+
     print ""
 }
 

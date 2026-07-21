@@ -61,8 +61,12 @@ class DocContentTest(unittest.TestCase):
         self.assertIn("proxy-cache", self.lower)
         self.assertIn("bootstrap exception", self.lower)
 
-    def test_links_cnpg_runbook(self):
-        self.assertIn("postgres-cnpg-migration.md", self.text)
+    def test_links_cnpg_future_app_database_doc(self):
+        # Issue #283: the runbook was renamed and corrected — CNPG is optional
+        # future-app database infrastructure, not a migration target for the
+        # legacy PostgreSQL StatefulSet.
+        self.assertIn("cnpg-future-app-database.md", self.text)
+        self.assertNotIn("postgres-cnpg-migration.md", self.text)
 
 
 if __name__ == "__main__":

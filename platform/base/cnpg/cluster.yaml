@@ -1,19 +1,23 @@
 # =============================================================================
-# CloudNativePG Cluster — shared PostgreSQL for the DigiOrg platform (Issue #275)
+# CloudNativePG Cluster — future hosted-application PostgreSQL (Issue #283)
 # =============================================================================
-# Tier-3 migration target replacing the raw StatefulSet under
-# platform/base/postgresql. It reproduces the SAME six databases/users the legacy
-# init.sh created (keycloak, backstage, gitea, sonarqube and harbor -> database
-# "registry"/user "harbor"), sourcing every password from the SAME Secret
-# `postgresql-secrets`, so no consumer manifest or password changes.
+# CNPG is OPTIONAL, future database infrastructure for applications that will
+# be hosted ON the platform later. It is NOT a migration or replacement target
+# for the internal platform components' database: Keycloak, Backstage, Gitea,
+# SonarQube and Harbor permanently use the legacy PostgreSQL StatefulSet
+# (platform/base/postgresql) at postgresql.platform-db.svc.cluster.local. See
+# docs/guides/cnpg-future-app-database.md.
 #
-# Image: PG16 (matches legacy postgres:16 major -> no on-disk data-format
-# migration). Digest-pinned per the pin policy (scripts/check_pins.py).
+# This Cluster uses only CNPG-owned, auto-generated Secrets — CNPG creates its
+# own `postgresql-cnpg-app` credentials Secret for the `app` bootstrap
+# database. It must never be coupled to any legacy-platform credential, and it
+# hosts none of the internal platform's databases or users.
 #
-# The six databases/users are created by the companion Job in
-# init-databases.yaml (it can read the per-service passwords from
-# postgresql-secrets via env, which static initdb SQL cannot). The Cluster's own
-# initdb only bootstraps an empty `app` database.
+# Because nothing on the core platform's critical path depends on CNPG, both
+# ArgoCD Applications (apps/platform/cnpg.yaml, apps/platform/cnpg-cluster.yaml)
+# are manual. Core bootstrap creates only their Application CRs; the explicit,
+# fail-closed `nu scripts/local-setup.nu future-infra` command promotes the
+# operator first and this Cluster second.
 # =============================================================================
 apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
@@ -21,55 +25,38 @@ metadata:
   name: postgresql-cnpg
   namespace: platform-db
   labels:
-    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/name: postgresql-cnpg
     app.kubernetes.io/part-of: digiorg-platform
 spec:
   instances: 1
 
-  # PG16, digest-pinned. Matches the legacy postgres:16 major version so the
-  # migrated data files are read without an upgrade step.
+  # PG16, digest-pinned. Pin revalidated per scripts/check_pins.py.
   imageName: ghcr.io/cloudnative-pg/postgresql:16.9@sha256:cca50a94e2da46ddcaefb23260c805ed3b466763bd2a25e1617410176d5fd0ab
 
-  # Enable password auth for the postgres superuser. CNPG REQUIRES the
-  # superuserSecret to be a `kubernetes.io/basic-auth` Secret whose username is
-  # `postgres` plus a `password` key. The legacy `postgresql-secrets` is Opaque
-  # (and a Secret's type is immutable), so it cannot be reused here. The setup
-  # script provisions a dedicated basic-auth secret `postgresql-cnpg-superuser`
-  # with the SAME password value as postgresql-secrets.POSTGRES_PASSWORD, so the
-  # init Job (which authenticates as postgres with POSTGRES_PASSWORD) still
-  # connects. See docs/guides/postgres-cnpg-migration.md ("Secret format").
-  enableSuperuserAccess: true
-  superuserSecret:
-    name: postgresql-cnpg-superuser
-
-  # Match the legacy StatefulSet footprint for local development.
+  # Modest footprint: this Cluster does not yet host any real workload.
   resources:
     requests:
-      cpu: 200m
-      memory: 256Mi
+      cpu: 100m
+      memory: 128Mi
     limits:
-      cpu: "1"
-      memory: 512Mi
+      cpu: 500m
+      memory: 256Mi
 
   storage:
-    size: 5Gi
+    size: 1Gi
 
-  # Modest tuning for a single-instance dev database.
   postgresql:
     parameters:
-      max_connections: "200"
-      shared_buffers: 128MB
+      max_connections: "100"
 
   bootstrap:
     initdb:
       database: app
       owner: app
-      # The real platform databases/users are created by the init Job in
-      # init-databases.yaml (needs Secret-sourced passwords). Keep initdb minimal.
+      # CNPG auto-generates and owns the `postgresql-cnpg-app` credentials
+      # Secret for this bootstrap database. Nothing here references any
+      # legacy-platform Secret, database or user.
 
-  # Backup: no object store is available in the local kind/dev environment, so
-  # barmanObjectStore is intentionally omitted (it would make the spec invalid
-  # without a reachable S3/MinIO target). Backups are handled instead by the
-  # scheduled pg_dump CronJob in init-databases.yaml and the runbook in
-  # docs/guides/postgres-cnpg-migration.md. When an object store is introduced,
-  # add a `backup.barmanObjectStore` block and a `ScheduledBackup` here.
+  # No barmanObjectStore/backup configuration: this Cluster hosts no
+  # application yet, so there is nothing to back up. Add a real backup
+  # configuration when an application is actually provisioned onto it.

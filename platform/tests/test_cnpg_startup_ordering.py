@@ -1,24 +1,22 @@
 #!/usr/bin/env python3
-"""CNPG Cluster startup ordering + backup-PVC binding (Issue #281).
+"""CNPG Cluster startup ordering (Issue #281, revised for Issue #283).
 
 Confirmed #281 root cause: on a clean bootstrap the ``cnpg-cluster`` Application
 tried to apply ``Cluster/postgresql-cnpg`` before the CNPG operator's admission
 webhook (``cnpg-webhook-service``) accepted connections, so admission failed
-with ``connection refused``. The failed sync operation then stayed ``Running``
-forever because the intentionally idle ``WaitForFirstConsumer`` backup PVC
-(``postgresql-cnpg-backups``) remained ``Pending`` and Argo waited on its health
-despite the ``ignore-healthcheck`` annotation — so the configured retry never
-started a fresh operation.
+with ``connection refused``. The webhook-readiness gate and fresh-operation
+promotion logic locked here are still correct and still used — CNPG is now
+promoted only by the separate, explicit ``main future-infra`` command (Issue
+#283), which calls the same ``promote_cnpg_cluster`` function directly and
+fails closed. It is never invoked from ``deploy_root_app`` or ``main up``: a
+prior "best-effort" wrapper still executed CNPG's bounded waits before
+catching its error, which delayed the core Ready banner — exactly what Issue
+#283 prohibits. See test_cnpg_decoupled_promotion.py for that wiring.
 
-The fix has two halves, both locked here:
-
-  1. A script-side readiness gate waits for the operator Deployment to be
-     Available and for a ready webhook endpoint (via ``discovery.k8s.io/v1``
-     EndpointSlice, NOT the deprecated core ``Endpoints`` API) before the Cluster
-     is applied, then syncs with a genuinely fresh operation. It fails closed.
-  2. An idempotent one-shot bootstrap consumer Job mounts the backup PVC so the
-     provisioner binds it, so a Pending PVC can no longer hold the operation
-     open.
+The backup-PVC bind hook this module used to also lock was removed entirely
+(Issue #283): CNPG no longer hosts any internal-platform database, so the
+`pg_dump` CronJob and its PVC-bind hook that targeted those databases are
+gone — see test_cnpg_future_app_infrastructure.py.
 
 Pure-Nushell behaviour checks of the parsing predicates plus structural checks::
 
@@ -40,8 +38,8 @@ except ImportError:  # pragma: no cover
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 SETUP = os.path.join(REPO_ROOT, "scripts", "local-setup.nu")
-INIT_YAML = os.path.join(REPO_ROOT, "platform", "base", "cnpg", "init-databases.yaml")
 CLUSTER_APP_YAML = os.path.join(REPO_ROOT, "apps", "platform", "cnpg-cluster.yaml")
+OPERATOR_APP_YAML = os.path.join(REPO_ROOT, "apps", "platform", "cnpg.yaml")
 
 
 def _read(path):
@@ -171,7 +169,6 @@ class PromoteClusterStructureTest(unittest.TestCase):
     def setUpClass(cls):
         cls.text = _read(SETUP)
         cls.promote = _func_body(cls.text, "promote_cnpg_cluster")
-        cls.deploy = _func_body(cls.text, "deploy_root_app")
 
     def test_waits_for_webhook_before_syncing_cluster(self):
         wait_pos = self.promote.index("wait_for_cnpg_webhook_ready")
@@ -199,10 +196,19 @@ class PromoteClusterStructureTest(unittest.TestCase):
         ready = self.promote.index('initial_sync == "Synced"')
         self.assertLess(ready, patch)
 
-    def test_promoted_before_gated_sync_in_deploy_root_app(self):
-        promote_pos = self.deploy.index("promote_cnpg_cluster")
-        gated_pos = self.deploy.index("sync_gated_apps_for_local_dev")
-        self.assertLess(promote_pos, gated_pos)
+    def test_promotion_is_no_longer_called_from_deploy_root_app_or_main_up(self):
+        # Issue #283 (P1 correction): promote_cnpg_cluster is not on the core
+        # deploy path at all, and NOT even wrapped/caught from `main up` — a
+        # caught error still executes CNPG's bounded waits first, which would
+        # delay the Ready banner. It is invoked only by the separate, explicit
+        # `main future-infra` command, which fails closed. See
+        # test_cnpg_decoupled_promotion.py for the full contract.
+        deploy = _func_body(self.text, "deploy_root_app")
+        self.assertNotIn("promote_cnpg_cluster", deploy)
+        up = _func_body(self.text, '"main up"')
+        self.assertNotIn("promote_cnpg_cluster", up)
+        future_infra = _func_body(self.text, '"main future-infra"')
+        self.assertIn("promote_cnpg_cluster", future_infra)
 
 
 class PromoteClusterResumeRuntimeTest(unittest.TestCase):
@@ -358,91 +364,162 @@ class ClusterAppScriptDrivenTest(unittest.TestCase):
         )
 
 
-class BackupPvcConsumerTest(unittest.TestCase):
-    """An idempotent one-shot Job binds the WaitForFirstConsumer backup PVC."""
+class OperatorAppScriptDrivenTest(unittest.TestCase):
+    """The cnpg (operator) Application must ALSO be script-driven, not
+    automated. `main up` never touches CNPG at all (Issue #283); if the
+    operator Application stayed automated, Argo would still provision the
+    CNPG operator on its own the moment root-app creates the Application CR
+    (regardless of its late sync-wave), directly contradicting that design
+    and consuming cluster resources during/soon after core bootstrap."""
 
+    def test_operator_app_is_not_automated(self):
+        app = _find(_docs(OPERATOR_APP_YAML), "Application", "cnpg")
+        self.assertIsNotNone(app)
+        policy = app["spec"].get("syncPolicy", {})
+        self.assertNotIn(
+            "automated", policy,
+            "cnpg (operator) must be script-driven, not automated — `main up` "
+            "must never provision it",
+        )
+
+
+class PromoteOperatorStructureTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.docs = _docs(INIT_YAML)
+        cls.text = _read(SETUP)
+        cls.promote = _func_body(cls.text, "promote_cnpg_operator")
 
-    def _consumer_job(self):
-        pvc_name = "postgresql-cnpg-backups"
-        for d in self.docs:
-            if d.get("kind") != "Job":
-                continue
-            spec = d["spec"]["template"]["spec"]
-            for vol in spec.get("volumes", []):
-                claim = vol.get("persistentVolumeClaim", {})
-                if claim.get("claimName") == pvc_name:
-                    return d
-        return None
+    def test_uses_fresh_operation_identity(self):
+        self.assertIn("status.operationState.startedAt", self.promote)
+        self.assertIn("previous_started", self.promote)
+        self.assertIn("started != $previous_started", self.promote)
 
-    def test_a_job_mounts_the_backup_pvc(self):
-        job = self._consumer_job()
-        self.assertIsNotNone(
-            job,
-            "a bootstrap Job must mount postgresql-cnpg-backups so the "
-            "WaitForFirstConsumer PVC binds and cannot hold the sync open",
+    def test_resume_observes_existing_running_operation_before_patching(self):
+        running = self.promote.index('initial_phase == "Running"')
+        patch = self.promote.index("kubectl patch application cnpg ")
+        self.assertLess(running, patch,
+                        "resume must observe an in-flight operation instead of "
+                        "overwriting it with another operation")
+        self.assertIn("resuming_existing_operation", self.promote)
+
+    def test_already_converged_operator_is_a_noop(self):
+        patch = self.promote.index("kubectl patch application cnpg ")
+        ready = self.promote.index('initial_sync == "Synced"')
+        self.assertLess(ready, patch)
+
+    def test_fails_closed_with_redacted_diagnostics(self):
+        self.assertIn("error make", self.promote)
+        self.assertIn("redact_sync_diagnostic", self.promote)
+        # Never print raw operationState.message directly.
+        self.assertNotIn('print $"($message)"', self.promote)
+
+    def test_called_before_promote_cnpg_cluster_in_future_infra(self):
+        future_infra = _func_body(self.text, '"main future-infra"')
+        operator_pos = future_infra.index("promote_cnpg_operator")
+        cluster_pos = future_infra.index("promote_cnpg_cluster")
+        self.assertLess(
+            operator_pos, cluster_pos,
+            "the operator Application must be promoted before the Cluster "
+            "Application is touched",
         )
 
-    def test_consumer_job_is_not_the_nightly_cronjob(self):
-        # The binding must happen at bootstrap, not only at the nightly pg_dump.
-        job = self._consumer_job()
-        self.assertNotEqual(job["metadata"]["name"], "postgresql-cnpg-pgdump")
 
-    def test_consumer_is_an_idempotent_sync_hook(self):
-        job = self._consumer_job()
-        self.assertIsNotNone(job)
-        assert job is not None
-        annotations = job["metadata"].get("annotations", {})
-        self.assertEqual(annotations.get("argocd.argoproj.io/hook"), "Sync")
-        policy = annotations.get("argocd.argoproj.io/hook-delete-policy", "")
-        self.assertIn("BeforeHookCreation", policy)
-        self.assertIn("HookSucceeded", policy)
+class PromoteOperatorResumeRuntimeTest(unittest.TestCase):
+    """Exercise promote_cnpg_operator's operation-state branches for real."""
 
-    def test_consumer_job_image_is_digest_pinned(self):
-        job = self._consumer_job()
-        image = job["spec"]["template"]["spec"]["containers"][0]["image"]
-        self.assertRegex(image, r"@sha256:[0-9a-f]{64}$",
-                         "consumer Job image must be digest-pinned")
+    FAKE_KUBECTL = r'''#!/bin/sh
+args="$*"
+case "$args" in
+  *"get application cnpg "*"-o name"*)
+    echo application.argoproj.io/cnpg
+    ;;
+  *"get application cnpg "*"-o json"*)
+    count=$(cat "$FAKE_STATE" 2>/dev/null || echo 0)
+    count=$((count + 1))
+    printf '%s' "$count" > "$FAKE_STATE"
+    case "$FAKE_SCENARIO" in
+      already_ready)
+        phase=Succeeded; started=old; sync=Synced
+        ;;
+      running_success)
+        if [ "$count" -eq 1 ]; then phase=Running; started=old; sync=OutOfSync; else phase=Succeeded; started=old; sync=Synced; fi
+        ;;
+      stale_fresh)
+        if [ "$count" -eq 1 ]; then phase=Failed; started=old; sync=OutOfSync; elif [ "$count" -eq 2 ]; then phase=Running; started=old; sync=OutOfSync; else phase=Succeeded; started=new; sync=Synced; fi
+        ;;
+      fresh_failed)
+        if [ "$count" -eq 1 ]; then phase=Failed; started=old; else phase=Failed; started=new; fi; sync=OutOfSync
+        ;;
+      patch_failure)
+        phase=Failed; started=old; sync=OutOfSync
+        ;;
+      *) exit 2 ;;
+    esac
+    printf '{"status":{"operationState":{"phase":"%s","startedAt":"%s"},"sync":{"status":"%s"},"health":{"status":"Healthy"}}}\n' "$phase" "$started" "$sync"
+    ;;
+  *"patch application cnpg "*)
+    : > "$FAKE_PATCH"
+    [ "$FAKE_SCENARIO" = patch_failure ] && exit 1
+    printf '%s\n' '{}'
+    ;;
+  *)
+    printf 'unexpected kubectl call: %s\n' "$args" >&2
+    exit 1
+    ;;
+esac
+'''
 
-    def test_backup_pvc_still_ignores_healthcheck_as_defence_in_depth(self):
-        pvc = _find(self.docs, "PersistentVolumeClaim", "postgresql-cnpg-backups")
-        self.assertEqual(
-            pvc["metadata"].get("annotations", {}).get("argocd.argoproj.io/ignore-healthcheck"),
-            "true",
+    def _run_scenario(self, scenario):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        kubectl = os.path.join(tmp.name, "kubectl")
+        state = os.path.join(tmp.name, "state")
+        patch_marker = os.path.join(tmp.name, "patch-called")
+        with open(kubectl, "w", encoding="utf-8") as fh:
+            fh.write(self.FAKE_KUBECTL)
+        os.chmod(kubectl, 0o755)
+        env = os.environ.copy()
+        env["PATH"] = tmp.name + os.pathsep + env.get("PATH", "")
+        env.update({
+            "FAKE_STATE": state,
+            "FAKE_PATCH": patch_marker,
+            "FAKE_SCENARIO": scenario,
+        })
+        result = subprocess.run(
+            ["nu", "-c", f"source {SETUP}; promote_cnpg_operator 0sec"],
+            capture_output=True, text=True, timeout=12, env=env,
         )
+        return result, patch_marker
 
-    @staticmethod
-    def _wave(doc):
-        # Effective Argo CD sync-wave: the annotation value, or 0 when absent.
-        ann = doc["metadata"].get("annotations", {}) or {}
-        return int(ann.get("argocd.argoproj.io/sync-wave", "0"))
+    def test_already_ready_is_a_noop(self):
+        result, patch_marker = self._run_scenario("already_ready")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(os.path.exists(patch_marker), result.stdout)
+        self.assertIn("already Synced and Healthy", result.stdout)
 
-    def test_consumer_job_not_in_later_wave_than_backup_pvc(self):
-        # The whole point of the consumer is to bind the PVC. Argo syncs wave by
-        # wave and blocks each wave on its resources' health, and the deployed
-        # Argo (v3.4.5) waited on the Pending backup PVC despite ignore-healthcheck.
-        # If the consumer Job is in a LATER wave than the PVC, the sync never
-        # advances to apply it (the original #281 deadlock). It must therefore
-        # share the PVC's wave (not earlier either — then the PVC would not yet
-        # exist to mount).
-        job = self._consumer_job()
-        pvc = _find(self.docs, "PersistentVolumeClaim", "postgresql-cnpg-backups")
-        self.assertEqual(
-            self._wave(job), self._wave(pvc),
-            "the backup-PVC bind Job must be in the SAME sync-wave as the PVC so "
-            "it applies together with it and binds it within that wave; a later "
-            "wave reproduces the deadlock, an earlier one has no PVC to mount",
-        )
+    def test_running_operation_is_observed_not_patched(self):
+        result, patch_marker = self._run_scenario("running_success")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(os.path.exists(patch_marker), result.stdout)
+        self.assertIn("Resuming observation", result.stdout)
 
-    def test_consumer_job_binds_before_nightly_backup_cronjob(self):
-        # The nightly pg_dump CronJob is the other consumer; the bootstrap bind
-        # must not be gated behind (a later wave than) it.
-        job = self._consumer_job()
-        cronjob = _find(self.docs, "CronJob")
-        if cronjob is not None:
-            self.assertLessEqual(self._wave(job), self._wave(cronjob))
+    def test_terminal_state_starts_and_waits_for_fresh_operation(self):
+        result, patch_marker = self._run_scenario("stale_fresh")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(os.path.exists(patch_marker))
+        self.assertIn("sync Succeeded", result.stdout)
+
+    def test_fresh_failed_operation_fails_closed(self):
+        result, patch_marker = self._run_scenario("fresh_failed")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(os.path.exists(patch_marker))
+        self.assertIn("CNPG operator sync failed", result.stderr)
+
+    def test_operation_patch_failure_fails_closed(self):
+        result, patch_marker = self._run_scenario("patch_failure")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(os.path.exists(patch_marker))
+        self.assertIn("Could not start CNPG operator sync", result.stderr)
 
 
 if __name__ == "__main__":

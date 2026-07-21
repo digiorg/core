@@ -6,8 +6,15 @@ metadata:
   finalizers:
     - resources-finalizer.argocd.argoproj.io
   annotations:
-    # Wave 0: Infrastructure operator — no dependencies on other platform services
-    argocd.argoproj.io/sync-wave: "0"
+    # Wave 9 (Issue #283): CNPG is OPTIONAL, future hosted-application database
+    # infrastructure — no internal platform component depends on it (Keycloak,
+    # Backstage, Gitea, SonarQube and Harbor permanently use legacy PostgreSQL).
+    # Both the operator and Cluster Applications are script-driven (no
+    # automated sync). `main up` therefore creates only their Application CRs;
+    # `nu scripts/local-setup.nu future-infra` explicitly promotes the operator
+    # and then the Cluster after core bootstrap. See
+    # docs/guides/cnpg-future-app-database.md.
+    argocd.argoproj.io/sync-wave: "9"
 spec:
   project: default
 
@@ -35,9 +42,9 @@ spec:
     namespace: cnpg-system
 
   syncPolicy:
-    automated:
-      selfHeal: true
-      prune: true
+    # Issue #283: deliberately manual. A late sync-wave orders Application CR
+    # creation only; it does not keep an automated child from consuming
+    # resources during core bootstrap.
     syncOptions:
       - CreateNamespace=true
       - ServerSideApply=true

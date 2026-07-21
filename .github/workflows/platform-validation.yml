@@ -4,8 +4,8 @@
 # Enforces the version-remediation guardrails on every push and pull request:
 #   * the pin policy (scripts/check_pins.py) rejects floating image tags,
 #     unpinned/range chart versions and non-immutable git sources;
-#   * the platform regression tests (platform/tests) lock the migrations,
-#     image build contracts, CNPG migration safety and the OpenCost /opencost
+#   * the platform regression tests (platform/tests) lock platform migrations,
+#     image build contracts, CNPG future-app isolation and the OpenCost /opencost
 #     contract;
 #   * kustomize renders every base (including pinned remote release assets);
 #   * Nushell scripts parse;

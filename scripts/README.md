@@ -64,26 +64,31 @@ The script installs only the minimal infrastructure needed to run ArgoCD:
    - `harbor/harbor-admin-secret`: `HARBOR_ADMIN_PASSWORD`
    - `harbor/harbor-secret-key`: `secretKey` (16-char internal encryption key)
    - `harbor/harbor-db-secret`: `password` (shared PostgreSQL)
-   - `harbor/harbor-oidc-secret`: `client-secret` (Keycloak OIDC)
+   - `harbor/harbor-oidc-secret`: `OIDC_CLIENT_SECRET` (Keycloak OIDC)
 8. **ArgoCD** (Helm install)
 9. **Root App** (triggers App-of-Apps)
 
 ### Phase 2: App-of-Apps (ArgoCD)
 
-ArgoCD takes over and deploys all platform components via sync waves:
+ArgoCD creates the child Applications via the root App. The core Applications use sync-wave ordering metadata; CNPG remains manual:
 
 | Wave | Applications | Description |
 |------|--------------|-------------|
-| -1 | root-app | Bootstrap (deployed by script) |
-| 0 | cert-manager, cnpg, external-secrets, nats, postgresql | Foundation infrastructure |
+| bootstrap | root-app | Deployed by the script after the core data layer is functionally ready |
+| -1 | namespaces | Pre-create platform namespaces |
+| 0 | cert-manager, external-secrets, nats, opensearch, postgresql | Foundation + core data layer |
 | 1 | keycloak, argocd | Identity + self-managed ArgoCD |
 | 2 | backstage, gitea, grafana, harbor, jaeger, landingpage, opencost, sonarqube | Platform services |
-| 3 | crossplane, kyverno, opensearch | Extensions, policy, observability backend |
+| 3 | crossplane, kyverno | Extensions and policy |
 | 4 | crossplane-providers, fluentd, kyverno-policies | Provider plugins, log shipping, policies |
 | 5 | monitoring-extras | ServiceMonitors (requires monitoring stack) |
 | 6 | crossplane-provider-configs | Provider configurations |
 | 7 | crossplane-xrds | Composite Resource Definitions |
 | 8 | core-catalog | Core catalog |
+| 9 | cnpg | **Manual** optional future-app database operator |
+| 10 | cnpg-cluster | **Manual** optional future-app database cluster |
+
+`up` directly applies PostgreSQL and OpenSearch and proves their real Service paths ready before creating the root App. Sync waves alone are not used as a readiness guarantee. CNPG is never promoted by `up`; run `nu scripts/local-setup.nu future-infra` explicitly when the optional future-app database infrastructure is required.
 
 ArgoCD deploys platform components as individual Application resources defined in `apps/platform/*.yaml`, not via an ApplicationSet CRD.
 
@@ -91,7 +96,7 @@ The architecture flow is: **Root App → individual ArgoCD Applications → Plat
 
 ### Phase 3: Post-Deployment Configuration
 
-After all ArgoCD apps reach Healthy, the script runs three configuration steps:
+After all core ArgoCD apps reach their required state, the script runs the post-deployment configuration steps:
 
 #### a) `configure_gitea`
 - Registers the self-signed CA cert in the Gitea container trust store
