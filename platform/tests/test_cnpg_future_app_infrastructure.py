@@ -57,12 +57,14 @@ LEGACY_SECRET_NAME = "postgresql-secrets"
 LEGACY_SUPERUSER_SECRET_NAME = "postgresql-cnpg-superuser"
 OPERATIONAL_OVERVIEWS = (
     os.path.join(REPO_ROOT, "README.md"),
+    os.path.join(REPO_ROOT, "apps", "README.md"),
     os.path.join(REPO_ROOT, "platform", "README.md"),
     os.path.join(REPO_ROOT, "scripts", "README.md"),
     os.path.join(REPO_ROOT, "docs", "guides", "local-development.md"),
 )
 APPS_DIR = os.path.join(REPO_ROOT, "apps", "platform")
 PLATFORM_README = os.path.join(REPO_ROOT, "platform", "README.md")
+CNPG_GUIDE = os.path.join(REPO_ROOT, "docs", "guides", "cnpg-future-app-database.md")
 
 
 def _read(path):
@@ -248,6 +250,11 @@ class OperationalOverviewConsistencyTest(unittest.TestCase):
             documented[component] = (match.group(1), match.group(3).strip())
 
         self.assertEqual(documented, expected)
+
+    def test_cnpg_reproduction_uses_the_sequenced_promotion_command(self):
+        text = _read(CNPG_GUIDE)
+        self.assertIn("nu scripts/local-setup.nu future-infra", text)
+        self.assertNotRegex(text, r"(?m)^kubectl apply -f apps/platform/cnpg(?:-cluster)?\.yaml")
 
 
 if __name__ == "__main__":

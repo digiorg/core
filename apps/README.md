@@ -1,53 +1,52 @@
-# ArgoCD Applications
+# Argo CD Applications
 
-This directory contains ArgoCD Application manifests managed by the App-of-Apps pattern.
+This directory contains the Argo CD `Application` manifests managed by the root App-of-Apps.
 
-## Structure
+## Application inventory
 
+There are **27 child Applications** under `apps/platform/`. Their sync-wave annotations are ordering metadata; they do not prove that a dependency in another Application is functionally ready.
+
+| Wave | Applications | Runtime contract |
+|---|---|---|
+| -1 | namespaces | Pre-creates all platform namespaces |
+| 0 | cert-manager, external-secrets, nats, opensearch, postgresql | Foundation and permanent core data layer |
+| 1 | argocd, keycloak | GitOps and identity |
+| 2 | backstage, gitea, grafana, harbor, jaeger, landingpage, opencost, sonarqube | Platform services |
+| 3 | crossplane, kyverno | Infrastructure and policy engines |
+| 4 | crossplane-providers, fluentd, kyverno-policies | Providers, log shipping, and policies |
+| 5 | monitoring-extras | Additional monitoring resources |
+| 6 | crossplane-provider-configs | Provider configuration |
+| 7 | crossplane-xrds | Composite Resource Definitions |
+| 8 | core-catalog | Core catalog |
+| 9 | cnpg | **Manual** optional future-app database operator |
+| 10 | cnpg-cluster | **Manual** optional future-app database Cluster |
+
+Ingress is not an Argo CD Application; the local setup script applies it during bootstrap.
+
+## Bootstrap and readiness contract
+
+1. `nu scripts/local-setup.nu up` creates the KinD cluster, ingress, CoreDNS, bootstrap Secrets, and Argo CD.
+2. Before the root App exists, the script directly applies the PostgreSQL and OpenSearch Applications.
+3. It proves PostgreSQL over its real Service DNS/TCP path, authenticates every platform role, checks database/schema access, and verifies OpenSearch through its Service.
+4. Only then does the script apply the root App, which creates all 27 child Application CRs.
+5. The normal `up` path synchronizes and waits for the **25 core Applications**. The two CNPG Applications remain manual and cannot delay or fail core bootstrap.
+6. Optional future hosted-application database infrastructure is promoted explicitly with:
+
+```bash
+nu scripts/local-setup.nu future-infra
 ```
-apps/
-├── README.md
-├── platform/              # Platform infrastructure apps
-│   ├── cert-manager.yaml      # TLS Certificate Management (Wave 0)
-│   ├── postgresql.yaml        # Shared PostgreSQL database (Wave 0)
-│   ├── nats.yaml              # NATS JetStream Message Broker (Wave 0)
-│   ├── external-secrets.yaml  # External Secrets Operator (Wave 0)
-│   ├── opensearch.yaml        # Log and Trace Storage backend (Wave 0)
-│   ├── argocd.yaml            # Self-managed ArgoCD (Wave 1)
-│   ├── keycloak.yaml          # Identity Provider (Wave 1)
-│   ├── landingpage.yaml       # Platform Entry Point (Wave 2)
-│   ├── gitea.yaml             # Git Service (Wave 2)
-│   ├── backstage.yaml         # Developer Portal (Wave 2)
-│   ├── grafana.yaml           # Prometheus + Grafana (Wave 2)
-│   ├── jaeger.yaml            # Distributed Tracing (Wave 2)
-│   ├── sonarqube.yaml         # Code Quality (Wave 2)
-│   ├── crossplane.yaml        # Infrastructure as Code (Wave 3)
-│   └── kyverno.yaml           # Policy Engine (Wave 3)
-```
 
-## Sync Waves
+That command fails closed and sequences operator sync, operator Deployment availability, admission-webhook endpoint readiness, and finally Cluster sync.
 
-Applications are deployed in order using ArgoCD sync waves:
+## Adding an Application
 
-| Wave | Applications | Description |
-|------|--------------|-------------|
-| -1 | root-app | Bootstrap (deployed by setup script) |
-| 0 | cert-manager, postgresql, nats, external-secrets, opensearch | TLS certificates + shared database layer + messaging + secrets management + log/trace storage |
-| 1 | keycloak, argocd | Core infrastructure (IdP, GitOps) |
-| 2 | landingpage, gitea, backstage, grafana, jaeger, sonarqube | Platform services (depend on PostgreSQL + Keycloak) |
-| 3 | crossplane, kyverno | Extensions (no Keycloak dependency) |
+1. Add `apps/platform/<name>.yaml` with an immutable source revision and the correct destination namespace.
+2. Assign a wave based on ordering only; add an explicit functional gate when another Application must be demonstrably ready.
+3. Add the corresponding manifests under `platform/base/<name>/`.
+4. Use automated sync only for core Applications that should be reconciled by normal `up`. Optional infrastructure must remain explicit and script-driven.
+5. Update the application inventory. The platform regression tests compare the inventory with all Application manifests.
 
-## How It Works
-
-1. **Setup Script** bootstraps: KinD cluster, Ingress, CoreDNS, Secrets, ArgoCD (Helm)
-2. **Setup Script** deploys `root-app.yaml`
-3. **Root App** recursively discovers all `*.yaml` files in `apps/` directory
-4. **ArgoCD** applies all Application manifests found
-5. **Sync Waves** ensure correct deployment order
-
-## Adding a New Application
-
-1. Create a new YAML file in the appropriate directory:
+Example:
 
 ```yaml
 apiVersion: argoproj.io/v1alpha1
@@ -58,12 +57,12 @@ metadata:
   finalizers:
     - resources-finalizer.argocd.argoproj.io
   annotations:
-    argocd.argoproj.io/sync-wave: "2"  # Adjust based on dependencies
+    argocd.argoproj.io/sync-wave: "2"
 spec:
   project: default
   source:
     repoURL: https://github.com/digiorg/core.git
-    targetRevision: HEAD
+    targetRevision: <immutable-revision>
     path: platform/base/my-app
   destination:
     server: https://kubernetes.default.svc
@@ -77,59 +76,41 @@ spec:
       - ServerSideApply=true
 ```
 
-2. Create the corresponding manifests in `platform/base/my-app/`
-3. Commit and push — ArgoCD will automatically sync
+## Core dependencies
 
-## Dependencies
+### Permanent PostgreSQL
 
-### Wave 0 — Foundation Services
+The legacy PostgreSQL StatefulSet in `platform-db` is the permanent database for internal platform components:
 
-These services have no dependencies and enable all higher waves:
-- **External Secrets Operator** — enables pulling secrets from Azure KeyVault / AWS Secrets Manager into cluster Secrets
-- **OpenSearch** — log and trace storage backend used by Jaeger and Grafana Loki
+- Keycloak (`keycloak` database)
+- Backstage (`backstage` database)
+- Gitea (`gitea` database)
+- SonarQube (`sonarqube` database)
+- Harbor (`registry` database, `harbor` role)
 
-### PostgreSQL Dependencies (Wave 1+)
+CNPG is isolated future hosted-application infrastructure. It is not a migration, cutover target, backup mechanism, or replacement for these databases.
 
-These services require the shared PostgreSQL instance (Wave 0):
-- **Keycloak** — stores realm, user, and session data in the `keycloak` database
-- **Backstage** — stores catalog and scaffolder data in the `backstage` database
-- **Gitea** — stores repository metadata, users, and issues in the `gitea` database
-- **SonarQube** — stores analysis data in the `sonarqube` database
+### OpenSearch
 
-### Keycloak Dependencies (Wave 2+)
+OpenSearch in `platform-db` remains the platform search, trace, and log database. Jaeger stores distributed traces there.
 
-These services require Keycloak for authentication:
-- **Landing Page** — OIDC login (public client)
-- **ArgoCD** — OIDC login (works after Keycloak is ready)
-- **Grafana** — OAuth login
-- **Backstage** — OIDC login
-- **Gitea** — OIDC login (configured via Admin UI post-deployment)
+### Keycloak
 
-### OpenSearch Dependencies (Wave 2+)
+Landing Page, Argo CD, Grafana, Backstage, Gitea, Harbor, OpenCost, and other configured clients depend on Keycloak for authentication.
 
-These services use OpenSearch as a storage backend:
-- **Jaeger** — stores distributed traces in OpenSearch
+## Bootstrap Secrets
 
-### No Dependencies (Wave 3)
+Bootstrap Secrets are created idempotently before dependent Applications are synchronized. Existing generated values are preserved on resume unless an explicit environment override requests rotation. Relevant examples include:
 
-These services don't require other platform services:
-- **Crossplane** — Infrastructure provisioning
-- **Kyverno** — Policy enforcement
+| Namespace | Secret | Purpose |
+|---|---|---|
+| platform-db | postgresql-secrets | PostgreSQL superuser and per-role passwords |
+| platform-db | opensearch-secrets | OpenSearch administrator credential |
+| backstage | backstage-secrets | Database, session, and OIDC values |
+| gitea | gitea-secrets | Database and OIDC values |
+| code-quality | sonarqube-db-secret | SonarQube database credential |
+| code-quality | sonarqube-monitoring-secret | SonarQube monitoring passcode |
+| harbor | harbor-admin-secret | Harbor administrator credential |
+| harbor | harbor-oidc-secret | Harbor OIDC client credential |
 
-## Secrets
-
-Secrets are created by the setup script **before** ArgoCD is installed:
-
-| Namespace | Secret | Notes |
-|-----------|--------|-------|
-| platform-db | postgresql-secrets | Shared PostgreSQL superuser and per-database passwords |
-| backstage | backstage-secrets | Bootstrap application secret created by the setup script |
-| gitea | gitea-secrets | PostgreSQL password and OIDC client secret |
-| gitea | gitea-admin-secret | Admin username and password (generated, not in Git) |
-| code-quality | sonarqube-db-secret | PostgreSQL password (`SONAR_JDBC_PASSWORD`) |
-| code-quality | sonarqube-monitoring-secret | Liveness probe passcode (`SONAR_WEB_SYSTEMPASSCODE`) |
-| code-quality | sonarqube-saml-secret | Keycloak realm signing certificate for SAML verification |
-
-The setup script does **not** create a bootstrap Grafana secret in the `monitoring` namespace. Refer to the setup script for the exact keys present in each bootstrap secret.
-
-For production, use External Secrets Operator with Azure KeyVault / AWS Secrets Manager.
+The setup script does not print Secret values. For production, use External Secrets Operator with the selected external secret store.

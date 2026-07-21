@@ -321,7 +321,7 @@ class ConfigurationDependencyTest(unittest.TestCase):
     def test_harbor_oidc_secret_key_is_consistent_across_clean_and_resume_owners(self):
         body = _func_body(self.text, "create_platform_namespaces_secrets")
         self.assertIn(
-            'secret_value_or_default "harbor" "harbor-oidc-secret" "OIDC_CLIENT_SECRET"',
+            'secret_value_or_legacy_key_or_default "harbor" "harbor-oidc-secret" "OIDC_CLIENT_SECRET" "client-secret"',
             body,
         )
         self.assertIn("--from-literal=OIDC_CLIENT_SECRET=($harbor_oidc_secret)", body)
@@ -403,6 +403,66 @@ class SecretResumeStabilityTest(unittest.TestCase):
         overridden = self._run("forbidden", "explicit-value")
         self.assertEqual(overridden.returncode, 0, overridden.stderr)
         self.assertEqual(overridden.stdout.strip(), "explicit-value")
+
+
+class HarborOidcLegacySecretMigrationTest(unittest.TestCase):
+    """A pre-fix client-secret value migrates without rotation or disclosure."""
+
+    def _run(self, scenario, override=""):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = os.path.join(tmp, "kubectl")
+            with open(fake, "w", encoding="utf-8") as fh:
+                fh.write(
+                    "#!/usr/bin/env python3\n"
+                    "import base64, os, sys\n"
+                    "scenario = os.environ['FAKE_SCENARIO']\n"
+                    "args = ' '.join(sys.argv[1:])\n"
+                    "if scenario == 'missing':\n"
+                    "    print('Error from server (NotFound): secrets \\\"harbor-oidc-secret\\\" not found', file=sys.stderr); sys.exit(1)\n"
+                    "if 'OIDC_CLIENT_SECRET' in args and scenario == 'canonical':\n"
+                    "    print(base64.b64encode(b'canonical-value').decode(), end=''); sys.exit(0)\n"
+                    "if 'client-secret' in args and scenario == 'legacy':\n"
+                    "    print(base64.b64encode(b'legacy-value').decode(), end=''); sys.exit(0)\n"
+                    "sys.exit(0)\n"
+                )
+            os.chmod(fake, 0o755)
+            env = os.environ.copy()
+            env["PATH"] = tmp + os.pathsep + env.get("PATH", "")
+            env["FAKE_SCENARIO"] = scenario
+            env["TEST_OVERRIDE"] = override
+            return subprocess.run(
+                ["nu", "-c", (
+                    f"source {SETUP}; "
+                    "secret_value_or_legacy_key_or_default harbor harbor-oidc-secret "
+                    "OIDC_CLIENT_SECRET client-secret $env.TEST_OVERRIDE fallback-value"
+                )],
+                capture_output=True, text=True, timeout=10, env=env,
+            )
+
+    def test_canonical_value_wins(self):
+        result = self._run("canonical")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "canonical-value")
+
+    def test_legacy_value_is_reused_for_one_time_migration(self):
+        result = self._run("legacy")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "legacy-value")
+
+    def test_missing_secret_uses_fallback(self):
+        result = self._run("missing")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "fallback-value")
+
+    def test_existing_secret_without_either_key_is_fatal(self):
+        result = self._run("neither")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no usable", result.stderr)
+
+    def test_explicit_override_wins_without_lookup(self):
+        result = self._run("neither", "rotated-value")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "rotated-value")
 
 
 class GiteaTokenTransportTest(unittest.TestCase):

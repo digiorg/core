@@ -159,30 +159,24 @@ nu scripts/local-setup.nu reset
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                    Setup Script (Phase 1)                               │
 │                                                                         │
-│  KinD → Ingress → CoreDNS → Secrets → ArgoCD (Helm) → Root App         │
+│  KinD → Ingress → CoreDNS → Secrets → ArgoCD (Helm)                    │
+│       → PostgreSQL/OpenSearch functional gates → Root App              │
 └───────────────────────────────────┬─────────────────────────────────────┘
                                     │
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                    ArgoCD (Phase 2)                                     │
 │                                                                         │
-│  Root App discovers apps/ directory                                     │
-│      │                                                                  │
-│      ├── apps/platform/cert-manager.yaml     → Wave 0                  │
-│      ├── apps/platform/external-secrets.yaml → Wave 0                  │
-│      ├── apps/platform/nats.yaml             → Wave 0                  │
-│      ├── apps/platform/opensearch.yaml       → Wave 0                  │
-│      ├── apps/platform/postgresql.yaml       → Wave 0                  │
-│      ├── apps/platform/keycloak.yaml         → Wave 1                  │
-│      ├── apps/platform/argocd.yaml           → Wave 1 (self-managed)   │
-│      ├── apps/platform/landingpage.yaml      → Wave 2                  │
-│      ├── apps/platform/backstage.yaml        → Wave 2                  │
-│      ├── apps/platform/gitea.yaml            → Wave 2                  │
-│      ├── apps/platform/grafana.yaml          → Wave 2                  │
-│      ├── apps/platform/jaeger.yaml           → Wave 2                  │
-│      ├── apps/platform/sonarqube.yaml        → Wave 2                  │
-│      ├── apps/platform/crossplane.yaml       → Wave 3                  │
-│      └── apps/platform/kyverno.yaml          → Wave 3                  │
+│  Root App creates all 27 child Application CRs:                        │
+│      Wave -1: namespaces                                                │
+│      Wave  0: cert-manager, external-secrets, nats, opensearch,         │
+│               postgresql                                               │
+│      Wave  1: argocd, keycloak                                         │
+│      Wave  2: backstage, gitea, grafana, harbor, jaeger, landingpage,   │
+│               opencost, sonarqube                                      │
+│      Wave  3: crossplane, kyverno                                      │
+│      Waves 4-8: providers, logging, policies, monitoring, catalog       │
+│      Waves 9-10: cnpg, cnpg-cluster (manual; `future-infra` only)       │
 │                                                                         │
 └───────────────────────────────────┬─────────────────────────────────────┘
                                     │
@@ -200,7 +194,8 @@ nu scripts/local-setup.nu reset
 
 | Wave | Applications | Dependencies |
 |------|--------------|--------------|
-| -1 | root-app | Bootstrap (deployed by script) |
+| bootstrap | root-app | Deployed by script after core data-layer gates |
+| -1 | namespaces | Pre-creates every platform namespace |
 | 0 | cert-manager, external-secrets, nats, opensearch, postgresql | Ingress, CoreDNS, Secrets (foundational services) |
 | 1 | keycloak, argocd | keycloak: postgresql, cert-manager; argocd: Ingress (self-managed after Helm install) |
 | 2 | landingpage, backstage, gitea, grafana, harbor, jaeger, opencost, sonarqube | keycloak (OIDC/SAML); SQL consumers: postgresql; jaeger: opensearch |
