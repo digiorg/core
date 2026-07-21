@@ -54,7 +54,7 @@ Die DigiOrg Core Platform ermöglicht es Unternehmen, ihre DevSecOps-Prozesse du
 - **Gitea** — Self-hosted Git Service mit Code Review, Issue Tracking und CI/CD
 
 #### 🗄️ Data Layer
-- **Shared PostgreSQL** — Zentrale Datenbank für Keycloak, Backstage, Gitea und SonarQube (Namespace: `platform-db`)
+- **Shared PostgreSQL** — Permanente interne Datenbank für Keycloak, Backstage, Gitea, SonarQube und Harbor (Namespace: `platform-db`)
 
 #### 🔐 Security Stack
 - **Kyverno** — Policy-as-Code Engine
@@ -96,15 +96,19 @@ Drei-Säulen-System: **Metriken** (Prometheus + Grafana) + **Traces** (Jaeger + 
 | Wave | Anwendungen | Abhängigkeiten |
 |------|-------------|----------------|
 | -1 | **namespaces** | Keine — erstellt alle Platform-Namespaces vor |
-| 0 | cert-manager, cnpg, external-secrets, nats, postgresql | Namespaces (Wave -1) |
-| 1 | argocd, keycloak | Wave-0-Komponenten bereit |
-| 2 | backstage, gitea, grafana, harbor, jaeger, landingpage, opencost, sonarqube | Keycloak SSO (Wave 1), PostgreSQL (Wave 0) |
-| 3 | crossplane, kyverno, opensearch | Wave-2-Apps laufen |
+| 0 | cert-manager, external-secrets, nats, opensearch, postgresql | Foundation und Core Data Layer |
+| 1 | argocd, keycloak | Core Data Layer funktional bereit |
+| 2 | backstage, gitea, grafana, harbor, jaeger, landingpage, opencost, sonarqube | Keycloak SSO; PostgreSQL/OpenSearch |
+| 3 | crossplane, kyverno | Core-Plattformdienste |
 | 4 | crossplane-providers, fluentd, kyverno-policies | Crossplane/Kyverno (Wave 3) |
 | 5 | monitoring-extras | ServiceMonitor-CRD aus kube-prometheus-stack (Wave 2) |
 | 6 | crossplane-provider-configs | Crossplane-Provider (Wave 4) |
 | 7 | crossplane-xrds | Provider-Configs (Wave 6) |
 | 8 | core-catalog | XRDs registriert (Wave 7) |
+| 9 | cnpg | **Manuell:** optionaler Future-App-Datenbankoperator |
+| 10 | cnpg-cluster | **Manuell:** optionaler Future-App-Datenbankcluster |
+
+Sync-Waves sind Ordnungsmetadaten, keine anwendungsübergreifende Readiness-Garantie. `local-setup.nu up` legt PostgreSQL und OpenSearch vor der Root-App an und prüft beide funktional, bevor Consumer entstehen. CNPG wird im normalen `up` nicht synchronisiert; die explizite, fail-closed Promotion erfolgt mit `nu scripts/local-setup.nu future-infra`.
 
 ### Versions-Pinning-Policy
 
@@ -255,7 +259,7 @@ The DigiOrg Core Platform enables organizations to automate their DevSecOps proc
 - **Gitea** — Self-hosted Git service with code review, issue tracking, and CI/CD
 
 #### 🗄️ Data Layer
-- **Shared PostgreSQL** — Central database for Keycloak, Backstage, Gitea, and SonarQube (Namespace: `platform-db`)
+- **Shared PostgreSQL** — Permanent internal database for Keycloak, Backstage, Gitea, SonarQube, and Harbor (Namespace: `platform-db`)
 
 #### 🔐 Security Stack
 - **Kyverno** — Policy-as-Code engine
@@ -297,15 +301,19 @@ Three-pillar system: **Metrics** (Prometheus + Grafana) + **Traces** (Jaeger + O
 | Wave | Applications | Dependencies |
 |------|-------------|--------------|
 | -1 | **namespaces** | None — pre-creates all platform namespaces |
-| 0 | cert-manager, cnpg, external-secrets, nats, postgresql | Namespaces (wave -1) |
-| 1 | argocd, keycloak | Wave 0 components ready |
-| 2 | backstage, gitea, grafana, harbor, jaeger, landingpage, opencost, sonarqube | Keycloak SSO (wave 1), PostgreSQL (wave 0) |
-| 3 | crossplane, kyverno, opensearch | Wave 2 apps running |
+| 0 | cert-manager, external-secrets, nats, opensearch, postgresql | Foundation and core data layer |
+| 1 | argocd, keycloak | Core data layer functionally ready |
+| 2 | backstage, gitea, grafana, harbor, jaeger, landingpage, opencost, sonarqube | Keycloak SSO; PostgreSQL/OpenSearch |
+| 3 | crossplane, kyverno | Core platform services |
 | 4 | crossplane-providers, fluentd, kyverno-policies | Crossplane/Kyverno (wave 3) |
 | 5 | monitoring-extras | ServiceMonitor CRD from kube-prometheus-stack (wave 2) |
 | 6 | crossplane-provider-configs | Crossplane providers (wave 4) |
 | 7 | crossplane-xrds | Provider configs (wave 6) |
 | 8 | core-catalog | XRDs registered (wave 7) |
+| 9 | cnpg | **Manual:** optional future-app database operator |
+| 10 | cnpg-cluster | **Manual:** optional future-app database cluster |
+
+Sync waves are ordering metadata, not a cross-Application readiness guarantee. `local-setup.nu up` applies PostgreSQL and OpenSearch before the root App and proves both functionally ready before consumers can exist. Normal `up` does not sync CNPG; use the explicit fail-closed `nu scripts/local-setup.nu future-infra` command.
 
 ### Version Pinning Policy
 

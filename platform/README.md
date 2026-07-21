@@ -60,7 +60,7 @@ Kustomize bases for all platform components:
 
 **Note:** cert-manager provisions a self-signed CA for `digiorg.local` (local dev) and supports Let's Encrypt for staging/production. See `platform/base/cert-manager/README.md`.
 
-**Note:** PostgreSQL runs as a shared StatefulSet in the `platform-db` namespace, serving Keycloak, Backstage, Gitea, and SonarQube databases.
+**Note:** PostgreSQL runs as the permanent shared StatefulSet in the `platform-db` namespace, serving Keycloak, Backstage, Gitea, SonarQube, and Harbor databases.
 
 **Note:** Ingress is not managed as an ArgoCD Application — it is applied during cluster bootstrap by `local-setup.nu`. See `platform/base/ingress/README.md`.
 
@@ -108,7 +108,7 @@ See `platform/base/ingress/README.md` for routing details and ExternalName servi
 
 ## Wave Deployment Order
 
-ArgoCD sync-waves control the deployment sequence. All 15 ArgoCD-managed components are listed below in order; ingress is excluded as it is applied during cluster bootstrap by `local-setup.nu`.
+The 27 child Applications carry the ordering metadata below; ingress is applied during cluster bootstrap by `local-setup.nu`. Sync waves are not a cross-Application readiness guarantee: the script directly applies and probes PostgreSQL and OpenSearch before it creates the root App.
 
 | Wave | Component | Namespace |
 |------|-----------|-----------|
@@ -122,13 +122,24 @@ ArgoCD sync-waves control the deployment sequence. All 15 ArgoCD-managed compone
 | 2 | backstage | backstage |
 | 2 | gitea | gitea |
 | 2 | grafana | monitoring |
+| 2 | harbor | harbor |
 | 2 | jaeger | tracing |
 | 2 | landingpage | platform-apps |
+| 2 | opencost | cost-monitoring |
 | 2 | sonarqube | code-quality |
 | 3 | crossplane | crossplane-system |
 | 3 | kyverno | kyverno |
+| 4 | crossplane-providers | crossplane-system |
+| 4 | fluentd | logging |
+| 4 | kyverno-policies | kyverno |
+| 5 | monitoring-extras | monitoring |
+| 6 | crossplane-provider-configs | crossplane-system |
+| 7 | crossplane-xrds | crossplane-system |
+| 8 | core-catalog | crossplane-system |
+| 9 | cnpg (**manual**) | cnpg-system |
+| 10 | cnpg-cluster (**manual**) | platform-db |
 
-Wave 0 establishes foundational services (TLS, secrets, storage, messaging) before any application-layer components start. Wave 1 brings up identity (Keycloak) and GitOps (ArgoCD). Wave 2 deploys all application-layer platform services that depend on Keycloak for SSO. Wave 3 adds infrastructure-management tooling.
+Wave 0 contains the foundation and permanent core data layer. Normal `up` does not sync the manual CNPG Applications in waves 9–10. Use `nu scripts/local-setup.nu future-infra` to promote the optional future hosted-application database operator and Cluster in a fail-closed sequence.
 
 ## Usage
 
