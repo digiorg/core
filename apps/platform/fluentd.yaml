@@ -6,7 +6,8 @@ metadata:
   finalizers:
     - resources-finalizer.argocd.argoproj.io
   annotations:
-    # Wave 4: After opensearch (Wave 3) — log collector deployed once storage backend is ready
+    # Wave 4: After opensearch (Wave 0, core data layer — Issue #283) — log
+    # collector deployed once its storage backend is functionally ready
     argocd.argoproj.io/sync-wave: "4"
 spec:
   project: default

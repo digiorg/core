@@ -232,6 +232,16 @@ class MaterialDiffFallbackRuntimeTest(unittest.TestCase):
                 "mktemp": "#!/bin/sh\nexec /usr/bin/mktemp \"$@\"\n",
                 "argocd": (
                     "#!/bin/sh\n"
+                    # Issue #283: argocd_app_has_no_material_diff also checks
+                    # client/server MAJOR.MINOR compatibility (not exact-patch)
+                    # before trusting a diff; answer that call distinctly so
+                    # the diff exit-code path under test is still isolated.
+                    "case \"$*\" in\n"
+                    "  *'version --client --short'*)\n"
+                    "    echo 'argocd: v3.4.5+564b949'\n"
+                    "    exit 0\n"
+                    "    ;;\n"
+                    "esac\n"
                     "echo 'Authorization: Bearer should-not-leak'\n"
                     "echo 'password=should-not-leak' >&2\n"
                     f"exit {exit_code}\n"

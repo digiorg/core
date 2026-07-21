@@ -87,12 +87,18 @@ class InventoryParityTest(unittest.TestCase):
         return set(re.findall(r'"([a-z0-9-]+)"', block))
 
     def test_wait_inventory_matches_manifests_exactly(self):
-        manifests = _manifest_app_names()
+        # Issue #283: cnpg/cnpg-cluster are deliberately excluded from the
+        # fail-closed core gate (they are optional future-app infrastructure,
+        # promoted separately and non-fatally — see
+        # test_cnpg_decoupled_promotion.py). Every OTHER manifest Application
+        # must still be waited on exactly.
+        manifests = _manifest_app_names() - {"cnpg", "cnpg-cluster"}
         waited = self._waited_names()
         self.assertEqual(
             waited, manifests,
             "the wait_for_argocd_apps inventory must match apps/platform/*.yaml "
-            f"exactly; missing={manifests - waited} extra={waited - manifests}",
+            "exactly (except the intentionally-excluded cnpg/cnpg-cluster); "
+            f"missing={manifests - waited} extra={waited - manifests}",
         )
 
     def test_namespaces_is_included(self):
@@ -100,17 +106,14 @@ class InventoryParityTest(unittest.TestCase):
         self.assertIn("namespaces", self._waited_names())
 
 
-class ArgocdPrerequisiteTest(unittest.TestCase):
-    """The material-diff fallback depends on argocd; make the dep explicit."""
+class HelmVersionCompatibilityTest(unittest.TestCase):
+    """Helm 3 vs Helm 4 --force-conflicts handling for the self-managed ArgoCD
+    release. (The `argocd` CLI prerequisite itself is optional as of Issue
+    #283 — see test_argocd_cli_optional.py.)"""
 
     @classmethod
     def setUpClass(cls):
         cls.text = _read(SETUP)
-
-    def test_check_prerequisites_requires_argocd(self):
-        body = _func_body(self.text, "check_prerequisites")
-        self.assertIn('"argocd"', body)
-        self.assertIn("argocd_client_version_matches", self.text)
 
     def test_argocd_bootstrap_upgrade_handles_helm3_and_helm4(self):
         install = _func_body(self.text, "install_argocd")
@@ -124,26 +127,6 @@ class ArgocdPrerequisiteTest(unittest.TestCase):
         self.assertEqual(
             _run_nu('helm_force_conflicts_args_for_version "v4.2.3+gabcdef" | to json --raw'),
             '["--force-conflicts"]',
-        )
-
-    def test_check_prerequisites_verifies_matching_argocd_version(self):
-        body = _func_body(self.text, "check_prerequisites")
-        self.assertIn("argocd version --client", body)
-        self.assertIn("v3.4.5", body)
-        self.assertIn("argocd_client_version_matches", body)
-
-    def test_argocd_version_match_is_exact_but_allows_build_metadata(self):
-        self.assertEqual(
-            _run_nu('argocd_client_version_matches "argocd: v3.4.5+564b949" "3.4.5"'),
-            "true",
-        )
-        self.assertEqual(
-            _run_nu('argocd_client_version_matches "argocd: v3.4.50+fake" "3.4.5"'),
-            "false",
-        )
-        self.assertEqual(
-            _run_nu('argocd_client_version_matches "garbage v3.4.5" "3.4.5"'),
-            "false",
         )
 
 

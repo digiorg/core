@@ -56,16 +56,22 @@ class RepoServerStabilityGateTest(unittest.TestCase):
         body = self.text[start:end]
         self.assertNotIn("(restarts:", body)
 
-    def test_called_between_root_app_deploy_and_gated_sync(self):
+    def test_called_before_root_app_deploy_and_gated_sync(self):
+        # Issue #283 (P1 correction): the stability wait now runs BEFORE
+        # root-app is even applied (previously: after). This is a strictly
+        # stronger guarantee than the original #279 fix — repo-server must be
+        # Ready and restart-stable before ANY Application syncs, not just
+        # before the first *gated* one — and it is what makes the core data
+        # layer (applied directly, before root-app) safe to sync immediately.
         deploy_start = self.text.index("def deploy_root_app")
         deploy_end = self.text.index("\ndef ", deploy_start + 10)
         body = self.text[deploy_start:deploy_end]
-        root_apply_pos = body.index("root-app.yaml")
         stability_pos = body.index("wait_for_repo_server_stable")
+        root_apply_pos = body.index("root-app.yaml")
         gated_sync_pos = body.index("sync_gated_apps_for_local_dev")
         self.assertTrue(
-            root_apply_pos < stability_pos < gated_sync_pos,
-            "must apply root-app, THEN wait for repo-server stability, THEN start gated sync",
+            stability_pos < root_apply_pos < gated_sync_pos,
+            "must wait for repo-server stability, THEN apply root-app, THEN start gated sync",
         )
 
 

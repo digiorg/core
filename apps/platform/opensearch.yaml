@@ -6,8 +6,15 @@ metadata:
   finalizers:
     - resources-finalizer.argocd.argoproj.io
   annotations:
-    # Wave 3: After kube-prometheus-stack (Wave 2) — ServiceMonitor CRD must exist before opensearch sync
-    argocd.argoproj.io/sync-wave: "3"
+    # Wave 0: core data layer, alongside legacy PostgreSQL (Issue #283).
+    # OpenSearch is the trace/log backend for Jaeger and Fluentd and must be
+    # functionally ready before either starts. The previous wave-3 placement
+    # was justified by "ServiceMonitor CRD must exist first", but the
+    # Prometheus Operator CRDs are installed in Phase 1 (before the root
+    # Application even exists) and this Application's own Kustomize base
+    # carries no ServiceMonitor (that lives in platform/base/monitoring-extras,
+    # wave 5) — so that justification never applied to this Application's sync.
+    argocd.argoproj.io/sync-wave: "0"
 spec:
   project: default
 

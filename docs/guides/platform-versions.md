@@ -70,8 +70,8 @@ Third-party images record a human-readable tag **plus** an immutable digest:
 
 | Image | Tag | Used by |
 | --- | --- | --- |
-| `postgres` | 16-alpine | legacy PostgreSQL StatefulSet (transition; being replaced by CNPG) |
-| `ghcr.io/cloudnative-pg/postgresql` | 16.9 | CNPG Cluster + init/backup jobs |
+| `postgres` | 16-alpine | legacy PostgreSQL StatefulSet — permanent internal-platform database (Issue #283; not migrated to CNPG) |
+| `ghcr.io/cloudnative-pg/postgresql` | 16.9 | CNPG Cluster — optional, future hosted-application database infrastructure only |
 | `quay.io/oauth2-proxy/oauth2-proxy` | v7.15.3 | OpenCost + Jaeger auth proxies |
 | `nginx` | 1.30-alpine | Harbor UI reverse proxy |
 | `curlimages/curl` | 8.16.0 | Harbor OIDC/proxy-cache + OpenSearch bootstrap jobs |
@@ -215,10 +215,15 @@ where noted (this environment has no cluster — see section 7).
   Prometheus, Grafana, ServiceMonitors, dashboards, persistence and the OpenCost
   integration after upgrade.
 
-### PostgreSQL StatefulSet → CloudNativePG
-See the dedicated runbook: **[postgres-cnpg-migration.md](./postgres-cnpg-migration.md)**.
-Coexistence is conflict-free (the `postgresql` alias Service is not synced until
-cutover); cutover and rollback are single, symmetric Git commits.
+### CloudNativePG (CNPG) — optional future-app database infrastructure
+CNPG is **not** a migration target for the legacy PostgreSQL StatefulSet — see
+the corrected architecture note: **[cnpg-future-app-database.md](./cnpg-future-app-database.md)**.
+Legacy PostgreSQL permanently remains the database for Keycloak, Backstage,
+Gitea, SonarQube and Harbor. CNPG's Applications sync in their own late,
+decoupled wave (9/10). `nu scripts/local-setup.nu up` never promotes CNPG, so
+it can never delay or block core-platform bootstrap; run
+`nu scripts/local-setup.nu future-infra` explicitly (fails closed) whenever
+CNPG is actually needed.
 
 ---
 
@@ -263,7 +268,9 @@ For each promotion:
 
 - **Rollback** is `git revert` of the pin commit for stateless components; for
   stateful ones follow the component-specific note in section 5 (restore the DB
-  snapshot first). The CNPG cutover/rollback is documented separately.
+  snapshot first). CNPG is optional future-app infrastructure with no core
+  consumers, so it has no rollback procedure of its own — see
+  [cnpg-future-app-database.md](./cnpg-future-app-database.md).
 - **Residual validation:** no Kubernetes cluster, Docker daemon or kind runtime is
   available here, so cluster-side upgrade/rollback, data migration and workload
   smoke tests were **not executed**. Static verification did include: all 12 Helm

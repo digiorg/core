@@ -6,12 +6,13 @@ metadata:
   finalizers:
     - resources-finalizer.argocd.argoproj.io
   annotations:
-    # Wave 1: the CNPG Cluster + database bootstrap. Must sync AFTER the CNPG
-    # operator (apps/platform/cnpg.yaml, wave 0) so the postgresql.cnpg.io CRDs
-    # exist. The consumer alias Service becomes authoritative only at cutover,
-    # when the legacy `postgresql` Application is disabled — see
-    # docs/guides/postgres-cnpg-migration.md.
-    argocd.argoproj.io/sync-wave: "1"
+    # Wave 10 (Issue #283): the CNPG Cluster — optional, future hosted-application
+    # database infrastructure. It never replaces or takes over the internal
+    # platform databases. Must sync AFTER the CNPG operator (apps/platform/cnpg.yaml,
+    # wave 9) so the postgresql.cnpg.io CRDs exist, and after every core-platform
+    # Application so it can never block core bootstrap. See
+    # docs/guides/cnpg-future-app-database.md.
+    argocd.argoproj.io/sync-wave: "10"
 spec:
   project: default
 
@@ -29,10 +30,11 @@ spec:
     # sync applied Cluster/postgresql-cnpg before the CNPG operator's admission
     # webhook accepted connections (`connection refused`), and the failed
     # operation then stayed Running behind a Pending backup PVC so Argo's retry
-    # never recovered. scripts/local-setup.nu (`promote_cnpg_cluster`) instead
-    # waits for the operator Deployment to be Available and the webhook endpoint
-    # to be ready, then syncs with a fresh operation. Shared/production clusters
-    # follow docs/guides/postgres-cnpg-migration.md.
+    # never recovered. The explicit `main future-infra` command first promotes
+    # the manual operator Application, waits for its Deployment and webhook,
+    # then syncs this Cluster with a fresh operation. It is never called by
+    # core bootstrap (Issue #283). Shared/
+    # production clusters follow docs/guides/cnpg-future-app-database.md.
     syncOptions:
       - CreateNamespace=true
       - ServerSideApply=true
