@@ -494,7 +494,7 @@ def create_platform_namespaces_secrets [] {
     let harbor_admin_password = (secret_value_or_default "harbor" "harbor-admin-secret" "HARBOR_ADMIN_PASSWORD" $env.HARBOR_ADMIN_PASSWORD? "Harbor12345")
     let harbor_secret_key = (secret_value_or_default "harbor" "harbor-secret-key" "secretKey" $env.HARBOR_SECRET_KEY? "not-a-secure-key")
     let harbor_db_password = (secret_value_or_default "platform-db" "postgresql-secrets" "HARBOR_DB_PASSWORD" $env.HARBOR_DB_PASSWORD? (generate_password))
-    let harbor_oidc_secret = (secret_value_or_default "harbor" "harbor-oidc-secret" "client-secret" $env.HARBOR_OIDC_CLIENT_SECRET? "harbor-client-secret")
+    let harbor_oidc_secret = (secret_value_or_default "harbor" "harbor-oidc-secret" "OIDC_CLIENT_SECRET" $env.HARBOR_OIDC_CLIENT_SECRET? "harbor-client-secret")
     
     # Platform-db namespace and PostgreSQL secrets (shared database for Keycloak + Backstage + Gitea)
     kubectl create namespace platform-db --dry-run=client -o yaml | kubectl apply -f -
@@ -614,7 +614,7 @@ type: kubernetes.io/service-account-token" | save --force $token_secret_file
         --from-literal=password=($harbor_db_password)
         --dry-run=client -o yaml | kubectl apply -f -)
     (kubectl create secret generic harbor-oidc-secret -n harbor
-        --from-literal=client-secret=($harbor_oidc_secret)
+        --from-literal=OIDC_CLIENT_SECRET=($harbor_oidc_secret)
         --dry-run=client -o yaml | kubectl apply -f -)
 
     # Messaging namespace (for NATS server + Surveyor)

@@ -64,7 +64,7 @@ The script installs only the minimal infrastructure needed to run ArgoCD:
    - `harbor/harbor-admin-secret`: `HARBOR_ADMIN_PASSWORD`
    - `harbor/harbor-secret-key`: `secretKey` (16-char internal encryption key)
    - `harbor/harbor-db-secret`: `password` (shared PostgreSQL)
-   - `harbor/harbor-oidc-secret`: `client-secret` (Keycloak OIDC)
+   - `harbor/harbor-oidc-secret`: `OIDC_CLIENT_SECRET` (Keycloak OIDC)
 8. **ArgoCD** (Helm install)
 9. **Root App** (triggers App-of-Apps)
 

@@ -318,6 +318,22 @@ class ConfigurationDependencyTest(unittest.TestCase):
         ):
             self.assertIn(key, body)
 
+    def test_harbor_oidc_secret_key_is_consistent_across_clean_and_resume_owners(self):
+        body = _func_body(self.text, "create_platform_namespaces_secrets")
+        self.assertIn(
+            'secret_value_or_default "harbor" "harbor-oidc-secret" "OIDC_CLIENT_SECRET"',
+            body,
+        )
+        self.assertIn("--from-literal=OIDC_CLIENT_SECRET=($harbor_oidc_secret)", body)
+        secret_manifest = _read(os.path.join(
+            REPO_ROOT, "platform", "base", "harbor", "harbor-oidc-secret.yaml"
+        ))
+        config_job = _read(os.path.join(
+            REPO_ROOT, "platform", "base", "harbor", "harbor-oidc-config-job.yaml"
+        ))
+        self.assertIn("OIDC_CLIENT_SECRET", secret_manifest)
+        self.assertIn("key: OIDC_CLIENT_SECRET", config_job)
+
     def test_all_secret_fallbacks_use_exact_notfound_classifier(self):
         self.assertIn("kubectl_error_is_exact_not_found", _func_body(self.text, "secret_value_or_default"))
         self.assertIn("kubectl_error_is_exact_not_found", _func_body(self.text, "configure_gitea"))
