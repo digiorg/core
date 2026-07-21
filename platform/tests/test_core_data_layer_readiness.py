@@ -121,13 +121,28 @@ class WaitForPostgresqlReadyStructureTest(unittest.TestCase):
         self.assertIn("pg_isready", self.wait)
         self.assertIn("postgresql_has_required_databases", self.wait)
 
+    def test_checks_real_consumer_service_path_and_application_roles(self):
+        self.assertIn("postgresql.platform-db.svc.cluster.local", self.wait)
+        self.assertIn("has_schema_privilege", self.wait)
+        for role in ("keycloak", "backstage", "gitea", "sonarqube", "harbor"):
+            self.assertIn(role, self.wait)
+
+    def test_every_postgresql_exec_has_a_hard_request_timeout(self):
+        exec_lines = [line for line in self.wait.splitlines() if "kubectl" in line and "exec" in line]
+        self.assertGreaterEqual(len(exec_lines), 3)
+        for line in exec_lines:
+            self.assertIn("--request-timeout=10s", line)
+
     def test_fails_closed_with_bounded_redacted_diagnostic(self):
         self.assertIn("error make", self.wait)
         self.assertIn("redact_sync_diagnostic", self.wait)
 
-    def test_never_prints_password_env_vars(self):
-        for key in ("POSTGRES_PASSWORD", "PGPASSWORD"):
-            self.assertNotIn(key, self.wait)
+    def test_password_values_are_never_read_or_printed_on_the_host(self):
+        # Environment-variable NAMES and a literal $VAR reference are safe;
+        # Secret values must never be fetched/decoded by the host-side script.
+        self.assertNotIn("kubectl get secret", self.wait)
+        self.assertNotIn("decode base64", self.wait)
+        self.assertNotIn("print $password_reference", self.wait)
 
     def test_runs_inside_core_data_layer_before_gated_sync(self):
         # P1 correction: waiting only happens AFTER deploy_root_app already
@@ -159,6 +174,15 @@ class WaitForOpensearchReadyStructureTest(unittest.TestCase):
     def test_checks_cluster_health_endpoint(self):
         self.assertIn("_cluster/health", self.wait)
         self.assertIn("opensearch_cluster_health_acceptable", self.wait)
+
+    def test_checks_the_real_opensearch_service_path(self):
+        self.assertIn("opensearch-cluster-master.platform-db.svc.cluster.local", self.wait)
+        self.assertNotIn("http://localhost:9200", self.wait)
+
+    def test_opensearch_exec_has_a_hard_request_timeout(self):
+        exec_lines = [line for line in self.wait.splitlines() if "kubectl" in line and "exec" in line]
+        self.assertEqual(len(exec_lines), 1)
+        self.assertIn("--request-timeout=10s", exec_lines[0])
 
     def test_fails_closed_with_bounded_redacted_diagnostic(self):
         self.assertIn("error make", self.wait)
@@ -259,6 +283,10 @@ case "$args" in
     printf 'postgres\nkeycloak\nbackstage\ngitea\nsonarqube\nregistry\n'
     exit 0
     ;;
+  *"has_schema_privilege"*)
+    printf '1\n'
+    exit 0
+    ;;
   *"_cluster/health"*)
     printf '{"status":"green"}\n'
     exit 0
@@ -316,6 +344,13 @@ case "$args" in
     printf 'postgres\nkeycloak\nbackstage\ngitea\nsonarqube\nregistry\n'
     exit 0
     ;;
+  *"has_schema_privilege"*)
+    if [ "$FAKE_SCENARIO" = "auth_failure" ] && printf '%s' "$args" | grep -q -- '-U gitea'; then
+      exit 1
+    fi
+    printf '1\n'
+    exit 0
+    ;;
   *)
     printf 'unexpected kubectl call: %s\n' "$args" >&2
     exit 2
@@ -349,6 +384,11 @@ esac
 
     def test_missing_database_fails_closed(self):
         result = self._run("missing_db", timeout=60)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("PostgreSQL", result.stderr)
+
+    def test_one_application_role_auth_failure_fails_closed(self):
+        result = self._run("auth_failure", timeout=60)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("PostgreSQL", result.stderr)
 
