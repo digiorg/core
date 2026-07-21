@@ -929,10 +929,11 @@ def postgresql_has_required_databases [datnames: string] {
     postgresql_required_databases | all {|db| $db in $present }
 }
 
-# PostgreSQL must accept connections AND already have every required database
-# initialized before its consumers may be considered safe to start. Runs
-# entirely via `kubectl exec` inside the cluster; only pg_isready's exit code
-# and a list of database NAMES (never credentials or row data) are inspected.
+# PostgreSQL must accept connections through the real Service/TCP path and each
+# internal application role must authenticate to its own database with the
+# required public-schema privileges. Passwords are expanded only inside the
+# PostgreSQL container from its existing Secret-backed environment variables;
+# no Secret value enters host argv/stdout. Every exec has a hard API timeout.
 def wait_for_postgresql_ready [poll_interval: duration = 5sec] {
     $env.KUBECONFIG = $KUBECONFIG_PATH
 
@@ -941,18 +942,43 @@ def wait_for_postgresql_ready [poll_interval: duration = 5sec] {
     mut last_diagnostic = "postgresql readiness was not observed"
     for attempt in 1..60 {
         let ready = (do {
-            kubectl exec -n platform-db statefulset/postgresql -- pg_isready -U postgres
+            kubectl --request-timeout=10s exec -n platform-db statefulset/postgresql -- pg_isready -h postgresql.platform-db.svc.cluster.local -U postgres
         } | complete)
         if $ready.exit_code == 0 {
             let dbs = (do {
-                kubectl exec -n platform-db statefulset/postgresql -- psql -U postgres -tAc "SELECT datname FROM pg_database"
+                kubectl --request-timeout=10s exec -n platform-db statefulset/postgresql -- psql -U postgres -tAc "SELECT datname FROM pg_database"
             } | complete)
             if $dbs.exit_code == 0 {
                 if (postgresql_has_required_databases $dbs.stdout) {
-                    print $"(ansi green)✓ PostgreSQL accepts connections and all required databases are initialized(ansi reset)"
-                    return
+                    let application_targets = [
+                        {role: "keycloak", database: "keycloak", password_env: "KEYCLOAK_DB_PASSWORD"}
+                        {role: "backstage", database: "backstage", password_env: "BACKSTAGE_DB_PASSWORD"}
+                        {role: "gitea", database: "gitea", password_env: "GITEA_DB_PASSWORD"}
+                        {role: "sonarqube", database: "sonarqube", password_env: "SONARQUBE_DB_PASSWORD"}
+                        {role: "harbor", database: "registry", password_env: "HARBOR_DB_PASSWORD"}
+                    ]
+                    mut failed_roles = []
+                    for target in $application_targets {
+                        # Construct only a reference such as $KEYCLOAK_DB_PASSWORD;
+                        # the value is expanded by sh inside the container.
+                        let password_reference = ('$' + $target.password_env)
+                        let privilege_query = "SELECT CASE WHEN has_schema_privilege(current_user, 'public', 'USAGE,CREATE') THEN 1 ELSE 0 END"
+                        let probe_command = $'PGPASSWORD="($password_reference)" psql -v ON_ERROR_STOP=1 -h postgresql.platform-db.svc.cluster.local -U ($target.role) -d ($target.database) -tAc "($privilege_query)"'
+                        let probe = (do {
+                            kubectl --request-timeout=10s exec -n platform-db statefulset/postgresql -- sh -c $probe_command
+                        } | complete)
+                        if $probe.exit_code != 0 or ($probe.stdout | str trim) != "1" {
+                            $failed_roles = ($failed_roles | append $target.role)
+                        }
+                    }
+                    if ($failed_roles | is-empty) {
+                        print $"(ansi green)✓ PostgreSQL Service accepts every platform role and required schema privileges are initialized(ansi reset)"
+                        return
+                    }
+                    $last_diagnostic = $"PostgreSQL application roles not ready: ($failed_roles | str join ', ')"
+                } else {
+                    $last_diagnostic = "PostgreSQL accepts connections but required databases are not yet initialized"
                 }
-                $last_diagnostic = "PostgreSQL accepts connections but required databases are not yet initialized"
             } else {
                 $last_diagnostic = (redact_sync_diagnostic ($dbs.stderr | str trim))
             }
@@ -976,11 +1002,12 @@ def opensearch_cluster_health_acceptable [health_json: string] {
     $status in ["green" "yellow"]
 }
 
-# OpenSearch must answer a local cluster-health request with an acceptable
+# OpenSearch must answer its real Service-DNS cluster-health request with an acceptable
 # status before its consumers (Jaeger, Fluentd) may be considered safe to
 # start. The security plugin is disabled for local dev (see
 # platform/base/opensearch/values.yaml), so no credential is required; the
-# request stays inside the cluster via `kubectl exec` regardless.
+# request stays inside the cluster via `kubectl exec` regardless. Both kubectl
+# and curl have hard timeouts so a stuck API/stream cannot defeat the poll bound.
 def wait_for_opensearch_ready [poll_interval: duration = 5sec] {
     $env.KUBECONFIG = $KUBECONFIG_PATH
 
@@ -989,7 +1016,7 @@ def wait_for_opensearch_ready [poll_interval: duration = 5sec] {
     mut last_diagnostic = "opensearch readiness was not observed"
     for attempt in 1..90 {
         let result = (do {
-            kubectl exec -n platform-db statefulset/opensearch-cluster-master -- curl -s -m 5 "http://localhost:9200/_cluster/health"
+            kubectl --request-timeout=10s exec -n platform-db statefulset/opensearch-cluster-master -- curl -s -m 5 "http://opensearch-cluster-master.platform-db.svc.cluster.local:9200/_cluster/health"
         } | complete)
         if $result.exit_code == 0 {
             if (opensearch_cluster_health_acceptable $result.stdout) {
