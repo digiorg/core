@@ -55,6 +55,12 @@ LEGACY_PLATFORM_DATABASES = ("keycloak", "backstage", "gitea", "sonarqube", "reg
 LEGACY_PLATFORM_USERS = ("keycloak", "backstage", "gitea", "sonarqube", "harbor")
 LEGACY_SECRET_NAME = "postgresql-secrets"
 LEGACY_SUPERUSER_SECRET_NAME = "postgresql-cnpg-superuser"
+OPERATIONAL_OVERVIEWS = (
+    os.path.join(REPO_ROOT, "README.md"),
+    os.path.join(REPO_ROOT, "platform", "README.md"),
+    os.path.join(REPO_ROOT, "scripts", "README.md"),
+    os.path.join(REPO_ROOT, "docs", "guides", "local-development.md"),
+)
 
 
 def _read(path):
@@ -201,6 +207,24 @@ class LegacyStatefulSetRetainedTest(unittest.TestCase):
     def test_legacy_statefulset_still_present(self):
         self.assertTrue(os.path.exists(LEGACY_STATEFULSET_YAML),
                         "the legacy StatefulSet must be retained permanently")
+
+
+class OperationalOverviewConsistencyTest(unittest.TestCase):
+    """High-level runbooks must reflect the manual CNPG and early OpenSearch contract."""
+
+    def test_no_overview_lists_cnpg_in_wave_zero_or_opensearch_in_wave_three(self):
+        for path in OPERATIONAL_OVERVIEWS:
+            text = _read(path)
+            self.assertNotRegex(text, r"(?im)^\|\s*0\s*\|[^\n]*\bcnpg\b", path)
+            self.assertNotRegex(text, r"(?im)^\|\s*3\s*\|[^\n]*\bopensearch\b", path)
+
+    def test_overviews_name_the_explicit_future_infrastructure_command(self):
+        for path in OPERATIONAL_OVERVIEWS:
+            self.assertIn("future-infra", _read(path), path)
+
+    def test_obsolete_fifteen_application_count_is_gone(self):
+        for path in OPERATIONAL_OVERVIEWS:
+            self.assertNotRegex(_read(path), r"(?i)all\s+15\s+ArgoCD", path)
 
 
 if __name__ == "__main__":
