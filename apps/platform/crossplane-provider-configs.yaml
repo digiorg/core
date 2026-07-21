@@ -14,7 +14,7 @@ spec:
 
   source:
     repoURL: https://github.com/digiorg/core.git
-    targetRevision: main
+    targetRevision: test/issue-283-runtime
     path: crossplane/providers/configs
 
   destination:
