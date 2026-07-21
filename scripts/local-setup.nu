@@ -479,6 +479,47 @@ def secret_value_or_default [namespace: string, secret: string, key: string, ove
     error make {msg: $"Failed to read Secret ($namespace)/($secret) while resolving ($key)"}
 }
 
+# One-time, secret-safe key migration for a known pre-fix Secret schema. The
+# canonical key always wins. If the Secret exists but only the legacy key is
+# populated, its value is returned and the caller's normal declarative apply
+# writes it back under the canonical key. No value is printed or put in host
+# argv beyond the existing kubectl create/apply pipeline.
+def secret_value_or_legacy_key_or_default [namespace: string, secret: string, key: string, legacy_key: string, override, fallback] {
+    let explicit = ($override | default "")
+    if ($explicit | into string) != "" {
+        return ($explicit | into string)
+    }
+
+    let lookup = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH get secret $secret -n $namespace -o $"jsonpath={.data.($key)}"
+    } | complete)
+    if $lookup.exit_code == 0 {
+        let existing = (try { $lookup.stdout | str trim | decode base64 | decode utf-8 } catch { "" })
+        if not ($existing | is-empty) {
+            return $existing
+        }
+
+        let legacy_lookup = (do {
+            kubectl --kubeconfig $KUBECONFIG_PATH get secret $secret -n $namespace -o $"jsonpath={.data.($legacy_key)}"
+        } | complete)
+        if $legacy_lookup.exit_code != 0 {
+            error make {msg: $"Failed to read existing Secret ($namespace)/($secret) legacy key while resolving ($key)"}
+        }
+        let legacy_existing = (try { $legacy_lookup.stdout | str trim | decode base64 | decode utf-8 } catch { "" })
+        if ($legacy_existing | is-empty) {
+            error make {msg: $"Existing Secret ($namespace)/($secret) has no usable ($key) or legacy key value"}
+        }
+        return $legacy_existing
+    }
+
+    let secret_missing = (kubectl_error_is_exact_not_found $lookup.stderr "secrets" $secret)
+    let namespace_missing = (kubectl_error_is_exact_not_found $lookup.stderr "namespaces" $namespace)
+    if $secret_missing or $namespace_missing {
+        return ($fallback | into string)
+    }
+    error make {msg: $"Failed to read Secret ($namespace)/($secret) while resolving ($key)"}
+}
+
 def create_platform_namespaces_secrets [] {
     # Preserve existing values on resume. Environment variables are explicit
     # rotation requests; random/default values are used only on a clean cluster.
@@ -494,7 +535,7 @@ def create_platform_namespaces_secrets [] {
     let harbor_admin_password = (secret_value_or_default "harbor" "harbor-admin-secret" "HARBOR_ADMIN_PASSWORD" $env.HARBOR_ADMIN_PASSWORD? "Harbor12345")
     let harbor_secret_key = (secret_value_or_default "harbor" "harbor-secret-key" "secretKey" $env.HARBOR_SECRET_KEY? "not-a-secure-key")
     let harbor_db_password = (secret_value_or_default "platform-db" "postgresql-secrets" "HARBOR_DB_PASSWORD" $env.HARBOR_DB_PASSWORD? (generate_password))
-    let harbor_oidc_secret = (secret_value_or_default "harbor" "harbor-oidc-secret" "OIDC_CLIENT_SECRET" $env.HARBOR_OIDC_CLIENT_SECRET? "harbor-client-secret")
+    let harbor_oidc_secret = (secret_value_or_legacy_key_or_default "harbor" "harbor-oidc-secret" "OIDC_CLIENT_SECRET" "client-secret" $env.HARBOR_OIDC_CLIENT_SECRET? "harbor-client-secret")
     
     # Platform-db namespace and PostgreSQL secrets (shared database for Keycloak + Backstage + Gitea)
     kubectl create namespace platform-db --dry-run=client -o yaml | kubectl apply -f -

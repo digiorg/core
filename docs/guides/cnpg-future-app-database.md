@@ -89,8 +89,9 @@ When a real application is ready to use this Cluster:
 ## 4. Local KinD reproduction
 
 ```bash
-kubectl apply -f apps/platform/cnpg.yaml           # operator (wave 9)
-kubectl apply -f apps/platform/cnpg-cluster.yaml    # Cluster (wave 10)
+# Requires the core platform from `nu scripts/local-setup.nu up`.
+# This promotes operator -> Available webhook -> Cluster, fail-closed.
+nu scripts/local-setup.nu future-infra
 
 kubectl -n platform-db wait --for=condition=Ready cluster/postgresql-cnpg --timeout=600s
 kubectl -n platform-db get pods -l cnpg.io/cluster=postgresql-cnpg
@@ -113,17 +114,16 @@ kubectl -n platform-db get secret postgresql-cnpg-app -o jsonpath='{.data.dbname
   alias Service were removed; the Cluster now uses only CNPG-owned Secrets;
   CNPG's Applications were moved to a late, decoupled sync wave; and its
   promotion moved out of `up` entirely into the separate, explicit,
-  fail-closed `main future-infra` command — an earlier "best-effort" design
+  fail-closed `nu scripts/local-setup.nu future-infra` command — an earlier "best-effort" design
   still executed CNPG's bounded waits before catching the error, which
   delayed core bootstrap rather than truly decoupling from it.
 
 ## Limitations
 
-- **No cluster / kubectl / kind / Docker runtime** in the environment that
-  authored this document: the Cluster reconciling to a healthy primary was
-  **not executed against a real cluster**. The manifests were Kustomize- and
-  Helm-rendered and validated with `python3 scripts/check_pins.py` and the
-  `platform/tests/test_cnpg_*.py` suites.
+- The #283 workflow was validated on a fresh Linux KinD cluster: the explicit
+  command promoted the operator, observed a ready admission-webhook endpoint,
+  and reconciled `postgresql-cnpg` to `Ready`. Production backup, restore, and
+  disaster-recovery behavior remain outside that local validation scope.
 - **Operator chart 0.29.0**, revalidated against
   `https://cloudnative-pg.github.io/charts/index.yaml`: newest release as of
   the #275 approval (appVersion 1.30.0). The Cluster image digest was
