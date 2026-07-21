@@ -22,6 +22,7 @@ plus a couple of real-Nushell behaviour checks of the new pure helper::
 """
 
 import base64
+import json
 import os
 import re
 import subprocess
@@ -324,7 +325,8 @@ class ConfigurationDependencyTest(unittest.TestCase):
             'secret_value_or_legacy_key_or_default "harbor" "harbor-oidc-secret" "OIDC_CLIENT_SECRET" "client-secret"',
             body,
         )
-        self.assertIn("--from-literal=OIDC_CLIENT_SECRET=($harbor_oidc_secret)", body)
+        self.assertIn("persist_harbor_oidc_secret $harbor_oidc_secret", body)
+        self.assertNotIn("--from-literal=OIDC_CLIENT_SECRET=($harbor_oidc_secret)", body)
         secret_manifest = _read(os.path.join(
             REPO_ROOT, "platform", "base", "harbor", "harbor-oidc-secret.yaml"
         ))
@@ -463,6 +465,66 @@ class HarborOidcLegacySecretMigrationTest(unittest.TestCase):
         result = self._run("neither", "rotated-value")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "rotated-value")
+
+    def _run_persist(self, scenario):
+        sentinel = "harbor-oidc-never-in-argv"
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = os.path.join(tmp, "kubectl")
+            argv_log = os.path.join(tmp, "argv")
+            manifest_log = os.path.join(tmp, "manifest.json")
+            with open(fake, "w", encoding="utf-8") as fh:
+                fh.write(
+                    "#!/usr/bin/env python3\n"
+                    "import json, os, sys\n"
+                    "args = sys.argv[1:]\n"
+                    "with open(os.environ['ARGV_LOG'], 'a', encoding='utf-8') as log: log.write(json.dumps(args) + '\\n')\n"
+                    "scenario = os.environ['FAKE_SCENARIO']\n"
+                    "if 'apply' in args:\n"
+                    "    data = sys.stdin.read()\n"
+                    "    if scenario == 'apply_failure': sys.exit(1)\n"
+                    "    open(os.environ['MANIFEST_LOG'], 'w', encoding='utf-8').write(data); sys.exit(0)\n"
+                    "if 'get' in args:\n"
+                    "    if scenario == 'readback_failure': sys.exit(1)\n"
+                    "    obj = json.load(open(os.environ['MANIFEST_LOG'], encoding='utf-8'))\n"
+                    "    print('d3Jvbmc=' if scenario == 'readback_mismatch' else obj['data']['OIDC_CLIENT_SECRET'], end=''); sys.exit(0)\n"
+                    "sys.exit(2)\n"
+                )
+            os.chmod(fake, 0o755)
+            env = os.environ.copy()
+            env["PATH"] = tmp + os.pathsep + env.get("PATH", "")
+            env["ARGV_LOG"] = argv_log
+            env["MANIFEST_LOG"] = manifest_log
+            env["FAKE_SCENARIO"] = scenario
+            env["TEST_SECRET"] = sentinel
+            result = subprocess.run(
+                ["nu", "-c", f"source {SETUP}; persist_harbor_oidc_secret $env.TEST_SECRET"],
+                capture_output=True, text=True, timeout=10, env=env,
+            )
+            argv = ""
+            if os.path.exists(argv_log):
+                with open(argv_log, encoding="utf-8") as fh:
+                    argv = fh.read()
+            manifest = None
+            if os.path.exists(manifest_log):
+                with open(manifest_log, encoding="utf-8") as fh:
+                    manifest = json.load(fh)
+            return result, sentinel, argv, manifest
+
+    def test_persist_uses_stdin_not_argv_and_verifies_readback(self):
+        result, sentinel, argv, manifest = self._run_persist("success")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn(sentinel, argv)
+        self.assertNotIn(sentinel, result.stdout + result.stderr)
+        self.assertIsNotNone(manifest)
+        assert manifest is not None
+        self.assertEqual(base64.b64decode(manifest["data"]["OIDC_CLIENT_SECRET"]).decode(), sentinel)
+        self.assertNotIn("/dev/stdin", _func_body(_read(SETUP), "persist_harbor_oidc_secret"))
+
+    def test_persist_apply_and_readback_failures_are_fatal(self):
+        for scenario in ("apply_failure", "readback_failure", "readback_mismatch"):
+            with self.subTest(scenario=scenario):
+                result, _, _, _ = self._run_persist(scenario)
+                self.assertNotEqual(result.returncode, 0)
 
 
 class GiteaTokenTransportTest(unittest.TestCase):

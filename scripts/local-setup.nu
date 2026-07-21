@@ -482,8 +482,8 @@ def secret_value_or_default [namespace: string, secret: string, key: string, ove
 # One-time, secret-safe key migration for a known pre-fix Secret schema. The
 # canonical key always wins. If the Secret exists but only the legacy key is
 # populated, its value is returned and the caller's normal declarative apply
-# writes it back under the canonical key. No value is printed or put in host
-# argv beyond the existing kubectl create/apply pipeline.
+# writes it back under the canonical key. The caller persists it through stdin,
+# so the value is neither printed nor placed in host process arguments.
 def secret_value_or_legacy_key_or_default [namespace: string, secret: string, key: string, legacy_key: string, override, fallback] {
     let explicit = ($override | default "")
     if ($explicit | into string) != "" {
@@ -518,6 +518,37 @@ def secret_value_or_legacy_key_or_default [namespace: string, secret: string, ke
         return ($fallback | into string)
     }
     error make {msg: $"Failed to read Secret ($namespace)/($secret) while resolving ($key)"}
+}
+
+def persist_harbor_oidc_secret [value: string] {
+    if ($value | is-empty) {
+        error make {msg: "Refusing to persist an empty Harbor OIDC client secret"}
+    }
+    let manifest = ({
+        apiVersion: "v1"
+        kind: "Secret"
+        metadata: {name: "harbor-oidc-secret", namespace: "harbor"}
+        type: "Opaque"
+        data: {OIDC_CLIENT_SECRET: ($value | encode base64)}
+    } | to json)
+    let apply_result = (do {
+        $manifest | kubectl --kubeconfig $KUBECONFIG_PATH apply -f -
+    } | complete)
+    if $apply_result.exit_code != 0 {
+        error make {msg: "Failed to persist the Harbor OIDC client secret"}
+    }
+
+    # Compare in memory: neither source nor readback is printed.
+    let readback = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH get secret harbor-oidc-secret -n harbor -o jsonpath='{.data.OIDC_CLIENT_SECRET}'
+    } | complete)
+    if $readback.exit_code != 0 {
+        error make {msg: "Failed to verify the persisted Harbor OIDC client secret"}
+    }
+    let persisted = (try { $readback.stdout | str trim | decode base64 | decode utf-8 } catch { "" })
+    if ($persisted | is-empty) or ($persisted != $value) {
+        error make {msg: "Persisted Harbor OIDC client secret did not match its source"}
+    }
 }
 
 def create_platform_namespaces_secrets [] {
@@ -654,9 +685,7 @@ type: kubernetes.io/service-account-token" | save --force $token_secret_file
     (kubectl create secret generic harbor-db-secret -n harbor
         --from-literal=password=($harbor_db_password)
         --dry-run=client -o yaml | kubectl apply -f -)
-    (kubectl create secret generic harbor-oidc-secret -n harbor
-        --from-literal=OIDC_CLIENT_SECRET=($harbor_oidc_secret)
-        --dry-run=client -o yaml | kubectl apply -f -)
+    persist_harbor_oidc_secret $harbor_oidc_secret
 
     # Messaging namespace (for NATS server + Surveyor)
     kubectl create namespace messaging --dry-run=client -o yaml | kubectl apply -f -
