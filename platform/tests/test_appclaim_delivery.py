@@ -152,16 +152,27 @@ class SecretTransportTest(unittest.TestCase):
                 "    if scenario == 'readback_failure': sys.exit(1)\n"
                 "    if any('metadata.annotations' in arg for arg in args): print('', end=''); sys.exit(0)\n"
                 "    obj = json.load(open(path, encoding='utf-8'))\n"
-                "    key = next(k for k in obj['data'] if any(k in arg for arg in args))\n"
-                "    value = obj['data'][key]\n"
-                "    print('d3Jvbmc=' if scenario == 'readback_mismatch' else value, end='')\n"
+                "    output = args[args.index('-o') + 1]\n"
+                "    if output == 'json':\n"
+                "        if scenario == 'readback_mismatch': obj['data'] = {k: 'd3Jvbmc=' for k in obj['data']}\n"
+                "        print(json.dumps(obj), end='')\n"
+                "    elif output.startswith('jsonpath={.'):\n"
+                "        value = obj\n"
+                "        for part in output[len('jsonpath={.'):-1].split('.'):\n"
+                "            if not isinstance(value, dict) or part not in value:\n"
+                "                value = ''\n"
+                "                break\n"
+                "            value = value[part]\n"
+                "        print('d3Jvbmc=' if scenario == 'readback_mismatch' else value, end='')\n"
+                "    else:\n"
+                "        sys.exit(2)\n"
                 "else:\n"
                 "    sys.exit(2)\n"
             )
         os.chmod(fake, 0o755)
         return fake
 
-    def _run_opaque_secret_transport(self, scenario, initial=None):
+    def _run_opaque_secret_transport(self, scenario, initial=None, key="token"):
         sentinel = "sentinel-opaque-secret-value-never-in-argv"
         with tempfile.TemporaryDirectory() as tmp:
             self._fake_kubectl_single_key(tmp, scenario)
@@ -178,7 +189,7 @@ class SecretTransportTest(unittest.TestCase):
             env["TEST_VALUE"] = sentinel
             result = subprocess.run(
                 ["nu", "-c", f"source {SETUP}; persist_opaque_secret crossplane-system "
-                              f"crossplane-gitea-credentials token $env.TEST_VALUE"],
+                              f"crossplane-gitea-credentials {key} $env.TEST_VALUE"],
                 capture_output=True, text=True, env=env, timeout=15,
             )
             argv = _read(argv_log) if os.path.exists(argv_log) else ""
@@ -198,6 +209,25 @@ class SecretTransportTest(unittest.TestCase):
         self.assertEqual(manifest["metadata"]["namespace"], "crossplane-system")
         import base64 as b64
         self.assertEqual(b64.b64decode(manifest["data"]["token"]).decode(), sentinel)
+
+    def test_opaque_secret_dotted_key_readback_uses_literal_record_key(self):
+        result, sentinel, argv, manifest = self._run_opaque_secret_transport(
+            "success", key="seed.nk"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn(sentinel, argv)
+        self.assertNotIn(sentinel, result.stdout + result.stderr)
+        assert manifest is not None
+        import base64 as b64
+        self.assertEqual(b64.b64decode(manifest["data"]["seed.nk"]).decode(), sentinel)
+        calls = [json.loads(line) for line in argv.splitlines()]
+        self.assertTrue(
+            any(
+                args[index:index + 2] == ["-o", "json"]
+                for args in calls
+                for index in range(len(args) - 1)
+            )
+        )
 
     def test_opaque_secret_per_key_ssa_preserves_unrelated_keys_and_scrubs_annotation(self):
         initial = {

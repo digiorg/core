@@ -69,13 +69,13 @@ podTemplate:
 container:
   image:
     fullImageName: "nats:2.14.2-alpine@sha256:952d157e28d5394a211229bd57a7b37ff9f184e58e2c8486a08fa909fd254e32"
+  env:
+    NATS_JSC_NKEY_PUBLIC:
+      valueFrom:
+        secretKeyRef:
+          name: nats-jetstream-controller-nkey
+          key: public.nk
   merge:
-    env:
-      - name: NATS_JSC_NKEY_PUBLIC
-        valueFrom:
-          secretKeyRef:
-            name: nats-jetstream-controller-nkey
-            key: public.nk
     resources:
       requests:
         cpu: 50m

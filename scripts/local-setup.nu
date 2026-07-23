@@ -2067,12 +2067,15 @@ def persist_opaque_secret [namespace: string, name: string, key: string, value: 
     scrub_secret_last_applied_annotation $namespace $name
 
     let readback = (do {
-        kubectl --kubeconfig $KUBECONFIG_PATH get secret $name -n $namespace -o $"jsonpath={.data.($key)}"
+        kubectl --kubeconfig $KUBECONFIG_PATH get secret $name -n $namespace -o json
     } | complete)
     if $readback.exit_code != 0 {
         error make {msg: $"Failed to verify the persisted secret ($namespace)/($name)"}
     }
-    let persisted = (try { $readback.stdout | str trim | decode base64 | decode utf-8 } catch { "" })
+    let persisted = (try {
+        let secret = ($readback.stdout | from json)
+        $secret.data | get $key | decode base64 | decode utf-8
+    } catch { "" })
     if ($persisted | is-empty) or ($persisted != $value) {
         error make {msg: $"Persisted secret ($namespace)/($name) did not match its source"}
     }

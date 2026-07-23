@@ -32,8 +32,7 @@ class NatsControllerAuthenticationTest(unittest.TestCase):
         self.assertEqual(controller["nkey"], "<< $NATS_JSC_NKEY_PUBLIC >>")
         self.assertEqual(controller["permissions"]["publish"], ["$JS.API.>"])
         self.assertEqual(controller["permissions"]["subscribe"], ["_INBOX.>"])
-        env = NATS_VALUES["container"]["merge"]["env"]
-        item = next(e for e in env if e["name"] == "NATS_JSC_NKEY_PUBLIC")
+        item = NATS_VALUES["container"]["env"]["NATS_JSC_NKEY_PUBLIC"]
         ref = item["valueFrom"]["secretKeyRef"]
         self.assertEqual(ref, {"name": self.SECRET, "key": "public.nk"})
 
