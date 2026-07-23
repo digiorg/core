@@ -19,19 +19,17 @@ spec:
     spec:
       containers:
         - name: runner
-          # gitea/act_runner v0.6.1, dind-rootless variant: the official
-          # image bundles act_runner + a rootless dockerd (s6-supervised) in
+          # gitea/act_runner v0.6.1, dind variant: the official image bundles
+          # act_runner + dockerd (s6-supervised) in
           # one container, so Gitea Actions CI jobs can build/push container
-          # images without a separate DinD sidecar. "Rootless" describes the
-          # dockerd process inside the container, NOT the Kubernetes
-          # securityContext: rootless dockerd still needs to create user/mount
-          # namespaces (newuidmap/newgidmap, unshare/clone with
-          # CLONE_NEWUSER), which this cluster's default seccomp/PSA posture
-          # only permits under `privileged: true` -- confirmed against the
-          # upstream gitea/runner official Kubernetes example
-          # (examples/kubernetes/rootless-docker.yaml @ gitea.com/gitea/runner
-          # main), whose runner container securityContext is exactly
-          # `privileged: true` and nothing else (Issue #285 blocker #4).
+          # images without a separate DinD sidecar or a host Docker socket.
+          # The embedded dockerd needs `privileged: true` to create nested
+          # container namespaces and mounts, matching the upstream
+          # gitea/runner Kubernetes DinD guidance (Issue #285 blocker #4).
+          # The rootless image variant was rejected by a clean Kind bootstrap:
+          # despite requiring this same Kubernetes privilege, RootlessKit also
+          # depends on host user-namespace policy and failed under Ubuntu's
+          # AppArmor restrictions before act_runner could register.
           #
           # TRUST BOUNDARY: this makes the `gitea` namespace a privileged
           # trust boundary, distinct from every per-app namespace this
@@ -44,15 +42,15 @@ spec:
           # (see test_no_dangling_kyverno_policy_exception_is_introduced).
           # Pinned by the exact multi-arch manifest-list digest (the
           # `docker-content-digest` response header from
-          # registry-1.docker.io), verified 2026-07-22.
-          image: gitea/act_runner:0.6.1-dind-rootless@sha256:6b8f7c4297c0a5c4c181e4737665d4af69288cdc380e2887105a05a2b78930df
+          # registry-1.docker.io), verified 2026-07-23.
+          image: gitea/act_runner:0.6.1-dind@sha256:578925b4bdec5f60d93b5ba766cf02f2f9f32b1c8a4ec665ddf4d53d45f683c7
           env:
             # Issue #285 (TLS hardening): the trusted digiorg.local ingress
             # over HTTPS, not the raw in-cluster Gitea Service address.
             - name: GITEA_INSTANCE_URL
               value: "https://digiorg.local/gitea"
             # Go's crypto/x509 honors SSL_CERT_FILE on Linux (the base image
-            # is docker:28-dind-rootless, Alpine-based -- confirmed against
+            # is docker:28-dind, Alpine-based -- confirmed against
             # the pinned Dockerfile at gitea.com/gitea/runner tag v0.6.1),
             # so the runner's own calls to GITEA_INSTANCE_URL trust the
             # digiorg-local CA without insecure/-k.
@@ -107,7 +105,7 @@ spec:
             # volume, mounted twice -- once at a generic path for the
             # runner's own SSL_CERT_FILE, and once at Docker's
             # registry-specific trust convention
-            # (/etc/docker/certs.d/<host>/ca.crt) so the embedded rootless
+            # (/etc/docker/certs.d/<host>/ca.crt) so the embedded
             # dockerd trusts the digiorg.local registry without
             # insecureSkipVerify. Each key in the Secret is projected as a
             # file named after the key, so mounting the directory yields

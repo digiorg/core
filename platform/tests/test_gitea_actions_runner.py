@@ -6,9 +6,9 @@ actually execute.
 
 Locks:
   * a pinned, functional act_runner Deployment (official gitea/act_runner
-    dind-rootless image -- a single container bundling act_runner + a
-    rootless dockerd, so CI jobs can build/push images without a separate
-    DinD sidecar or `privileged: true`), registered at instance scope;
+    dind image -- a single privileged trust-boundary container bundling
+    act_runner + dockerd, so CI jobs can build/push images without a separate
+    DinD sidecar or host Docker socket), registered at instance scope;
   * the registration token travels stdin/readback into a dedicated Secret,
     consumed by the runner via a mounted file (GITEA_RUNNER_REGISTRATION_TOKEN_FILE),
     never a literal in argv/env/manifest;
@@ -47,8 +47,8 @@ APP = os.path.join(REPO_ROOT, "apps", "platform", "gitea-actions-runner.yaml")
 RUNNER_DIR = os.path.join(REPO_ROOT, "platform", "base", "gitea-actions-runner")
 
 ACT_RUNNER_IMAGE_DIGEST = (
-    "gitea/act_runner:0.6.1-dind-rootless"
-    "@sha256:6b8f7c4297c0a5c4c181e4737665d4af69288cdc380e2887105a05a2b78930df"
+    "gitea/act_runner:0.6.1-dind"
+    "@sha256:578925b4bdec5f60d93b5ba766cf02f2f9f32b1c8a4ec665ddf4d53d45f683c7"
 )
 CI_JOB_IMAGE_DIGEST = (
     "catthehacker/ubuntu:act-latest"
@@ -164,7 +164,7 @@ class RunnerManifestsTest(unittest.TestCase):
         # SSL_CERT_FILE points to (the runner's own HTTPS calls), and one at
         # Docker's registry-specific trust convention
         # (/etc/docker/certs.d/<registry-host>/ca.crt) so the embedded
-        # rootless dockerd trusts the digiorg.local registry without
+        # embedded dockerd trusts the digiorg.local registry without
         # insecureSkipVerify.
         c = self._container()
         env = {e["name"]: e for e in c["env"]}
@@ -229,15 +229,12 @@ class RunnerManifestsTest(unittest.TestCase):
         self.assertEqual(len(self.by_kind.get("PersistentVolumeClaim", [])), 1)
 
     def test_runner_container_is_privileged(self):
-        # gitea/act_runner:0.6.1-dind-rootless still needs `privileged: true`
-        # in Kubernetes: the rootless dockerd inside it sets up user/mount
-        # namespaces (newuidmap/newgidmap, unshare/clone CLONE_NEWUSER) that
-        # every non-privileged securityContext combination (capabilities,
-        # seccompProfile, allowPrivilegeEscalation alone) fails to permit in
-        # this cluster's default PSA/seccomp posture. Confirmed against the
-        # upstream gitea/runner official Kubernetes example
-        # (examples/kubernetes/rootless-docker.yaml @ gitea.com/gitea/runner
-        # main), whose runner container securityContext is exactly
+        # The official DinD variant needs `privileged: true` in Kubernetes so
+        # its embedded dockerd can create the nested container namespaces and
+        # mounts. Confirmed against the upstream gitea/runner Kubernetes
+        # example. The previous rootless variant still required this same
+        # privilege while also depending on host user-namespace policy.
+        # examples, whose runner container securityContext is exactly
         # `privileged: true` and nothing else.
         c = self._container()
         sc = c["securityContext"]
