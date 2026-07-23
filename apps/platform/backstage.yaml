@@ -13,7 +13,7 @@ spec:
 
   source:
     repoURL: https://github.com/digiorg/core.git
-    targetRevision: main
+    targetRevision: e8ff0be6c74866f4e1045bc38d7c2efc88dadf26
     path: platform/base/backstage
 
   destination:
