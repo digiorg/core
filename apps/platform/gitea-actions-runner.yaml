@@ -21,7 +21,7 @@ spec:
 
   source:
     repoURL: https://github.com/digiorg/core.git
-    targetRevision: main
+    targetRevision: runtime-issue-285-e92e43e-v6
     path: platform/base/gitea-actions-runner
 
   destination:
