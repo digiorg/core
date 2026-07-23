@@ -38,7 +38,7 @@ spec:
 
   source:
     repoURL: https://digiorg.local/gitea/DigiOrg/app-config.git
-    targetRevision: main
+    targetRevision: b278d55cb83ee45f5fbf78bae3f529d872b8ece2
     path: claims
     directory:
       recurse: true
