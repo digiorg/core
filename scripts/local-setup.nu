@@ -92,14 +92,23 @@ def "main up" [] {
     # already-running runner: restart it *before* configure_gitea runs, not
     # after. configure_gitea calls configure_gitea_actions_runner, which
     # unconditionally calls wait_for_gitea_actions_runner_online -- an
-    # already-running runner pod's cached TLS trust does not pick up a
-    # rotated CA without a restart, so polling it for "online" before
-    # restarting deadlocks until the wait's own timeout, even though the
-    # restart later in the run would have fixed it. On a fresh bootstrap the
-    # runner is either not yet scheduled or still waiting on other Phase-3
-    # secrets, so this is a harmless no-op/short wait.
-    if $gitea_ca_changed {
+    # already-running runner pod's cached TLS trust does not pick up a rotated
+    # CA without a restart. On a fresh bootstrap, however, Argo may already have
+    # created the Deployment while it is still waiting for the registration-token
+    # Secret that configure_gitea creates below; waiting for that rollout here
+    # would deadlock. Distinguish an absent Secret from API/RBAC failure and only
+    # restart a previously initialized runner.
+    let runner_token_lookup = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH get secret gitea-actions-runner-token -n gitea --ignore-not-found -o name
+    } | complete)
+    if $runner_token_lookup.exit_code != 0 {
+        error make {msg: "Failed to determine whether the Gitea Actions runner token exists"}
+    }
+    let runner_token_exists = not ($runner_token_lookup.stdout | str trim | is-empty)
+    if $gitea_ca_changed and $runner_token_exists {
         restart_oidc_deployment_if_present "gitea" "gitea-actions-runner" "120s"
+    } else if $gitea_ca_changed {
+        print $"(ansi yellow)○ gitea/gitea-actions-runner is awaiting first-time registration; it will mount the current CA on first start(ansi reset)"
     }
 
     configure_gitea

@@ -497,7 +497,7 @@ class CaRotationRunnerRestartOrderingTest(SetupTextFixture):
     def test_restart_is_still_gated_on_the_ca_actually_changing(self):
         body = _func_body(self.text, '"main up"')
         restart_call = 'restart_oidc_deployment_if_present "gitea" "gitea-actions-runner"'
-        gate_idx = body.index("if $gitea_ca_changed {")
+        gate_idx = body.index("if $gitea_ca_changed and $runner_token_exists {")
         restart_idx = body.index(restart_call)
         self.assertLess(
             gate_idx, restart_idx,

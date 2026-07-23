@@ -9,10 +9,21 @@ SOURCE = (Path(__file__).resolve().parents[2] / "scripts/local-setup.nu").read_t
 
 
 class RunnerCaRestartBootstrapSafetyTest(unittest.TestCase):
-    def test_phase_3_uses_optional_restart_before_gitea_configuration(self):
+    def test_phase_3_checks_token_before_optional_restart_and_gitea_configuration(self):
+        token_lookup = SOURCE.index("get secret gitea-actions-runner-token")
         restart = SOURCE.index('restart_oidc_deployment_if_present "gitea" "gitea-actions-runner"')
         configure = SOURCE.index("    configure_gitea\n", restart)
+        self.assertLess(token_lookup, restart)
         self.assertLess(restart, configure)
+
+    def test_fresh_bootstrap_restart_requires_existing_runner_token(self):
+        main_up = re.search(r'def "main up" \[\] \{.*?\n}\n', SOURCE, flags=re.DOTALL)
+        self.assertIsNotNone(main_up)
+        body = main_up.group(0) if main_up is not None else ""
+        self.assertIn("get secret gitea-actions-runner-token", body)
+        self.assertIn("--ignore-not-found", body)
+        self.assertRegex(body, r"runner_token_lookup\.exit_code\s*!=\s*0")
+        self.assertIn("if $gitea_ca_changed and $runner_token_exists {", body)
 
     def test_optional_restart_distinguishes_missing_from_lookup_failure(self):
         match = re.search(
