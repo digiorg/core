@@ -34,10 +34,37 @@ spec:
       releaseName: nats-jetstream-controller
       values: |
         namespaced: false
+        # The chart default grants cluster-wide get/list/watch on every Secret.
+        # NACK only needs the seed through a Kubelet-projected volume, so retain
+        # event writes and JetStream CRD reconciliation but remove Secret API access.
+        rbacRules: |
+          rules:
+            - apiGroups: [""]
+              resources: ["events"]
+              verbs: ["create", "update", "patch"]
+            - apiGroups: ["jetstream.nats.io"]
+              resources:
+                - streams
+                - streams/status
+                - objectstores
+                - objectstores/status
+                - keyvalues
+                - keyvalues/status
+                - consumers
+                - consumers/status
+                - streamtemplates
+                - streamtemplates/status
+                - accounts
+                - accounts/status
+              verbs: ["create", "get", "list", "watch", "patch", "update", "delete"]
         jetstream:
           enabled: true
           nats:
             url: "nats://nats.messaging.svc.cluster.local:4222"
+            nkey:
+              secret:
+                name: nats-jetstream-controller-nkey
+                key: seed.nk
           controlLoop: false
         resources:
           requests:

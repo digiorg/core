@@ -40,6 +40,15 @@ config:
         jetstream: enabled
         users:
           - user: app
+          # Dedicated least-privilege identity for NACK. The private seed is
+          # mounted only into the controller; NATS receives the public NKey
+          # through a Secret-backed environment variable.
+          - nkey: << $NATS_JSC_NKEY_PUBLIC >>
+            permissions:
+              publish:
+                - $JS.API.>
+              subscribe:
+                - _INBOX.>
 
 # Disable nats-box utility container (not needed)
 natsBox:
@@ -61,6 +70,12 @@ container:
   image:
     fullImageName: "nats:2.14.2-alpine@sha256:952d157e28d5394a211229bd57a7b37ff9f184e58e2c8486a08fa909fd254e32"
   merge:
+    env:
+      - name: NATS_JSC_NKEY_PUBLIC
+        valueFrom:
+          secretKeyRef:
+            name: nats-jetstream-controller-nkey
+            key: public.nk
     resources:
       requests:
         cpu: 50m

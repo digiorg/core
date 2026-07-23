@@ -23,9 +23,8 @@ spec:
     namespace: crossplane-system
 
   syncPolicy:
-    automated:
-      selfHeal: true
-      prune: true
+    # Deliberately manual: local-setup promotes this only after provider-http's
+    # active ProviderRevision is Healthy and its Request CRD is Established.
     syncOptions:
       - CreateNamespace=true
       - ServerSideApply=true

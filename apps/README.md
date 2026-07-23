@@ -4,22 +4,23 @@ This directory contains the Argo CD `Application` manifests managed by the root 
 
 ## Application inventory
 
-There are **27 child Applications** under `apps/platform/`. Their sync-wave annotations are ordering metadata; they do not prove that a dependency in another Application is functionally ready.
+There are **31 child Applications** under `apps/platform/`. Their sync-wave annotations are ordering metadata; they do not prove that a dependency in another Application is functionally ready.
 
 | Wave | Applications | Runtime contract |
 |---|---|---|
 | -1 | namespaces | Pre-creates all platform namespaces |
 | 0 | cert-manager, external-secrets, nats, opensearch, postgresql | Foundation and permanent core data layer |
-| 1 | argocd, keycloak | GitOps and identity |
+| 1 | argocd, keycloak, nats-jetstream-controller | GitOps, identity, and the authenticated JetStream reconciler |
 | 2 | backstage, gitea, grafana, harbor, jaeger, landingpage, opencost, sonarqube | Platform services |
 | 3 | crossplane, kyverno | Infrastructure and policy engines |
-| 4 | crossplane-providers, fluentd, kyverno-policies | Providers, log shipping, and policies |
+| 4 | crossplane-providers, fluentd, gitea-actions-runner, kyverno-policies | Providers, CI runner, log shipping, and policies |
 | 5 | monitoring-extras | Additional monitoring resources |
 | 6 | crossplane-provider-configs | Provider configuration |
-| 7 | crossplane-xrds | Composite Resource Definitions |
+| 7 | crossplane-harbor-bootstrap, crossplane-xrds | Harbor's provider-http bootstrap is manually promoted only after provider-http is Healthy and its Request CRD is Established; XRDS follow their provider configuration |
 | 8 | core-catalog | Core catalog |
 | 9 | cnpg | **Manual** optional future-app database operator |
 | 10 | cnpg-cluster | **Manual** optional future-app database Cluster |
+| 11 | app-config | Private Gitea AppClaim GitOps source |
 
 Ingress is not an Argo CD Application; the local setup script applies it during bootstrap.
 
@@ -28,8 +29,8 @@ Ingress is not an Argo CD Application; the local setup script applies it during 
 1. `nu scripts/local-setup.nu up` creates the KinD cluster, ingress, CoreDNS, bootstrap Secrets, and Argo CD.
 2. Before the root App exists, the script directly applies the PostgreSQL and OpenSearch Applications.
 3. It proves PostgreSQL over its real Service DNS/TCP path, authenticates every platform role, checks database/schema access, and verifies OpenSearch through its Service.
-4. Only then does the script apply the root App, which creates all 27 child Application CRs.
-5. The normal `up` path synchronizes and waits for the **25 core Applications**. The two CNPG Applications remain manual and cannot delay or fail core bootstrap.
+4. Only then does the script apply the root App, which creates all 31 child Application CRs.
+5. The normal `up` path synchronizes and waits for the **29 core Applications**. The two CNPG Applications remain manual and cannot delay or fail core bootstrap. The Harbor bootstrap is also manual in Argo CD, but `up` promotes it explicitly after provider-http readiness is proven.
 6. Optional future hosted-application database infrastructure is promoted explicitly with:
 
 ```bash

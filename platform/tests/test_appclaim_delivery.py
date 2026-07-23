@@ -129,15 +129,21 @@ class SecretTransportTest(unittest.TestCase):
                 "with open(os.environ['KUBECTL_ARGV_LOG'], 'a', encoding='utf-8') as log: "
                 "log.write(json.dumps(args) + '\\n')\n"
                 "scenario = os.environ.get('FAKE_SCENARIO', 'success')\n"
-                "if 'apply' in args:\n"
+                "path = os.environ['MANIFEST_LOG']\n"
+                "if 'get' in args and '--ignore-not-found' in args:\n"
+                "    if os.path.exists(path): print(open(path, encoding='utf-8').read(), end='')\n"
+                "elif 'apply' in args:\n"
                 "    data = sys.stdin.read()\n"
                 "    if scenario == 'apply_failure': sys.exit(1)\n"
-                "    open(os.environ['MANIFEST_LOG'], 'w', encoding='utf-8').write(data)\n"
+                "    open(path, 'w', encoding='utf-8').write(data)\n"
                 "    print('secret/x configured')\n"
+                "elif 'annotate' in args:\n"
+                "    print('secret/x annotated')\n"
                 "elif 'get' in args:\n"
                 "    if scenario == 'readback_failure': sys.exit(1)\n"
-                "    obj = json.load(open(os.environ['MANIFEST_LOG'], encoding='utf-8'))\n"
-                "    key = list(obj['data'].keys())[0]\n"
+                "    if any('metadata.annotations' in arg for arg in args): print('', end=''); sys.exit(0)\n"
+                "    obj = json.load(open(path, encoding='utf-8'))\n"
+                "    key = next(k for k in obj['data'] if any(k in arg for arg in args))\n"
                 "    value = obj['data'][key]\n"
                 "    print('d3Jvbmc=' if scenario == 'readback_mismatch' else value, end='')\n"
                 "else:\n"
@@ -146,12 +152,15 @@ class SecretTransportTest(unittest.TestCase):
         os.chmod(fake, 0o755)
         return fake
 
-    def _run_opaque_secret_transport(self, scenario):
+    def _run_opaque_secret_transport(self, scenario, initial=None):
         sentinel = "sentinel-opaque-secret-value-never-in-argv"
         with tempfile.TemporaryDirectory() as tmp:
             self._fake_kubectl_single_key(tmp, scenario)
             argv_log = os.path.join(tmp, "kubectl-argv")
             manifest_log = os.path.join(tmp, "manifest.json")
+            if initial is not None:
+                with open(manifest_log, "w", encoding="utf-8") as fh:
+                    json.dump(initial, fh)
             env = os.environ.copy()
             env["PATH"] = tmp + os.pathsep + env.get("PATH", "")
             env["KUBECTL_ARGV_LOG"] = argv_log
@@ -180,6 +189,25 @@ class SecretTransportTest(unittest.TestCase):
         self.assertEqual(manifest["metadata"]["namespace"], "crossplane-system")
         import base64 as b64
         self.assertEqual(b64.b64decode(manifest["data"]["token"]).decode(), sentinel)
+
+    def test_opaque_secret_full_state_ssa_preserves_unrelated_keys_and_scrubs_annotation(self):
+        initial = {
+            "apiVersion": "v1", "kind": "Secret", "type": "Opaque",
+            "metadata": {
+                "name": "crossplane-gitea-credentials", "namespace": "crossplane-system",
+                "annotations": {"kubectl.kubernetes.io/last-applied-configuration": "credential-copy"},
+            },
+            "data": {"unrelated": "c2VudGluZWw="},
+        }
+        result, _, _, manifest = self._run_opaque_secret_transport("success", initial=initial)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        assert manifest is not None
+        self.assertIn("unrelated", manifest["data"])
+        self.assertIn("token", manifest["data"])
+        self.assertNotIn(
+            "kubectl.kubernetes.io/last-applied-configuration",
+            manifest["metadata"].get("annotations", {}),
+        )
 
     def test_opaque_secret_apply_failure_is_fatal(self):
         result, _, _, _ = self._run_opaque_secret_transport("apply_failure")
@@ -212,9 +240,11 @@ class SecretTransportTest(unittest.TestCase):
                 "log.write(json.dumps(args) + '\\n')\n"
                 "scenario = os.environ.get('FAKE_SCENARIO', 'success')\n"
                 "pre_existing = os.environ.get('PRE_EXISTING') == '1'\n"
-                "if 'get' in args and 'jsonpath={.data.password}' not in args:\n"
+                "if 'get' in args and '-o' not in args:\n"
                 # existence probe used by the resume-preserve short-circuit
                 "    sys.exit(0 if pre_existing else 1)\n"
+                "elif 'annotate' in args:\n"
+                "    print('secret/x annotated')\n"
                 "elif 'apply' in args:\n"
                 "    data = sys.stdin.read()\n"
                 "    if scenario == 'apply_failure': sys.exit(1)\n"
@@ -222,6 +252,7 @@ class SecretTransportTest(unittest.TestCase):
                 "    print('secret/x configured')\n"
                 "elif 'get' in args:\n"
                 "    if scenario == 'readback_failure': sys.exit(1)\n"
+                "    if any('metadata.annotations' in arg for arg in args): print('', end=''); sys.exit(0)\n"
                 "    obj = json.load(open(os.environ['MANIFEST_LOG'], encoding='utf-8'))\n"
                 "    value = obj['data']['password']\n"
                 "    print('d3Jvbmc=' if scenario == 'readback_mismatch' else value, end='')\n"

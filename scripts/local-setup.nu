@@ -738,6 +738,7 @@ type: kubernetes.io/service-account-token" | save --force $token_secret_file
 
     # Messaging namespace (for NATS server + Surveyor)
     kubectl create namespace messaging --dry-run=client -o yaml | kubectl apply -f -
+    ensure_nats_jetstream_controller_nkey
 
     kubectl create namespace tracing --dry-run=client -o yaml | kubectl apply -f -
 
@@ -1275,6 +1276,44 @@ def print_sync_diagnostics [state: record] {
     }
 }
 
+# crossplane-harbor-bootstrap contains provider-http Request objects. Argo sync
+# waves order Application creation only; they do not prove that package CRDs
+# have been installed. Gate the first Request on the active revision and CRD.
+def wait_for_provider_http_ready [] {
+    print "  Waiting for provider-http ProviderRevision and Request CRD..."
+    for attempt in 1..180 {
+        let provider_result = (do {
+            kubectl get provider provider-http -o json
+        } | complete)
+        if $provider_result.exit_code == 0 {
+            let provider = (try { $provider_result.stdout | from json } catch { {} })
+            let revision = ($provider | get -o status.currentRevision | default "")
+            if not ($revision | is-empty) {
+                let revision_result = (do {
+                    kubectl get providerrevision $revision -o json
+                } | complete)
+                if $revision_result.exit_code == 0 {
+                    let revision_state = (try { $revision_result.stdout | from json } catch { {} })
+                    let desired = ($revision_state | get -o spec.desiredState | default "Active")
+                    let conditions = ($revision_state | get -o status.conditions | default [])
+                    let healthy = ($conditions | any {|c| ((($c | get -o type | default "") == "Healthy") and (($c | get -o status | default "") == "True")) })
+                    if ($desired == "Active") and $healthy {
+                        let crd_result = (do {
+                            kubectl wait --for=condition=Established crd/requests.http.crossplane.io --timeout=5s
+                        } | complete)
+                        if $crd_result.exit_code == 0 {
+                            print "  ✓ provider-http is Healthy and requests.http.crossplane.io is Established"
+                            return
+                        }
+                    }
+                }
+            }
+        }
+        sleep 2sec
+    }
+    error make {msg: "provider-http did not become Healthy with an Established Request CRD"}
+}
+
 # Explicitly promote gated major upgrades on the disposable local KinD cluster.
 # Shared/production clusters must follow docs/guides/platform-versions.md instead.
 #
@@ -1289,7 +1328,8 @@ def sync_gated_apps_for_local_dev [] {
     let gated_apps = [
         "external-secrets", "nats", "grafana", "opencost", "gitea",
         "sonarqube", "crossplane", "crossplane-providers",
-        "crossplane-provider-configs", "crossplane-xrds", "core-catalog"
+        "crossplane-provider-configs", "crossplane-harbor-bootstrap",
+        "crossplane-xrds", "core-catalog"
     ]
     let sync_payload = '{"operation":{"sync":{"prune":true,"syncOptions":["CreateNamespace=true","ServerSideApply=true"]}}}'
     let max_operation_retries = 3
@@ -1297,6 +1337,9 @@ def sync_gated_apps_for_local_dev [] {
     print ""
     print $"(ansi cyan_bold)Promoting gated upgrades sequentially on local KinD(ansi reset)"
     for app in $gated_apps {
+        if $app == "crossplane-harbor-bootstrap" {
+            wait_for_provider_http_ready
+        }
         mut exists = false
         for attempt in 1..60 {
             let get_result = (do {
@@ -1940,33 +1983,76 @@ def wait_for_configuration_dependencies [phase: string, apps: list, certificates
     error make {msg: $"($phase) configuration dependencies did not become ready: ($bounded)"}
 }
 
-# Generic single-key opaque Secret writer (Issue #285). The value travels only
-# over stdin into `kubectl apply -f -` — never as a CLI argument, an env var
-# dump, or a plain file — and is read back and compared before returning, so a
-# transport/persistence failure is caught here rather than surfacing later as
-# an unexplained provider-http/Argo authentication failure. Used for every new
-# least-privilege credential this issue introduces (Crossplane's Gitea/Harbor
-# provisioning identities); pre-existing secrets keep their own call sites.
+# Remove client-side apply's credential-bearing metadata copy. Removal is safe
+# when the annotation is already absent and is verified without reading data.
+def scrub_secret_last_applied_annotation [namespace: string, name: string] {
+    let scrub_result = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH annotate secret $name -n $namespace kubectl.kubernetes.io/last-applied-configuration- --overwrite
+    } | complete)
+    if $scrub_result.exit_code != 0 {
+        error make {msg: $"Failed to scrub client-side apply metadata from secret ($namespace)/($name)"}
+    }
+    let annotation_result = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH get secret $name -n $namespace -o jsonpath='{.metadata.annotations.kubectl\.kubernetes\.io/last-applied-configuration}'
+    } | complete)
+    if ($annotation_result.exit_code != 0) or (not ($annotation_result.stdout | str trim | is-empty)) {
+        error make {msg: $"Secret ($namespace)/($name) still contains client-side apply metadata"}
+    }
+}
+
+# Generic single-key opaque Secret writer (Issue #285). Existing Secrets are
+# read in-memory and their complete data map is submitted through server-side
+# apply, so unrelated keys survive the client-side-to-SSA ownership migration.
+# New Secrets start from a one-key manifest. No credential enters argv or disk.
 def persist_opaque_secret [namespace: string, name: string, key: string, value: string] {
     if ($value | is-empty) {
         error make {msg: $"Refusing to persist an empty value for secret ($namespace)/($name) key ($key)"}
     }
-    let manifest = ({
-        apiVersion: "v1"
-        kind: "Secret"
-        metadata: {name: $name, namespace: $namespace}
-        type: "Opaque"
-        data: {($key): ($value | encode base64)}
-    } | to json)
+    let encoded = ($value | encode base64)
+    let current_result = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH get secret $name -n $namespace -o json --ignore-not-found
+    } | complete)
+    if $current_result.exit_code != 0 {
+        error make {msg: $"Failed to inspect secret ($namespace)/($name) before persisting key ($key)"}
+    }
+
+    let manifest = if ($current_result.stdout | str trim | is-empty) {
+        {
+            apiVersion: "v1"
+            kind: "Secret"
+            metadata: {name: $name, namespace: $namespace}
+            type: "Opaque"
+            data: {($key): $encoded}
+        }
+    } else {
+        let current = (try { $current_result.stdout | from json } catch {
+            error make {msg: $"Secret ($namespace)/($name) returned invalid JSON"}
+        })
+        mut metadata = {name: $name, namespace: $namespace}
+        let labels = ($current | get -o metadata.labels | default {})
+        if not ($labels | is-empty) { $metadata = ($metadata | insert labels $labels) }
+        let annotations = ($current | get -o metadata.annotations | default {} | reject --optional "kubectl.kubernetes.io/last-applied-configuration")
+        if not ($annotations | is-empty) { $metadata = ($metadata | insert annotations $annotations) }
+        let owners = ($current | get -o metadata.ownerReferences | default [])
+        if not ($owners | is-empty) { $metadata = ($metadata | insert ownerReferences $owners) }
+        let finalizers = ($current | get -o metadata.finalizers | default [])
+        if not ($finalizers | is-empty) { $metadata = ($metadata | insert finalizers $finalizers) }
+        {
+            apiVersion: "v1"
+            kind: "Secret"
+            metadata: $metadata
+            type: ($current | get -o type | default "Opaque")
+            data: ($current | get -o data | default {} | upsert $key $encoded)
+        }
+    }
     let apply_result = (do {
-        $manifest | kubectl --kubeconfig $KUBECONFIG_PATH apply -f -
+        $manifest | to json | kubectl --kubeconfig $KUBECONFIG_PATH apply --server-side --force-conflicts --field-manager digiorg-bootstrap-secret -f -
     } | complete)
     if $apply_result.exit_code != 0 {
         error make {msg: $"Failed to persist secret ($namespace)/($name)"}
     }
+    scrub_secret_last_applied_annotation $namespace $name
 
-    # Read back and compare without printing either value (portable across
-    # Linux/macOS/Windows hosts, same discipline as persist_gitea_bootstrap_token).
     let readback = (do {
         kubectl --kubeconfig $KUBECONFIG_PATH get secret $name -n $namespace -o $"jsonpath={.data.($key)}"
     } | complete)
@@ -1979,18 +2065,16 @@ def persist_opaque_secret [namespace: string, name: string, key: string, value: 
     }
 }
 
-# Write (or resume-preserve) the Argo CD repository-credential Secret for a
-# private Gitea repo. Matches Argo CD's documented repository Secret shape
-# (`argocd.argoproj.io/secret-type: repository` label); url/username/password
-# all travel over stdin, never argv. Resume-safe: if the Secret already
-# exists, it is left untouched (rotation is an explicit operator action, same
-# policy as gitea-admin-secret).
+# Write (or resume-preserve) the Argo CD repository credential. Existing
+# credentials are not rotated implicitly, but stale client-side metadata is
+# removed on every run.
 def persist_argocd_repo_secret [name: string, repo_url: string, username: string, password: string] {
     if ($password | is-empty) {
         error make {msg: $"Refusing to persist an empty password for ArgoCD repo credential ($name)"}
     }
     let existing = ((do -i { kubectl --kubeconfig $KUBECONFIG_PATH get secret $name -n argocd } | complete).exit_code == 0)
     if $existing {
+        scrub_secret_last_applied_annotation "argocd" $name
         print $"(ansi yellow)✓ ArgoCD repository credential '($name)' already present — preserved(ansi reset)"
         return
     }
@@ -2010,11 +2094,12 @@ def persist_argocd_repo_secret [name: string, repo_url: string, username: string
         }
     } | to json)
     let apply_result = (do {
-        $manifest | kubectl --kubeconfig $KUBECONFIG_PATH apply -f -
+        $manifest | kubectl --kubeconfig $KUBECONFIG_PATH apply --server-side --force-conflicts --field-manager digiorg-bootstrap-argocd-repository -f -
     } | complete)
     if $apply_result.exit_code != 0 {
         error make {msg: $"Failed to persist ArgoCD repository credential ($name)"}
     }
+    scrub_secret_last_applied_annotation "argocd" $name
     let readback = (do {
         kubectl --kubeconfig $KUBECONFIG_PATH get secret $name -n argocd -o jsonpath='{.data.password}'
     } | complete)
@@ -2025,6 +2110,68 @@ def persist_argocd_repo_secret [name: string, repo_url: string, username: string
     if ($persisted | is-empty) or ($persisted != $password) {
         error make {msg: $"Persisted ArgoCD repository credential ($name) did not match its source"}
     }
+}
+
+# Generate or validate the dedicated NACK user NKey. The digest-pinned Linux
+# tool container works on Docker Engine/Desktop without a host nsc/nk install.
+# The private seed stays in memory and is passed to nk over stdin only.
+def ensure_nats_jetstream_controller_nkey [] {
+    let name = "nats-jetstream-controller-nkey"
+    let tool_image = "natsio/nats-box:0.19.2@sha256:8031d190c7ee24081f3f27cc939fb647a1eeb29ebb5c60fef9b5b6c7a846d6a2"
+    let exists = ((do -i {
+        kubectl --kubeconfig $KUBECONFIG_PATH get secret $name -n messaging -o name
+    } | complete).exit_code == 0)
+
+    if $exists {
+        let seed_result = (do {
+            kubectl --kubeconfig $KUBECONFIG_PATH get secret $name -n messaging -o jsonpath='{.data.seed\.nk}'
+        } | complete)
+        let public_result = (do {
+            kubectl --kubeconfig $KUBECONFIG_PATH get secret $name -n messaging -o jsonpath='{.data.public\.nk}'
+        } | complete)
+        if $seed_result.exit_code != 0 or $public_result.exit_code != 0 {
+            error make {msg: "Failed to read the persisted NATS controller NKey pair"}
+        }
+        let seed = (try { $seed_result.stdout | str trim | decode base64 | decode utf-8 } catch { "" })
+        let public = (try { $public_result.stdout | str trim | decode base64 | decode utf-8 } catch { "" })
+        if ($seed | is-empty) {
+            error make {msg: "Persisted NATS controller NKey seed is missing"}
+        }
+        let derived_result = (do {
+            $seed | docker run --rm -i $tool_image nk -inkey /dev/stdin -pubout
+        } | complete)
+        let derived = ($derived_result.stdout | str trim)
+        if ($derived_result.exit_code != 0) or (not ($derived | str starts-with "U")) {
+            error make {msg: "Persisted NATS controller seed is invalid"}
+        }
+        if ($public | is-empty) {
+            persist_opaque_secret "messaging" $name "public.nk" $derived
+            print "✓ Repaired missing NATS JetStream controller public NKey from persisted seed"
+        } else if $derived != $public {
+            error make {msg: "Persisted NATS controller seed does not match its public NKey"}
+        }
+        scrub_secret_last_applied_annotation "messaging" $name
+        print "✓ NATS JetStream controller NKey pair already present and verified"
+        return
+    }
+
+    let seed_result = (do {
+        docker run --rm $tool_image nk -gen user
+    } | complete)
+    let seed = ($seed_result.stdout | str trim)
+    if ($seed_result.exit_code != 0) or (not ($seed | str starts-with "SU")) {
+        error make {msg: "Failed to generate a NATS user seed"}
+    }
+    let public_result = (do {
+        $seed | docker run --rm -i $tool_image nk -inkey /dev/stdin -pubout
+    } | complete)
+    let public = ($public_result.stdout | str trim)
+    if ($public_result.exit_code != 0) or (not ($public | str starts-with "U")) {
+        error make {msg: "Failed to derive the NATS user public key"}
+    }
+    persist_opaque_secret "messaging" "nats-jetstream-controller-nkey" "seed.nk" $seed
+    persist_opaque_secret "messaging" "nats-jetstream-controller-nkey" "public.nk" $public
+    print "✓ Dedicated NATS JetStream controller NKey created"
 }
 
 def persist_gitea_bootstrap_token [token: string] {
@@ -2069,10 +2216,25 @@ def persist_gitea_bootstrap_token [token: string] {
 def gitea_create_user_random_password [gitea_pod: string, username: string, email: string, is_admin: bool] {
     let admin_flag = if $is_admin { "true" } else { "false" }
     let create_result = (do {
-        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- su git -c $'gitea admin user create --username "($username)" --email "($email)" --random-password --random-password-length 32 --must-change-password false --admin ($admin_flag)'
+        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- su git -c $'gitea admin user create --username "($username)" --email "($email)" --random-password --random-password-length 32 --must-change-password=false --admin ($admin_flag)'
     } | complete)
     if $create_result.exit_code != 0 {
         error make {msg: $"Failed to create the Gitea user ($username)"}
+    }
+}
+
+# Gitea's Bool flag requires --must-change-password=false at creation. Repair
+# identities created by older bootstraps as well; otherwise Git Smart HTTP with
+# a PAT is redirected to the interactive password-change page.
+def gitea_unset_service_user_must_change_password [gitea_pod: string, username: string] {
+    if not ($username =~ '^[a-z0-9][a-z0-9-]{0,38}$') {
+        error make {msg: "Refusing an invalid Gitea service username"}
+    }
+    let unset_result = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- su git -c $'gitea admin user must-change-password --unset "($username)"'
+    } | complete)
+    if $unset_result.exit_code != 0 {
+        error make {msg: $"Failed to clear must-change-password for Gitea service user ($username)"}
     }
 }
 
@@ -2400,6 +2562,7 @@ def configure_crossplane_gitea_credentials [gitea_pod: string, gitea_token: stri
     if not ($users_result.stdout | lines | any {|line| $line | str contains "crossplane-provisioner" }) {
         gitea_create_user_random_password $gitea_pod "crossplane-provisioner" "crossplane-provisioner@digiorg.local" false
     }
+    gitea_unset_service_user_must_change_password $gitea_pod "crossplane-provisioner"
 
     # Team scoped to repo creation + code push only -- no org administration,
     # no member/webhook management (can_create_org_repo is the specific Gitea
@@ -2480,6 +2643,7 @@ def configure_argocd_gitea_access [gitea_pod: string, gitea_token: string] {
     if not ($users_result.stdout | lines | any {|line| $line | str contains "argocd-reader" }) {
         gitea_create_user_random_password $gitea_pod "argocd-reader" "argocd-reader@digiorg.local" false
     }
+    gitea_unset_service_user_must_change_password $gitea_pod "argocd-reader"
 
     # Read-only collaborator on DigiOrg/app-config ONLY -- no org membership,
     # no other repository. Re-applied every run (idempotent PUT) so a resumed
@@ -2542,6 +2706,7 @@ def configure_backstage_gitea_publisher [gitea_pod: string, gitea_token: string]
     if not ($users_result.stdout | lines | any {|line| $line | str contains "backstage-appclaim-publisher" }) {
         gitea_create_user_random_password $gitea_pod "backstage-appclaim-publisher" "backstage-appclaim-publisher@digiorg.local" false
     }
+    gitea_unset_service_user_must_change_password $gitea_pod "backstage-appclaim-publisher"
 
     # Write collaborator on DigiOrg/app-config ONLY -- no org membership, no
     # other repository. Re-applied every run (idempotent PUT) so a resumed
