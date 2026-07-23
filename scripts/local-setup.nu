@@ -2342,7 +2342,7 @@ def configure_app_config_repo [gitea_pod: string, gitea_token: string] {
         if $repo_create.exit_code != 0 or (($repo_create.stdout | str trim) != "201") {
             error make {msg: "Failed to create the DigiOrg/app-config repository in Gitea"}
         }
-        print $"(ansi green)✓ Repository 'DigiOrg/app-config' created (private)(ansi reset)"
+        print $"(ansi green)✓ Repository 'DigiOrg/app-config' created \(private\)(ansi reset)"
     } else {
         error make {msg: $"Unexpected HTTP status while querying DigiOrg/app-config: ($repo_status)"}
     }
@@ -2432,7 +2432,7 @@ def configure_crossplane_gitea_credentials [gitea_pod: string, gitea_token: stri
     # re-verified/repaired first, even when the Secret already exists (Issue
     # #285 blocker #9: authorization drift must not be silently trusted).
     if $secret_exists {
-        print $"(ansi yellow)✓ 'crossplane-gitea-credentials' already present — preserved (membership re-verified)(ansi reset)"
+        print $"(ansi yellow)✓ 'crossplane-gitea-credentials' already present — preserved \(membership re-verified\)(ansi reset)"
         return
     }
 
@@ -2450,7 +2450,7 @@ def configure_crossplane_gitea_credentials [gitea_pod: string, gitea_token: stri
         error make {msg: "Gitea returned an empty crossplane-provisioner access token"}
     }
     persist_opaque_secret "crossplane-system" "crossplane-gitea-credentials" "token" $provisioner_token
-    print $"(ansi green)✓ Least-privilege 'crossplane-gitea-credentials' created (write:repository only)(ansi reset)"
+    print $"(ansi green)✓ Least-privilege 'crossplane-gitea-credentials' created \(write:repository only\)(ansi reset)"
 }
 
 # Create a dedicated, read-only Gitea identity so ArgoCD's repo-server can
@@ -2488,7 +2488,7 @@ def configure_argocd_gitea_access [gitea_pod: string, gitea_token: string] {
     # operator action); user existence and collaborator access above are
     # always re-verified/repaired first, even when the Secret already exists.
     if $secret_exists {
-        print $"(ansi yellow)✓ ArgoCD app-config repository credential already present — preserved (membership re-verified)(ansi reset)"
+        print $"(ansi yellow)✓ ArgoCD app-config repository credential already present — preserved \(membership re-verified\)(ansi reset)"
         return
     }
 
@@ -2508,7 +2508,7 @@ def configure_argocd_gitea_access [gitea_pod: string, gitea_token: string] {
     # hardening) -- must exact-match apps/platform/app-config.yaml's
     # spec.source.repoURL (see the comment there for why).
     persist_argocd_repo_secret "app-config-repo-creds" "https://digiorg.local/gitea/DigiOrg/app-config.git" "argocd-reader" $reader_token
-    print $"(ansi green)✓ ArgoCD app-config repository credential created (read:repository only)(ansi reset)"
+    print $"(ansi green)✓ ArgoCD app-config repository credential created \(read:repository only\)(ansi reset)"
 }
 
 # Create a dedicated, least-privilege Gitea identity for Backstage's own
@@ -2550,7 +2550,7 @@ def configure_backstage_gitea_publisher [gitea_pod: string, gitea_token: string]
     # operator action); user existence and collaborator access above are
     # always re-verified/repaired first, even when the Secret already exists.
     if $secret_exists {
-        print $"(ansi yellow)✓ Backstage app-config publish credential already present — preserved (membership re-verified)(ansi reset)"
+        print $"(ansi yellow)✓ Backstage app-config publish credential already present — preserved \(membership re-verified\)(ansi reset)"
         return
     }
 
@@ -2573,7 +2573,7 @@ def configure_backstage_gitea_publisher [gitea_pod: string, gitea_token: string]
     # three-way apply would otherwise prune backstage-secrets' other keys
     # (POSTGRES_PASSWORD, AUTH_SESSION_SECRET, AUTH_OIDC_CLIENT_SECRET, ...).
     persist_opaque_secret "backstage" "backstage-gitea-credentials" "GITEA_TOKEN" $publisher_token
-    print $"(ansi green)✓ Least-privilege 'backstage-gitea-credentials' created (write:repository only)(ansi reset)"
+    print $"(ansi green)✓ Least-privilege 'backstage-gitea-credentials' created \(write:repository only\)(ansi reset)"
 }
 
 # Generate (once, resume-preserved) and persist the Gitea Actions runner
@@ -3120,13 +3120,13 @@ def check_prerequisites [] {
     # never block `main up`; report it informationally instead.
     let expected_argocd_minor = "3.4"
     if (which argocd | is-empty) {
-        print $"(ansi yellow)  argocd CLI not found (optional) — the stale-status zero-diff fallback will be unavailable(ansi reset)"
+        print $"(ansi yellow)  argocd CLI not found \(optional\) — the stale-status zero-diff fallback will be unavailable(ansi reset)"
     } else {
         let argocd_version = (do { argocd version --client --short } | complete)
         if $argocd_version.exit_code == 0 and (argocd_client_version_compatible $argocd_version.stdout $expected_argocd_minor) {
             print $"(ansi green)✓ argocd CLI \(compatible with v($expected_argocd_minor).x\)(ansi reset)"
         } else {
-            print $"(ansi yellow)  argocd CLI found but not compatible with v($expected_argocd_minor).x (optional) — the stale-status zero-diff fallback will be unavailable(ansi reset)"
+            print $"(ansi yellow)  argocd CLI found but not compatible with v($expected_argocd_minor).x \(optional\) — the stale-status zero-diff fallback will be unavailable(ansi reset)"
         }
     }
 
