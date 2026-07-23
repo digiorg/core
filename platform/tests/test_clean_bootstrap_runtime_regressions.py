@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """Regression contracts discovered by Issue #285 clean bootstrap run #6."""
 from pathlib import Path
+import os
 import re
+import subprocess
+import tempfile
+import time
 import unittest
 import yaml
 
@@ -81,6 +85,51 @@ class CrossplaneHarborOrderingTest(unittest.TestCase):
         loop = func_body("sync_gated_apps_for_local_dev")
         self.assertLess(loop.index("wait_for_provider_http_ready"), loop.index("kubectl patch application $app"))
 
+    def test_gate_fails_fast_and_redacts_deterministic_kubectl_failures(self):
+        scenarios = {
+            "forbidden": (1, "", "Forbidden transport-secret-sentinel"),
+            "credential-helper": (1, "", "error: executable credential-helper not found transport-secret-sentinel"),
+            "malformed": (0, "{not-json", ""),
+        }
+        for name, (code, stdout, stderr) in scenarios.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                fake = Path(tmp) / "kubectl"
+                fake.write_text(
+                    "#!/usr/bin/env python3\n"
+                    "import sys\n"
+                    f"sys.stdout.write({stdout!r})\n"
+                    f"sys.stderr.write({stderr!r})\n"
+                    f"sys.exit({code})\n",
+                    encoding="utf-8",
+                )
+                fake.chmod(0o755)
+                env = os.environ.copy()
+                env["PATH"] = tmp + os.pathsep + env.get("PATH", "")
+                started = time.monotonic()
+                result = subprocess.run(
+                    ["nu", "-c", f"source {ROOT / 'scripts/local-setup.nu'}; wait_for_provider_http_ready"],
+                    capture_output=True,
+                    text=True,
+                    env=env,
+                    timeout=5,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertLess(time.monotonic() - started, 3)
+                self.assertNotIn("transport-secret-sentinel", result.stdout + result.stderr)
+
+        not_found = subprocess.run(
+            [
+                "nu", "-c",
+                f"source {ROOT / 'scripts/local-setup.nu'}; "
+                "kubectl_result_is_not_found {stdout: '', stderr: 'Error from server (NotFound): provider-http not found'}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        self.assertEqual(not_found.returncode, 0, not_found.stderr)
+        self.assertEqual(not_found.stdout.strip(), "true")
+
 
 class GiteaServiceIdentityTest(unittest.TestCase):
     def test_bool_flag_uses_equals_form(self):
@@ -109,12 +158,17 @@ class SecretMetadataTest(unittest.TestCase):
         opaque = func_body("persist_opaque_secret")
         self.assertIn("get secret", opaque)
         self.assertIn("--ignore-not-found", opaque)
-        self.assertIn("get -o data", opaque)
-        self.assertIn("upsert $key $encoded", opaque)
+        self.assertIn("data: {($key): $encoded}", opaque)
         self.assertIn("apply --server-side", opaque)
-        self.assertIn("--field-manager digiorg-bootstrap-secret", opaque)
+        self.assertIn("digiorg-bootstrap-secret-", opaque)
+        self.assertIn("--field-manager $field_manager", opaque)
         self.assertNotRegex(opaque, r"(?<!server-side )apply -f -")
-        self.assertIn("scrub_secret_last_applied_annotation", opaque)
+        self.assertGreaterEqual(opaque.count("scrub_secret_last_applied_annotation"), 2)
+        self.assertLess(
+            opaque.index("scrub_secret_last_applied_annotation"),
+            opaque.index("apply --server-side"),
+            "legacy last-applied annotation must be scrubbed before target-only SSA",
+        )
 
         repo = func_body("persist_argocd_repo_secret")
         self.assertIn("apply --server-side", repo)

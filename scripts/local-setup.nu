@@ -1276,6 +1276,19 @@ def print_sync_diagnostics [state: record] {
     }
 }
 
+def kubectl_result_is_not_found [result: record] {
+    let diagnostic = $"($result.stdout) ($result.stderr)" | str lowercase
+    # kubectl's Kubernetes API NotFound errors include the reason in parentheses.
+    # Do not match generic "not found": credential-helper/config errors use that
+    # wording too and must fail immediately.
+    $diagnostic | str contains "(notfound)"
+}
+
+def kubectl_wait_is_pending [result: record] {
+    let diagnostic = $"($result.stdout) ($result.stderr)" | str lowercase
+    (kubectl_result_is_not_found $result) or ($diagnostic | str contains "timed out waiting")
+}
+
 # crossplane-harbor-bootstrap contains provider-http Request objects. Argo sync
 # waves order Application creation only; they do not prove that package CRDs
 # have been installed. Gate the first Request on the active revision and CRD.
@@ -1285,15 +1298,27 @@ def wait_for_provider_http_ready [] {
         let provider_result = (do {
             kubectl get provider provider-http -o json
         } | complete)
-        if $provider_result.exit_code == 0 {
-            let provider = (try { $provider_result.stdout | from json } catch { {} })
+        if $provider_result.exit_code != 0 {
+            if not (kubectl_result_is_not_found $provider_result) {
+                error make {msg: "Failed to query provider-http while waiting for readiness"}
+            }
+        } else {
+            let provider = (try { $provider_result.stdout | from json } catch {
+                error make {msg: "provider-http returned malformed JSON while waiting for readiness"}
+            })
             let revision = ($provider | get -o status.currentRevision | default "")
             if not ($revision | is-empty) {
                 let revision_result = (do {
                     kubectl get providerrevision $revision -o json
                 } | complete)
-                if $revision_result.exit_code == 0 {
-                    let revision_state = (try { $revision_result.stdout | from json } catch { {} })
+                if $revision_result.exit_code != 0 {
+                    if not (kubectl_result_is_not_found $revision_result) {
+                        error make {msg: "Failed to query the active provider-http revision"}
+                    }
+                } else {
+                    let revision_state = (try { $revision_result.stdout | from json } catch {
+                        error make {msg: "The active provider-http revision returned malformed JSON"}
+                    })
                     let desired = ($revision_state | get -o spec.desiredState | default "Active")
                     let conditions = ($revision_state | get -o status.conditions | default [])
                     let healthy = ($conditions | any {|c| ((($c | get -o type | default "") == "Healthy") and (($c | get -o status | default "") == "True")) })
@@ -1304,6 +1329,9 @@ def wait_for_provider_http_ready [] {
                         if $crd_result.exit_code == 0 {
                             print "  ✓ provider-http is Healthy and requests.http.crossplane.io is Established"
                             return
+                        }
+                        if not (kubectl_wait_is_pending $crd_result) {
+                            error make {msg: "Failed to query the provider-http Request CRD while waiting for readiness"}
                         }
                     }
                 }
@@ -2000,53 +2028,38 @@ def scrub_secret_last_applied_annotation [namespace: string, name: string] {
     }
 }
 
-# Generic single-key opaque Secret writer (Issue #285). Existing Secrets are
-# read in-memory and their complete data map is submitted through server-side
-# apply, so unrelated keys survive the client-side-to-SSA ownership migration.
-# New Secrets start from a one-key manifest. No credential enters argv or disk.
+# Generic single-key opaque Secret writer (Issue #285). Remove client-side
+# apply's annotation before the first SSA write so kubectl cannot migrate and
+# then prune ownership for the whole object. Apply only the target data key with
+# a stable per-key manager; unrelated keys can change concurrently and survive.
+# No credential enters argv, environment variables, logs, or disk.
 def persist_opaque_secret [namespace: string, name: string, key: string, value: string] {
     if ($value | is-empty) {
         error make {msg: $"Refusing to persist an empty value for secret ($namespace)/($name) key ($key)"}
     }
-    let encoded = ($value | encode base64)
-    let current_result = (do {
-        kubectl --kubeconfig $KUBECONFIG_PATH get secret $name -n $namespace -o json --ignore-not-found
+    let exists_result = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH get secret $name -n $namespace -o name --ignore-not-found
     } | complete)
-    if $current_result.exit_code != 0 {
+    if $exists_result.exit_code != 0 {
         error make {msg: $"Failed to inspect secret ($namespace)/($name) before persisting key ($key)"}
     }
+    if not ($exists_result.stdout | str trim | is-empty) {
+        # This ordering is critical: without it, kubectl's client-side apply
+        # migration can transfer ownership of unrelated fields to this manager.
+        scrub_secret_last_applied_annotation $namespace $name
+    }
 
-    let manifest = if ($current_result.stdout | str trim | is-empty) {
-        {
-            apiVersion: "v1"
-            kind: "Secret"
-            metadata: {name: $name, namespace: $namespace}
-            type: "Opaque"
-            data: {($key): $encoded}
-        }
-    } else {
-        let current = (try { $current_result.stdout | from json } catch {
-            error make {msg: $"Secret ($namespace)/($name) returned invalid JSON"}
-        })
-        mut metadata = {name: $name, namespace: $namespace}
-        let labels = ($current | get -o metadata.labels | default {})
-        if not ($labels | is-empty) { $metadata = ($metadata | insert labels $labels) }
-        let annotations = ($current | get -o metadata.annotations | default {} | reject --optional "kubectl.kubernetes.io/last-applied-configuration")
-        if not ($annotations | is-empty) { $metadata = ($metadata | insert annotations $annotations) }
-        let owners = ($current | get -o metadata.ownerReferences | default [])
-        if not ($owners | is-empty) { $metadata = ($metadata | insert ownerReferences $owners) }
-        let finalizers = ($current | get -o metadata.finalizers | default [])
-        if not ($finalizers | is-empty) { $metadata = ($metadata | insert finalizers $finalizers) }
-        {
-            apiVersion: "v1"
-            kind: "Secret"
-            metadata: $metadata
-            type: ($current | get -o type | default "Opaque")
-            data: ($current | get -o data | default {} | upsert $key $encoded)
-        }
+    let encoded = ($value | encode base64)
+    let field_manager = $"digiorg-bootstrap-secret-($key | str replace --all '.' '-')"
+    let manifest = {
+        apiVersion: "v1"
+        kind: "Secret"
+        metadata: {name: $name, namespace: $namespace}
+        type: "Opaque"
+        data: {($key): $encoded}
     }
     let apply_result = (do {
-        $manifest | to json | kubectl --kubeconfig $KUBECONFIG_PATH apply --server-side --force-conflicts --field-manager digiorg-bootstrap-secret -f -
+        $manifest | to json | kubectl --kubeconfig $KUBECONFIG_PATH apply --server-side --force-conflicts --field-manager $field_manager -f -
     } | complete)
     if $apply_result.exit_code != 0 {
         error make {msg: $"Failed to persist secret ($namespace)/($name)"}

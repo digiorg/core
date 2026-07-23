@@ -131,13 +131,22 @@ class SecretTransportTest(unittest.TestCase):
                 "scenario = os.environ.get('FAKE_SCENARIO', 'success')\n"
                 "path = os.environ['MANIFEST_LOG']\n"
                 "if 'get' in args and '--ignore-not-found' in args:\n"
-                "    if os.path.exists(path): print(open(path, encoding='utf-8').read(), end='')\n"
+                "    if os.path.exists(path): print('secret/x', end='')\n"
                 "elif 'apply' in args:\n"
-                "    data = sys.stdin.read()\n"
+                "    incoming = json.loads(sys.stdin.read())\n"
                 "    if scenario == 'apply_failure': sys.exit(1)\n"
-                "    open(path, 'w', encoding='utf-8').write(data)\n"
+                "    if os.path.exists(path):\n"
+                "        obj = json.load(open(path, encoding='utf-8'))\n"
+                "        obj.setdefault('data', {}).update(incoming.get('data', {}))\n"
+                "    else:\n"
+                "        obj = incoming\n"
+                "    open(path, 'w', encoding='utf-8').write(json.dumps(obj))\n"
                 "    print('secret/x configured')\n"
                 "elif 'annotate' in args:\n"
+                "    if os.path.exists(path):\n"
+                "        obj = json.load(open(path, encoding='utf-8'))\n"
+                "        obj.setdefault('metadata', {}).setdefault('annotations', {}).pop('kubectl.kubernetes.io/last-applied-configuration', None)\n"
+                "        open(path, 'w', encoding='utf-8').write(json.dumps(obj))\n"
                 "    print('secret/x annotated')\n"
                 "elif 'get' in args:\n"
                 "    if scenario == 'readback_failure': sys.exit(1)\n"
@@ -190,7 +199,7 @@ class SecretTransportTest(unittest.TestCase):
         import base64 as b64
         self.assertEqual(b64.b64decode(manifest["data"]["token"]).decode(), sentinel)
 
-    def test_opaque_secret_full_state_ssa_preserves_unrelated_keys_and_scrubs_annotation(self):
+    def test_opaque_secret_per_key_ssa_preserves_unrelated_keys_and_scrubs_annotation(self):
         initial = {
             "apiVersion": "v1", "kind": "Secret", "type": "Opaque",
             "metadata": {
