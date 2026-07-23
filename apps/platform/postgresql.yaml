@@ -13,7 +13,7 @@ spec:
 
   source:
     repoURL: https://github.com/digiorg/core.git
-    targetRevision: main
+    targetRevision: runtime-issue-285-816712c-v4
     path: platform/base/postgresql
 
   destination:
