@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: gitea-actions-runner-data
+  namespace: gitea
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      # act_runner's own registration state (.runner) plus the rootless
+      # dockerd image/layer cache for local CI builds.
+      storage: 10Gi

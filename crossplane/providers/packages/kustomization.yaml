@@ -6,3 +6,5 @@ resources:
   - provider-helm.yaml
   - provider-http.yaml
   - function-patch-and-transform.yaml
+  - function-kcl.yaml
+  - function-auto-ready.yaml

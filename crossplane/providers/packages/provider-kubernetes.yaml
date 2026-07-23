@@ -24,6 +24,12 @@ spec:
           serviceAccountName: crossplane-provider-kubernetes
           containers:
             - name: package-runtime
+              # Issue #285: Object observations of Kubernetes Secrets must not
+              # copy credential-bearing data into status.atProvider.manifest.
+              # provider-kubernetes v1.2.1 defaults this protection to false.
+              env:
+                - name: SANITIZE_SECRETS
+                  value: "true"
 ---
 apiVersion: v1
 kind: ServiceAccount

@@ -54,7 +54,9 @@ spec:
                     properties:
                       name:
                         type: string
-                        description: "Service name"
+                        pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+                        maxLength: 63
+                        description: "RFC 1123 DNS label (lowercase alphanumeric and '-', max 63 chars) -- used verbatim as a Kubernetes object name, CI job key, and Harbor image path segment."
                       image:
                         type: string
                         description: "Container image reference"
@@ -68,6 +70,19 @@ spec:
                         minimum: 1
                         default: 1
                         description: "Override replica count (size preset applies if omitted)"
+                      build:
+                        type: object
+                        description: "Issue #285: opt this service into the platform's Gitea Actions CI build/push pipeline (requires spec.gitea.enabled and spec.gitea.cicd). When enabled, CI builds an immutable commit-SHA-tagged image from this service's build context and pushes it to Harbor at <harborRegistry>/<appName>/<service name>:<commit sha>; the pipeline Composition then automatically promotes that exact commit's Harbor artifact digest into this service's Deployment (status.services[]) once confirmed -- this service's `image` field is never read once build.enabled is true, and no Deployment renders until the first digest resolves. Services that omit this (or set enabled: false) are assumed to reference an already-published, externally-built image (spec.services[].image is used verbatim) and are never included in the generated CI workflow."
+                        properties:
+                          enabled:
+                            type: boolean
+                            default: false
+                          context:
+                            type: string
+                            default: "."
+                            maxLength: 255
+                            pattern: '^\.$|^[A-Za-z0-9_][A-Za-z0-9_-]*(/[A-Za-z0-9_][A-Za-z0-9_-]*)*$'
+                            description: "Docker build context, relative to the Gitea source repository root (must contain a Dockerfile). Must be a relative path of safe segments only -- no leading '/', no '..', no whitespace or shell metacharacters -- since it is rendered into a generated CI workflow's shell command."
                 gitea:
                   type: object
                   properties:
@@ -90,9 +105,13 @@ spec:
                       default: false
                     subjects:
                       type: array
+                      uniqueItems: true
                       items:
                         type: string
-                      description: "NATS subjects (e.g. my-app.events.>)"
+                        maxLength: 255
+                        pattern: '^[A-Za-z][A-Za-z0-9_-]*(\.[A-Za-z0-9_-]+)*(\.>)?$'
+                        description: "NATS subject (e.g. my-app.events.>). Dot-separated tokens of letters/digits/'_'/'-'; the wildcard '>' may only appear as the final, whole token."
+                      description: "NATS subjects. Distinct entries are never rejected as duplicates merely because they'd collide after case/separator normalization -- see core-catalog's pipeline Composition for how Stream/Consumer identifiers stay collision-safe."
             status:
               type: object
               properties:
@@ -102,3 +121,21 @@ spec:
                 message:
                   type: string
                   description: "Human-readable status message"
+                services:
+                  type: array
+                  description: "Issue #285: automatic immutable image promotion. One entry per spec.services[] with build.enabled: true, populated by the pipeline Composition (function-kcl dxr status patch) once Crossplane has observed a Harbor artifact matching Gitea's main branch HEAD commit for that service. A pending later HEAD (build not yet pushed) never clears an already-promoted entry -- digest/headSha keep the last successfully promoted values until a newer one is confirmed."
+                  items:
+                    type: object
+                    properties:
+                      name:
+                        type: string
+                        description: "spec.services[].name this entry promotes"
+                      headSha:
+                        type: string
+                        description: "Gitea main branch commit SHA (40 lowercase hex) the promoted digest was built from"
+                      digest:
+                        type: string
+                        description: "Harbor content digest (sha256:<64 lowercase hex>) of the promoted artifact"
+                      image:
+                        type: string
+                        description: "Fully resolved, immutable image reference (<harborRegistry>/<appName>/<service name>@<digest>) the Deployment uses"

@@ -1,0 +1,201 @@
+#!/usr/bin/env python3
+"""Issue #285 runtime blockers for the declarative Harbor bootstrap Request
+(`crossplane/bootstrap/harbor-robot-request.yaml`).
+
+Blocker A -- secret preservation: Harbor's `GET /robots/{id}` (and, after
+this fix, `GET /robots` LIST) responses never carry the robot's `secret`
+field (confirmed against goharbor/harbor v2.15.1's
+`src/server/v2.0/handler/robot.go` -- only `CreateRobot`'s response
+populates it). provider-http v1.0.14's `KeyInjection.MissingFieldStrategy`
+defaults to `"delete"`, so every OBSERVE reconcile after the first would
+wipe the already-injected `secret`/`basicAuth` keys from
+`crossplane-harbor-credentials`. This locks `missingFieldStrategy:
+preserve` on every keyMapping fed by a field the OBSERVE response omits.
+
+Blocker B -- crash-safe identity: the previous OBSERVE mapping resolved the
+robot purely via a numeric ID cached from a prior CREATE response
+(`.response.body.id`). If this Request's `.status` is ever lost (deleted
+and recreated after Harbor already accepted the CREATE POST), that cached
+ID is gone. Unlike the per-app project-level robot (core-catalog's
+pipeline Composition), Harbor's `GET /robots` LIST endpoint defaults to
+system-level scope (`ProjectID=0`) whenever the `Level` query keyword is
+omitted (confirmed via `ListRobot` in the same handler file) -- exactly
+this bootstrap robot's own level, with no numeric project ID required.
+This locks a LIST-based OBSERVE mapping (`GET /robots?q=Name=~...`) plus
+CUSTOM `isRemovedCheck`/`expectedResponseCheck` that independently
+rediscover the robot from its declared name/level/permissions alone,
+never relying on any previously cached response.
+
+Run:
+    python3 platform/tests/test_harbor_bootstrap_crash_safety.py
+"""
+
+import json
+import os
+import subprocess
+import sys
+import unittest
+
+try:
+    import yaml
+except ImportError:  # pragma: no cover - environment guard
+    sys.stderr.write("PyYAML is required: pip install pyyaml\n")
+    raise
+
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+HARBOR_REQUEST = os.path.join(REPO_ROOT, "crossplane", "bootstrap", "harbor-robot-request.yaml")
+
+
+def _load():
+    with open(HARBOR_REQUEST, encoding="utf-8") as fh:
+        return yaml.safe_load(fh)
+
+
+def _run_jq(logic, doc):
+    proc = subprocess.run(
+        ["jq", "-c", logic], input=json.dumps(doc), capture_output=True, text=True, timeout=10
+    )
+    if proc.returncode != 0:
+        raise AssertionError("jq failed for logic=%r: %s" % (logic, proc.stderr))
+    return json.loads(proc.stdout)
+
+
+class SecretPreservationTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.doc = _load()
+        cls.injections = cls.doc["spec"]["forProvider"]["secretInjectionConfigs"]
+
+    def test_every_key_mapping_preserves_on_missing_field(self):
+        self.assertEqual(len(self.injections), 1)
+        for mapping in self.injections[0]["keyMappings"]:
+            self.assertEqual(
+                mapping.get("missingFieldStrategy"),
+                "preserve",
+                "%s must preserve (not delete) on a response that omits it" % mapping["secretKey"],
+            )
+
+    def test_name_secret_basicauth_keys_still_present(self):
+        keys = {m["secretKey"] for m in self.injections[0]["keyMappings"]}
+        self.assertEqual(keys, {"name", "secret", "basicAuth"})
+
+
+class ListBasedObserveTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.doc = _load()
+        cls.forProvider = cls.doc["spec"]["forProvider"]
+        cls.mappings = cls.forProvider["mappings"]
+
+    def test_observe_mapping_is_a_list_query_not_id_based(self):
+        observe = next(m for m in self.mappings if m.get("action") == "OBSERVE")
+        self.assertEqual(observe["method"], "GET")
+        self.assertNotIn(".response.body.id", observe["url"])
+        self.assertIn("/robots", observe["url"])
+        self.assertIn("crossplane-system", observe["url"])
+
+    def test_expected_response_check_is_custom(self):
+        self.assertEqual(self.forProvider["expectedResponseCheck"]["type"], "CUSTOM")
+
+    def test_is_removed_check_is_custom(self):
+        self.assertEqual(self.forProvider["isRemovedCheck"]["type"], "CUSTOM")
+
+
+class CrashSafeIdentityLogicTest(unittest.TestCase):
+    """Exercise the actual CUSTOM jq logic against synthetic LIST responses --
+    the concrete, provider-verified meaning of "rediscovers the robot from
+    its declared identity alone"."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.forProvider = _load()["spec"]["forProvider"]
+
+    def _expected_logic(self):
+        return self.forProvider["expectedResponseCheck"]["logic"]
+
+    def _removed_logic(self):
+        return self.forProvider["isRemovedCheck"]["logic"]
+
+    def _matching_robot(self):
+        return {
+            "name": "robot$crossplane-system",
+            "level": "system",
+            "permissions": [
+                {"kind": "system", "namespace": "/", "access": [{"resource": "project", "action": "create"}]},
+                {
+                    "kind": "project",
+                    "namespace": "*",
+                    "access": [
+                        {"resource": "robot", "action": "create"},
+                        {"resource": "robot", "action": "read"},
+                        {"resource": "artifact", "action": "read"},
+                    ],
+                },
+            ],
+        }
+
+    def test_a_matching_robot_in_the_list_is_synced_and_not_removed(self):
+        doc = {"response": {"statusCode": 200, "body": [self._matching_robot()]}}
+        self.assertTrue(_run_jq(self._expected_logic(), doc))
+        self.assertFalse(_run_jq(self._removed_logic(), doc))
+
+    def test_an_empty_list_is_removed_and_not_synced(self):
+        doc = {"response": {"statusCode": 200, "body": []}}
+        self.assertFalse(_run_jq(self._expected_logic(), doc))
+        self.assertTrue(_run_jq(self._removed_logic(), doc))
+
+    def test_a_non_200_is_uncertain_not_removed_and_not_synced(self):
+        # A non-200/error response proves nothing about whether the robot
+        # actually exists in Harbor -- it must never be treated as a
+        # confirmed absence (that would re-trigger CREATE against a name
+        # Harbor's own uniqueness constraint may already hold). Only a
+        # genuine HTTP 200 list that omits the robot counts as "removed".
+        doc = {"response": {"statusCode": 500, "body": "error"}}
+        self.assertFalse(_run_jq(self._expected_logic(), doc))
+        self.assertFalse(_run_jq(self._removed_logic(), doc))
+
+    def test_a_401_is_uncertain_not_removed_and_not_synced(self):
+        doc = {"response": {"statusCode": 401, "body": "unauthorized"}}
+        self.assertFalse(_run_jq(self._expected_logic(), doc))
+        self.assertFalse(_run_jq(self._removed_logic(), doc))
+
+    def test_a_malformed_200_body_is_uncertain_not_removed_and_not_synced(self):
+        # Harbor is contractually a JSON array on 200, but a malformed/non-
+        # array body must not be trusted as a confirmed absence either.
+        doc = {"response": {"statusCode": 200, "body": {"unexpected": "object"}}}
+        self.assertFalse(_run_jq(self._expected_logic(), doc))
+        self.assertFalse(_run_jq(self._removed_logic(), doc))
+
+    def test_wrong_permissions_is_not_synced_but_not_removed(self):
+        # The name already exists in Harbor (matched by name/level) -- must
+        # not be reported as removed, or a mismatched/drifted identity would
+        # re-trigger CREATE against a name Harbor's own uniqueness
+        # constraint already holds.
+        robot = self._matching_robot()
+        robot["permissions"][1]["access"] = [{"resource": "robot", "action": "delete"}]
+        doc = {"response": {"statusCode": 200, "body": [robot]}}
+        self.assertFalse(_run_jq(self._expected_logic(), doc))
+        self.assertFalse(_run_jq(self._removed_logic(), doc))
+
+    def test_extra_permission_action_is_not_synced_but_not_removed(self):
+        # Issue #285 review finding: expectedResponseCheck must enforce exact
+        # least-privilege permissions -- an extra action alongside the
+        # required ones (e.g. Harbor RBAC drifting to also grant
+        # robot:delete) must never be silently trusted as synced. The name
+        # still matches, so this must not be reported as removed either.
+        robot = self._matching_robot()
+        robot["permissions"][1]["access"].append({"resource": "robot", "action": "delete"})
+        doc = {"response": {"statusCode": 200, "body": [robot]}}
+        self.assertFalse(_run_jq(self._expected_logic(), doc))
+        self.assertFalse(_run_jq(self._removed_logic(), doc))
+
+    def test_a_differently_named_robot_in_the_list_does_not_match(self):
+        robot = self._matching_robot()
+        robot["name"] = "robot$some-other-robot"
+        doc = {"response": {"statusCode": 200, "body": [robot]}}
+        self.assertFalse(_run_jq(self._expected_logic(), doc))
+        self.assertTrue(_run_jq(self._removed_logic(), doc))
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

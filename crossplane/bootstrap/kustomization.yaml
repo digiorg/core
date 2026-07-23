@@ -1,0 +1,8 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  # Issue #285: one-time, declarative bootstrap resources applied by the
+  # crossplane-harbor-bootstrap Application (apps/platform/crossplane-harbor-bootstrap.yaml).
+  # These are NOT part of the AppClaim pipeline Composition (core-catalog) —
+  # they provision the least-privilege identities that Composition depends on.
+  - harbor-robot-request.yaml

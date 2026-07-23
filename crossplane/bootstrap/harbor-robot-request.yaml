@@ -1,0 +1,202 @@
+# Issue #285 architecture decision #5: a least-privilege Harbor identity for
+# Crossplane's AppClaim pipeline to create per-app Harbor projects and their
+# scoped CI robot accounts. The Harbor admin credential itself (harbor-admin-secret)
+# is NEVER referenced by the AppClaim Composition — only this one-time,
+# declarative Request is, and only to mint the narrower "crossplane-system"
+# system robot below. This is provisioned exactly once (deletionPolicy: Orphan)
+# through the same pinned provider-http mechanism the Composition itself uses
+# (crossplane/providers/packages/provider-http.yaml, v1.0.14), reusing already
+# schema-verified machinery instead of a bespoke imperative bootstrap path.
+#
+# Harbor RBAC (validated against goharbor/harbor v2.15.1 — the appVersion
+# pinned by platform/base/harbor's chart — src/common/rbac/const.go and
+# src/controller/robot/controller.go convertScope/validatePermissions, which
+# document "/system => Kind: system Namespace: /" and "/project/* => Kind:
+# project Namespace: *" as the two permission shapes a *system*-level robot
+# may hold):
+#   - {kind: system,  namespace: "/", access: [{resource: project, action: create}]}
+#     grants ONLY the ability to create new Harbor projects; no delete, no
+#     user/registry/system configuration, no scanning administration.
+#   - {kind: project, namespace: "*", access: [{resource: robot, action: create|read}, {resource: artifact, action: read}]}
+#     grants creating/reading project-scoped robot accounts, and reading
+#     artifact metadata (digest/tags), across ALL projects (namespace: "*" is
+#     required because, at the moment this system robot creates a new
+#     per-app robot or checks a freshly-pushed artifact, that project's own
+#     robots cannot yet be relied on — a namespace-scoped grant naming one
+#     project cannot work here). Issue #285 (automatic image promotion):
+#     `artifact: read` is the exact permission goharbor/harbor v2.15.1
+#     src/server/v2.0/handler/artifact.go GetArtifact requires
+#     (`RequireProjectAccess(ctx, project, rbac.ActionRead,
+#     rbac.ResourceArtifact)`) — this is what lets the AppClaim pipeline
+#     Composition's per-service Harbor artifact Request confirm a
+#     CI-pushed, commit-SHA-tagged image exists (and read its digest) before
+#     promoting it into a Deployment. Deliberately NOT `repository: pull`
+#     (the docker-pull scope): that permission is reserved for the separate,
+#     narrower per-app pull-only robot used solely for the Deployment's
+#     imagePullSecrets, never for the control plane's own API reads.
+# This is strictly narrower than the Harbor admin credential: it cannot
+# delete anything, cannot manage users/registries/replication/GC, and cannot
+# push/pull images itself.
+apiVersion: http.crossplane.io/v1alpha2
+kind: Request
+metadata:
+  name: harbor-crossplane-system-robot
+spec:
+  deletionPolicy: Orphan
+  providerConfigRef:
+    name: default
+  forProvider:
+    headers:
+      Content-Type:
+        - application/json
+      Authorization:
+        - "Basic {{ harbor-admin-basic-auth:harbor:value }}"
+    payload:
+      # Issue #285 (TLS hardening): the trusted digiorg.local ingress, not
+      # the raw in-cluster harbor-core Service address. The shared
+      # provider-http ProviderConfig (crossplane/providers/configs/provider-
+      # http-config.yaml) carries spec.tls.caCertSecretRef for the CA this
+      # host's certificate chains to.
+      baseUrl: "https://digiorg.local/api/v2.0"
+      body: |
+        {
+          "name": "crossplane-system",
+          "description": "Issue 285: least-privilege system robot used by the AppClaim pipeline Composition (crossplane-contrib/provider-http) to create per-app Harbor projects and their CI robot accounts. Never reused as a per-app credential.",
+          "duration": -1,
+          "level": "system",
+          "permissions": [
+            {
+              "kind": "system",
+              "namespace": "/",
+              "access": [
+                {"resource": "project", "action": "create"}
+              ]
+            },
+            {
+              "kind": "project",
+              "namespace": "*",
+              "access": [
+                {"resource": "robot", "action": "create"},
+                {"resource": "robot", "action": "read"},
+                {"resource": "artifact", "action": "read"}
+              ]
+            }
+          ]
+        }
+    mappings:
+      - method: "POST"
+        action: CREATE
+        url: .payload.baseUrl + "/robots"
+        body: .payload.body
+      # Runtime blocker (crash-safe identity): a numeric-ID-based OBSERVE
+      # (GET /robots/{id} using an ID cached from a prior CREATE response)
+      # cannot rediscover this robot if the Request's .status is ever lost
+      # (e.g. the object is deleted and recreated after Harbor already
+      # accepted the CREATE POST) -- the cached ID is gone with it, and a
+      # fresh reconcile would fall through to CREATE again. Harbor's
+      # `GET /robots` LIST endpoint (goharbor/harbor v2.15.1
+      # src/server/v2.0/handler/robot.go ListRobot) defaults to system-level
+      # scope (ProjectID=0) whenever the `Level` query keyword is omitted --
+      # exactly this robot's own level, with no numeric project ID needed
+      # (unlike the AppClaim pipeline's per-app *project*-level robot, which
+      # Harbor's ListRobot forces to require a numeric ProjectID a single
+      # provider-http mapping cannot resolve -- see
+      # core-catalog/tests/test_harbor_robot_hardening.py). `q=Name=~...`
+      # is Harbor's fuzzy/substring query syntax (`#/parameters/query` in
+      # api/v2.0/swagger.yaml), robust to the admin-configurable "robot$"
+      # display prefix (populate() in the same handler file) this bootstrap
+      # robot's stored name always carries. `action: OBSERVE` is explicit
+      # for the same requestmapping.GetMapping reason documented in
+      # core-catalog/tests/test_provider_http_mapping_contract.py.
+      - method: "GET"
+        action: OBSERVE
+        url: .payload.baseUrl + "/robots?q=Name=~crossplane-system"
+    # Runtime blocker (crash-safe identity), continued: rather than trusting
+    # a bare 2xx status (the DEFAULT check), these CUSTOM checks verify the
+    # LIST response actually contains an item with this robot's exact
+    # intended identity (name suffix + level=system + both permission
+    # entries, nothing more/less) -- confirmed executable against gojq
+    # (itchyny/gojq v0.12.17) via `jq` locally in
+    # core/platform/tests/test_harbor_bootstrap_crash_safety.py. A
+    # mismatched/uncertain response (wrong permissions, empty list, non-200)
+    # is reported as both "not synced" and "not removed" -- it must never be
+    # silently trusted as up to date, but must also never be misreported as
+    # removed (that would re-trigger CREATE against a name Harbor's own
+    # `unique_robot UNIQUE(name, project_id)` constraint, confirmed via
+    # make/migrations/postgresql/0004_1.8.0_schema.up.sql, already holds).
+    isRemovedCheck:
+      type: CUSTOM
+      # Deliberately name/level-only (ignores permissions): a robot that
+      # already exists under this exact name but with drifted permissions
+      # must never be reported as "removed" (that would re-trigger CREATE
+      # against a name Harbor's own uniqueness constraint already holds --
+      # see the comment above expectedResponseCheck). Only a genuine absence
+      # (no matching name at all) counts as removed.
+      #
+      # Issue #285 review finding: negating the whole success predicate (the
+      # previous shape, `(200 and array and found) | not`) turned every
+      # error/malformed response (401, 500, a non-array body) into
+      # "removed", since `not` of a false success predicate is true whether
+      # that predicate failed because the robot was genuinely absent OR
+      # because the response was simply uninterpretable. An uncertain
+      # response must never be reported as removed -- only a confirmed HTTP
+      # 200, well-formed array that provably omits the robot counts. The AND
+      # chain below achieves that directly: it is only ever true when the
+      # 200/array preconditions hold AND the robot is absent from that
+      # array; any error/malformed case falls through to false (not
+      # removed), matching expectedResponseCheck's own fail-closed (not
+      # synced) behavior on the same inputs.
+      logic: |-
+        def isCrossplaneSystemRobotByName(r):
+          r.name != null and (r.name | endswith("crossplane-system")) and r.level == "system";
+        (.response.statusCode == 200) and ((.response.body|type)=="array") and (([.response.body[] | isCrossplaneSystemRobotByName(.)] | any) | not)
+    expectedResponseCheck:
+      type: CUSTOM
+      # Issue #285 review finding: exact least-privilege enforcement. Each
+      # `select(...)` previously only asserted the required actions were
+      # present via `any(...)`, never that the access array held *only*
+      # those actions -- so a drifted robot granted an extra action (e.g.
+      # `robot:delete`) alongside the required ones was silently trusted as
+      # synced. Each select now also pins `(.access // []) | length ==` the
+      # exact expected count, so any extra action fails the match (and the
+      # robot correctly falls through to "not synced").
+      logic: |-
+        def isCrossplaneSystemRobot(r):
+          r.name != null and (r.name | endswith("crossplane-system"))
+          and r.level == "system"
+          and (r.permissions // [] | length) == 2
+          and ([r.permissions[] | select(.kind=="system" and .namespace=="/" and ((.access // []) | length) == 1 and ((.access // []) | any(.resource=="project" and .action=="create")))] | length) == 1
+          and ([r.permissions[] | select(.kind=="project" and .namespace=="*" and ((.access // []) | length) == 3 and ((.access // []) | any(.resource=="robot" and .action=="create")) and ((.access // []) | any(.resource=="robot" and .action=="read")) and ((.access // []) | any(.resource=="artifact" and .action=="read")))] | length) == 1;
+        (.response.statusCode == 200) and ((.response.body|type)=="array") and ([.response.body[] | isCrossplaneSystemRobot(.)] | any)
+    secretInjectionConfigs:
+      - secretRef:
+          name: crossplane-harbor-credentials
+          namespace: crossplane-system
+        keyMappings:
+          # Plain field extraction for the raw robot identity/secret (parity
+          # with the AppClaim pipeline's per-app harbor-robot secret
+          # injection), plus one *computed* key: gojq (itchyny/gojq v0.12.17,
+          # provider-http's vendored jq engine — confirmed via its go.mod) is
+          # a full jq implementation, so `@base64` string-interpolation is
+          # valid here. provider-http's `{{ name:namespace:key }}` templating
+          # substitutes a secret value verbatim (it does not encode), and
+          # Harbor's own Basic-auth scheme requires base64(name:secret) — so
+          # the pre-encoded pair is computed once here rather than asking the
+          # AppClaim Composition to do HTTP-auth encoding it cannot perform.
+          #
+          # Runtime blocker (secret preservation): Harbor's OBSERVE response
+          # (a LIST, above) never carries `secret` (only CREATE's response
+          # does -- confirmed against goharbor/harbor v2.15.1's handler,
+          # which only ever populates `secret` on `CreateRobot`). Without
+          # `missingFieldStrategy: preserve` (default: "delete"), every
+          # OBSERVE reconcile after the first would delete the
+          # already-injected secret/basicAuth keys from this Secret.
+          - secretKey: name
+            responseJQ: .body.name
+            missingFieldStrategy: preserve
+          - secretKey: secret
+            responseJQ: .body.secret
+            missingFieldStrategy: preserve
+          - secretKey: basicAuth
+            responseJQ: "\"\\(.body.name):\\(.body.secret)\" | @base64"
+            missingFieldStrategy: preserve

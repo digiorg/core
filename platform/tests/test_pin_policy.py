@@ -122,6 +122,31 @@ class GitSourceRuleTest(unittest.TestCase):
         self.assertEqual(_images_from(text), [])
 
 
+class PackagePinRuleTest(unittest.TestCase):
+    """Crossplane `Provider`/`Function` package.yaml `spec.package` refs (Issue
+    #285 added function-kcl/function-auto-ready) must pin an exact version,
+    same as Helm charts -- no `latest`, no bare/untagged package, no range."""
+
+    def _pkg(self, ref, kind="Function"):
+        return f"apiVersion: pkg.crossplane.io/v1beta1\nkind: {kind}\nmetadata:\n  name: x\nspec:\n  package: {ref}\n"
+
+    def test_exact_version_package_is_accepted(self):
+        v = _images_from(self._pkg("xpkg.upbound.io/crossplane-contrib/function-kcl:v0.12.2"))
+        self.assertEqual(v, [])
+
+    def test_latest_tag_package_is_rejected(self):
+        v = _images_from(self._pkg("xpkg.upbound.io/crossplane-contrib/function-kcl:latest"))
+        self.assertTrue(any(x.kind == "package" for x in v))
+
+    def test_untagged_package_is_rejected(self):
+        v = _images_from(self._pkg("xpkg.upbound.io/crossplane-contrib/function-kcl"))
+        self.assertTrue(any(x.kind == "package" for x in v))
+
+    def test_range_tag_package_is_rejected(self):
+        v = _images_from(self._pkg("xpkg.upbound.io/crossplane-contrib/function-kcl:^0.12.0"))
+        self.assertTrue(any(x.kind == "package" for x in v))
+
+
 class RealTreeIsCleanTest(unittest.TestCase):
     """The committed manifests must satisfy the pin policy end-to-end."""
 

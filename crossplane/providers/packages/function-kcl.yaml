@@ -1,0 +1,13 @@
+apiVersion: pkg.crossplane.io/v1beta1
+kind: Function
+metadata:
+  name: function-kcl
+spec:
+  # Issue #285: one deterministic Pipeline Composition needs a function
+  # capable of conditional/iterative resource generation (patch-and-transform
+  # alone cannot loop over spec.services[]/spec.messaging.subjects[] or branch
+  # on spec.database.enabled). v0.12.2 is the latest crossplane-contrib
+  # release; its go.mod pins kcl-lang.io/cli v0.12.7, which core-catalog's
+  # render test harness (tests/render_harness.py) also pins for parity.
+  # Revalidated 2026-07-21 against https://github.com/crossplane-contrib/function-kcl/releases.
+  package: xpkg.upbound.io/crossplane-contrib/function-kcl:v0.12.2

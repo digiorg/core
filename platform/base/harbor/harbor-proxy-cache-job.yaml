@@ -54,10 +54,12 @@ spec:
             - -c
             - |
               set -eu
-              HARBOR_API="http://harbor.harbor.svc.cluster.local/api/v2.0"
+              HARBOR_API="https://digiorg.local/api/v2.0"
               AUTH="admin:${HARBOR_ADMIN_PASSWORD}"
 
-              CURL="curl --connect-timeout 5 --max-time 30 --retry 2"
+              echo "Waiting for the digiorg.local public CA..."
+              until [ -s /etc/digiorg-ca/ca.crt ]; do sleep 2; done
+              CURL="curl --cacert /etc/digiorg-ca/ca.crt --connect-timeout 5 --max-time 30 --retry 2"
 
               # Harbor error responses contain only API error code/message for
               # these non-secret payloads. Bound output to keep hook logs safe
@@ -206,3 +208,12 @@ spec:
               create_proxy_project k8s-proxy       "$(registry_id registry-k8s-io)"
 
               echo "Harbor proxy-cache configuration complete."
+          volumeMounts:
+            - name: digiorg-local-ca
+              mountPath: /etc/digiorg-ca
+              readOnly: true
+      volumes:
+        - name: digiorg-local-ca
+          secret:
+            secretName: digiorg-local-ca
+            optional: true

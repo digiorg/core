@@ -5,3 +5,21 @@ metadata:
 spec:
   credentials:
     source: None
+  # Issue #285 (TLS hardening): every Request using this ProviderConfig
+  # (both core's bootstrap and core-catalog's AppClaim pipeline) talks to
+  # Gitea/Harbor through the trusted digiorg.local ingress over HTTPS.
+  # `spec.tls.caCertSecretRef` verified against the pinned v1.0.14 source
+  # (apis/cluster/v1alpha1/providerconfig_types.go: `TLS *common.TLSConfig`;
+  # apis/common/common.go: `CACertSecretRef *xpv1.SecretKeySelector`) --
+  # loaded via a live `kubeClient.Get` per reconcile
+  # (internal/clients/http/tls_loader.go), so a rotated CA is picked up
+  # automatically without restarting the provider. `digiorg-local-ca` in
+  # crossplane-system is a copy of only the public certificate
+  # (cert-manager/digiorg-local-ca-secret's ca.crt key, never its private
+  # key) that scripts/local-setup.nu keeps in sync
+  # (copy_digiorg_local_ca_to_namespace).
+  tls:
+    caCertSecretRef:
+      name: digiorg-local-ca
+      namespace: crossplane-system
+      key: ca.crt
