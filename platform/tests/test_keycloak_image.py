@@ -60,7 +60,7 @@ DEPLOYMENT = os.path.join(
 # The exact coordinates fixed by the issue and the pin-policy allowlist.
 UPSTREAM_IMAGE = "quay.io/keycloak/keycloak"
 UPSTREAM_TAG = "26.7.0"
-UPSTREAM_DIGEST = "sha256:2eb3cd316835c990e69e26ade292ffa78f6fb0db7d5fc6377463c162e1979ac0"
+UPSTREAM_DIGEST = "sha256:0f198be292568439d700cdbfb893e69a6009bb43a94a06a945b1d3d506c76b13"
 IMAGE = "digiorg/keycloak"
 TAG = "26.7.0-optimized"
 FULL_IMAGE = "%s:%s" % (IMAGE, TAG)

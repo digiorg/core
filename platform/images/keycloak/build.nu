@@ -34,7 +34,7 @@
 # --- Pinned upstream base --------------------------------------------------- #
 const UPSTREAM_IMAGE = "quay.io/keycloak/keycloak"
 const UPSTREAM_TAG = "26.7.0"
-const UPSTREAM_DIGEST = "sha256:2eb3cd316835c990e69e26ade292ffa78f6fb0db7d5fc6377463c162e1979ac0"
+const UPSTREAM_DIGEST = "sha256:0f198be292568439d700cdbfb893e69a6009bb43a94a06a945b1d3d506c76b13"
 
 # --- Image coordinates ------------------------------------------------------ #
 # IMAGE/TAG are the local (kind-loaded) coordinates and MUST match the image

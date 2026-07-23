@@ -41,7 +41,7 @@ avoids shipping credentials in a layer.
 | Local (kind) image | `digiorg/keycloak:26.7.0-optimized` |
 | Registry path (Harbor) | `digiorg.local/library/keycloak:26.7.0-optimized` |
 | Upstream base | `quay.io/keycloak/keycloak:26.7.0` |
-| Upstream base digest (immutable) | `sha256:2eb3cd316835c990e69e26ade292ffa78f6fb0db7d5fc6377463c162e1979ac0` |
+| Upstream base digest (immutable) | `sha256:0f198be292568439d700cdbfb893e69a6009bb43a94a06a945b1d3d506c76b13` |
 | Build-time options | `KC_DB=postgres`, `KC_HEALTH_ENABLED=true`, `KC_METRICS_ENABLED=true` |
 
 The local image + `IfNotPresent` pull policy are consumed by
