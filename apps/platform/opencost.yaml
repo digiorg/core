@@ -24,10 +24,10 @@ spec:
         valueFiles:
           - $values/platform/base/opencost/values.yaml
     - repoURL: https://github.com/digiorg/core.git
-      targetRevision: main
+      targetRevision: runtime-issue-285-4ecee82-v5
       ref: values
     - repoURL: https://github.com/digiorg/core.git
-      targetRevision: main
+      targetRevision: runtime-issue-285-4ecee82-v5
       path: platform/base/opencost
   destination:
     server: https://kubernetes.default.svc
