@@ -83,7 +83,7 @@ Third-party images record a human-readable tag **plus** an immutable digest:
 | `docker.gitea.com/gitea` | 1.26.1 | Gitea chart primary/init image |
 | `sonarqube` | 26.5.0.122743-community | SonarQube Community Build |
 | `ghcr.io/kyverno/readiness-checker` | v1.18.1 | Kyverno chart test/cleanup hooks |
-| `ghcr.io/digiorg/core-portal` | b77e94a | Backstage — core-portal `main` HEAD (Issue #279; was initial-scaffold commit `48d262e`) |
+| `ghcr.io/digiorg/core-portal` | e87210b | Backstage — reviewed core-portal PR #9 commit for Issue #285 (was `b77e94a`) |
 | `ghcr.io/digiorg/core-landingpage` | 32a6777 | Landing page (release tag + digest, was `main`) |
 
 ### Tier-1 DigiOrg-built images (allow-listed, kind-loaded)
@@ -164,18 +164,18 @@ where noted (this environment has no cluster — see section 7).
   patch-and-transform — any P&T Composition there must be converted to the
   function pipeline (`crossplane beta convert pipeline-composition`). Out of
   scope for this repo; validate `core-catalog` separately before promoting.
-- **core-catalog pin (Issue #281 Phase 4):** `apps/platform/core-catalog.yaml`
-  pins the **canonical reviewed merge commit** of core-catalog PR #17,
-  `13b7a3b4a0b7a5f5e692dc6d5a3fa416852c4273`. This supersedes the earlier
-  implementation SHA `4c30d9c3…`, which the merge commit is one commit ahead of
-  with **no changed files** (identical deployed content) — the change is
-  traceability only. The Application stays manually gated
+- **core-catalog pin (Issue #285):** `apps/platform/core-catalog.yaml` pins the
+  exact independently reviewed head of core-catalog PR #18,
+  `7fd51323db2c38e7ca36f5496e22686a93aa9fc4`. This deploys the deterministic
+  KCL pipeline together with the Core integration. If PR #18 is squash/rebase
+  merged, advance this pin to the resulting canonical commit before merging the
+  Core PR. The Application stays manually gated
   (`platform.digiorg.io/upgrade-gate: issue-275-manual`, no `syncPolicy.automated`);
   do not enable automatic catalog sync. `test_crossplane_migration.py`
-  (`CoreCatalogCanonicalPinTest`) locks the canonical pin, the immutable 40-hex
-  format, the manual gate, and that the superseded SHA is referenced nowhere.
-  When the reviewed revision advances, update the manifest, this line, and that
-  test's `CANONICAL_CATALOG_REVISION` together.
+  (`CoreCatalogReviewedRevisionPinTest`) locks the reviewed revision, the
+  immutable 40-hex format, the manual gate, and that superseded SHAs are
+  referenced nowhere. When the reviewed revision advances, update the manifest,
+  this line, and that test's `REVIEWED_CATALOG_REVISION` together.
 - **Rollback:** revert the chart pin (2.3.3 → 1.19.0) and provider pins; v2→v1
   downgrade of a cluster with namespaced XRs is unsupported, but this repo keeps
   LegacyCluster semantics so no XR conversion occurs.

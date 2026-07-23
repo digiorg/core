@@ -14,14 +14,13 @@ spec:
 
   source:
     repoURL: https://github.com/digiorg/core-catalog.git
-    # Crossplane v2 removed native `spec.resources` Compositions; the local
-    # catalog was migrated to function-patch-and-transform Pipeline mode in
-    # core-catalog PR #17. Pin the canonical *reviewed merge* commit of that PR
-    # (Issue #281 Phase 4). It is one commit ahead of the earlier implementation
-    # SHA (4c30d9c3…) with NO changed files, and core-catalog/main points at it;
-    # pinning the merge commit makes the deployed revision traceable to review.
+    # Issue #285 replaces the competing local Compositions with one deterministic
+    # KCL pipeline in core-catalog PR #18. Pin its exact independently reviewed
+    # head so Core and Catalog are deployed as one immutable integration. If the
+    # PR is squash/rebase merged, advance this to the resulting canonical commit
+    # before merging the Core PR.
     # Keep this manual (no syncPolicy.automated) — see docs/guides/platform-versions.md.
-    targetRevision: 13b7a3b4a0b7a5f5e692dc6d5a3fa416852c4273
+    targetRevision: 7fd51323db2c38e7ca36f5496e22686a93aa9fc4
     path: compositions/local
 
   destination:
