@@ -1373,13 +1373,20 @@ def wait_for_provider_http_ready [] {
                     })
                     let desired = ($revision_state | get -o spec.desiredState | default "Active")
                     let conditions = ($revision_state | get -o status.conditions | default [])
-                    let healthy = ($conditions | any {|c| ((($c | get -o type | default "") == "Healthy") and (($c | get -o status | default "") == "True")) })
-                    if ($desired == "Active") and $healthy {
+                    # Crossplane v2.3.3's ProviderRevision never carries a bare
+                    # "Healthy" condition -- the revision reconciler only ever
+                    # marks RevisionHealthy/RuntimeHealthy on the revision itself;
+                    # the aggregate "Healthy" condition is written to the parent
+                    # Provider by PackageHealth() (apis/pkg/v1/conditions.go),
+                    # which itself requires both to be True. Mirror that here.
+                    let revision_healthy = ($conditions | any {|c| ((($c | get -o type | default "") == "RevisionHealthy") and (($c | get -o status | default "") == "True")) })
+                    let runtime_healthy = ($conditions | any {|c| ((($c | get -o type | default "") == "RuntimeHealthy") and (($c | get -o status | default "") == "True")) })
+                    if ($desired == "Active") and $revision_healthy and $runtime_healthy {
                         let crd_result = (do {
                             kubectl wait --for=condition=Established crd/requests.http.crossplane.io --timeout=5s
                         } | complete)
                         if $crd_result.exit_code == 0 {
-                            print "  ✓ provider-http is Healthy and requests.http.crossplane.io is Established"
+                            print "  ✓ provider-http revision is RevisionHealthy and RuntimeHealthy, and requests.http.crossplane.io is Established"
                             return
                         }
                         if not (kubectl_wait_is_pending $crd_result) {
@@ -1391,7 +1398,7 @@ def wait_for_provider_http_ready [] {
         }
         sleep 2sec
     }
-    error make {msg: "provider-http did not become Healthy with an Established Request CRD"}
+    error make {msg: "provider-http did not become RevisionHealthy/RuntimeHealthy with an Established Request CRD"}
 }
 
 # Explicitly promote gated major upgrades on the disposable local KinD cluster.

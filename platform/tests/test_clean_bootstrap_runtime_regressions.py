@@ -79,7 +79,8 @@ class CrossplaneHarborOrderingTest(unittest.TestCase):
         body = func_body("wait_for_provider_http_ready")
         self.assertIn("provider-http", body)
         self.assertIn("ProviderRevision", body)
-        self.assertIn("Healthy", body)
+        self.assertIn("RevisionHealthy", body)
+        self.assertIn("RuntimeHealthy", body)
         self.assertIn("requests.http.crossplane.io", body)
         self.assertIn("condition=Established", body)
         loop = func_body("sync_gated_apps_for_local_dev")
@@ -137,7 +138,16 @@ class ProviderHttpRawApiGateTest(unittest.TestCase):
     CRDs install and then fails with a generic (non-NotFound) error that
     never recovers -- this is exactly what stalled runtime-v8 stdout5 right
     after crossplane-provider-configs went Healthy. The gate must instead
-    hit the pinned pkg.crossplane.io/v1 raw API directly."""
+    hit the pinned pkg.crossplane.io/v1 raw API directly.
+
+    runtime-v9: a ProviderRevision never carries a bare `Healthy` condition
+    -- Crossplane v2.3.3's revision reconciler
+    (internal/controller/pkg/revision/reconciler.go) only ever marks
+    `RevisionHealthy`/`RuntimeHealthy` on the revision itself; the aggregate
+    `Healthy` condition is written to the parent Provider by the manager
+    reconciler's `PackageHealth()` (apis/pkg/v1/conditions.go). Checking for
+    `Healthy` on the revision therefore never matched anything and stalled
+    every clean bootstrap for the full 180-attempt/360s timeout."""
 
     FAKE_KUBECTL = (
         "#!/usr/bin/env python3\n"
@@ -180,6 +190,10 @@ class ProviderHttpRawApiGateTest(unittest.TestCase):
         "    if scenario == 'oversized_revision_label':\n"
         "        sys.stdout.write(json.dumps({'status': {'currentRevision': 'a' * 64}}))\n"
         "        sys.exit(0)\n"
+        "    unhealthy_revision_scenarios = ('missing_runtime_healthy', 'false_runtime_healthy', 'missing_revision_healthy', 'false_revision_healthy')\n"
+        "    if scenario in unhealthy_revision_scenarios and n >= 2:\n"
+        "        sys.stderr.write('Error from server (Forbidden): cannot get providers.pkg.crossplane.io: revision-unhealthy-retry-sentinel\\n')\n"
+        "        sys.exit(1)\n"
         "    sys.stdout.write(json.dumps({'status': {'currentRevision': 'provider-http-abc123def456'}}))\n"
         "    sys.exit(0)\n"
         "if path.startswith('/apis/pkg.crossplane.io/v1/providerrevisions/'):\n"
@@ -187,7 +201,19 @@ class ProviderHttpRawApiGateTest(unittest.TestCase):
         "    if scenario == 'revision_not_found_then_success' and n < 3:\n"
         "        sys.stderr.write('Error from server (NotFound): providerrevisions.pkg.crossplane.io \"x\" not found\\n')\n"
         "        sys.exit(1)\n"
-        "    sys.stdout.write(json.dumps({'spec': {'desiredState': 'Active'}, 'status': {'conditions': [{'type': 'Healthy', 'status': 'True'}]}}))\n"
+        "    if scenario == 'missing_runtime_healthy':\n"
+        "        sys.stdout.write(json.dumps({'spec': {'desiredState': 'Active'}, 'status': {'conditions': [{'type': 'RevisionHealthy', 'status': 'True'}]}}))\n"
+        "        sys.exit(0)\n"
+        "    if scenario == 'false_runtime_healthy':\n"
+        "        sys.stdout.write(json.dumps({'spec': {'desiredState': 'Active'}, 'status': {'conditions': [{'type': 'RevisionHealthy', 'status': 'True'}, {'type': 'RuntimeHealthy', 'status': 'False'}]}}))\n"
+        "        sys.exit(0)\n"
+        "    if scenario == 'missing_revision_healthy':\n"
+        "        sys.stdout.write(json.dumps({'spec': {'desiredState': 'Active'}, 'status': {'conditions': [{'type': 'RuntimeHealthy', 'status': 'True'}]}}))\n"
+        "        sys.exit(0)\n"
+        "    if scenario == 'false_revision_healthy':\n"
+        "        sys.stdout.write(json.dumps({'spec': {'desiredState': 'Active'}, 'status': {'conditions': [{'type': 'RevisionHealthy', 'status': 'False'}, {'type': 'RuntimeHealthy', 'status': 'True'}]}}))\n"
+        "        sys.exit(0)\n"
+        "    sys.stdout.write(json.dumps({'spec': {'desiredState': 'Active'}, 'status': {'conditions': [{'type': 'RevisionHealthy', 'status': 'True'}, {'type': 'RuntimeHealthy', 'status': 'True'}]}}))\n"
         "    sys.exit(0)\n"
         "sys.exit(2)\n"
     )
@@ -244,6 +270,32 @@ class ProviderHttpRawApiGateTest(unittest.TestCase):
         result, elapsed, _calls = self._run("revision_not_found_then_success")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertGreaterEqual(elapsed, 3.5)
+
+    def test_missing_or_false_provider_revision_conditions_never_reach_crd_success(self):
+        """Neither a missing nor a False RevisionHealthy/RuntimeHealthy condition
+        may ever be treated as ready. The fake fails the *next* provider read
+        once the gate has observed one unhealthy revision, so each scenario
+        resolves in a single retry cycle instead of exhausting the real
+        180-attempt/360s loop."""
+        scenarios = (
+            "missing_runtime_healthy",
+            "false_runtime_healthy",
+            "missing_revision_healthy",
+            "false_revision_healthy",
+        )
+        for scenario in scenarios:
+            with self.subTest(scenario=scenario):
+                result, elapsed, calls = self._run(scenario, timeout=10)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertLess(
+                    elapsed, 5,
+                    "must fail closed after one retry rather than exhausting the 180-attempt/360s loop",
+                )
+                wait_calls = [c for c in calls if c and c[0] == "wait"]
+                self.assertEqual(
+                    wait_calls, [],
+                    "must never reach the CRD Established wait when provider-http is not fully healthy",
+                )
 
     def test_provider_forbidden_fails_fast_without_leaking_credential(self):
         result, elapsed, _calls = self._run("provider_forbidden")
