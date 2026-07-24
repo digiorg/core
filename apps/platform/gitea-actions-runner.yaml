@@ -4,37 +4,25 @@ metadata:
   name: gitea-actions-runner
   namespace: argocd
   finalizers:
-    - resources-finalizer.argocd.argoproj.io
+  - resources-finalizer.argocd.argoproj.io
   annotations:
-    # Wave 4: alongside crossplane-providers/fluentd/kyverno-policies, after
-    # Gitea itself (wave 2). Its registration-token Secret
-    # (gitea-actions-runner-token, gitea namespace) is created imperatively
-    # by scripts/local-setup.nu configure_gitea_actions_runner during Phase 3
-    # (configure_gitea), which always completes before the final Phase 6
-    # convergence gate. The pod harmlessly sits in CreateContainerConfigError
-    # for the short window before that Secret exists -- the same tolerated
-    # pattern already used by every other Phase-3-provisioned Secret in this
-    # platform (e.g. crossplane-gitea-credentials, app-config-repo-creds).
-    argocd.argoproj.io/sync-wave: "4"
+    argocd.argoproj.io/sync-wave: '4'
 spec:
   project: default
-
   source:
     repoURL: https://github.com/digiorg/core.git
-    targetRevision: main
+    targetRevision: issue285-runtime-v9-20260724T122821Z
     path: platform/base/gitea-actions-runner
-
   destination:
     server: https://kubernetes.default.svc
     namespace: gitea
-
   syncPolicy:
     automated:
       selfHeal: true
       prune: true
     syncOptions:
-      - CreateNamespace=true
-      - ServerSideApply=true
+    - CreateNamespace=true
+    - ServerSideApply=true
     retry:
       limit: 5
       backoff:

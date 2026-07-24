@@ -4,28 +4,23 @@ metadata:
   name: crossplane-xrds
   namespace: argocd
   finalizers:
-    - resources-finalizer.argocd.argoproj.io
+  - resources-finalizer.argocd.argoproj.io
   annotations:
-    # Wave 7: Depends on Crossplane providers and ProviderConfigs (Wave 6) being ready
-    argocd.argoproj.io/sync-wave: "7"
-    platform.digiorg.io/upgrade-gate: "issue-275-manual"
+    argocd.argoproj.io/sync-wave: '7'
+    platform.digiorg.io/upgrade-gate: issue-275-manual
 spec:
   project: default
-
   source:
     repoURL: https://github.com/digiorg/core.git
-    targetRevision: main
+    targetRevision: issue285-runtime-v9-20260724T122821Z
     path: crossplane/xrds
-
   destination:
     server: https://kubernetes.default.svc
     namespace: crossplane-system
-
   syncPolicy:
-    # Manual until providers and ProviderConfigs report Healthy.
     syncOptions:
-      - CreateNamespace=true
-      - ServerSideApply=true
+    - CreateNamespace=true
+    - ServerSideApply=true
     retry:
       limit: 5
       backoff:

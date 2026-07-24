@@ -4,25 +4,25 @@ metadata:
   name: jaeger
   namespace: argocd
   finalizers:
-    - resources-finalizer.argocd.argoproj.io
+  - resources-finalizer.argocd.argoproj.io
   annotations:
-    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-wave: '2'
 spec:
   project: default
   sources:
-    - repoURL: https://jaegertracing.github.io/helm-charts
-      chart: jaeger
-      targetRevision: "4.11.1"
-      helm:
-        releaseName: jaeger
-        valueFiles:
-          - $values/platform/base/jaeger/values.yaml
-    - repoURL: https://github.com/digiorg/core.git
-      targetRevision: main
-      ref: values
-    - repoURL: https://github.com/digiorg/core.git
-      targetRevision: main
-      path: platform/base/jaeger
+  - repoURL: https://jaegertracing.github.io/helm-charts
+    chart: jaeger
+    targetRevision: 4.11.1
+    helm:
+      releaseName: jaeger
+      valueFiles:
+      - $values/platform/base/jaeger/values.yaml
+  - repoURL: https://github.com/digiorg/core.git
+    targetRevision: issue285-runtime-v9-20260724T122821Z
+    ref: values
+  - repoURL: https://github.com/digiorg/core.git
+    targetRevision: issue285-runtime-v9-20260724T122821Z
+    path: platform/base/jaeger
   destination:
     server: https://kubernetes.default.svc
     namespace: tracing
@@ -31,8 +31,8 @@ spec:
       selfHeal: true
       prune: true
     syncOptions:
-      - CreateNamespace=true
-      - ServerSideApply=true
+    - CreateNamespace=true
+    - ServerSideApply=true
     retry:
       limit: 5
       backoff:

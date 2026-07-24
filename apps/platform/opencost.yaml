@@ -4,39 +4,33 @@ metadata:
   name: opencost
   namespace: argocd
   finalizers:
-    - resources-finalizer.argocd.argoproj.io
+  - resources-finalizer.argocd.argoproj.io
   annotations:
-    argocd.argoproj.io/sync-wave: "2"
-    platform.digiorg.io/upgrade-gate: "issue-275-manual"
+    argocd.argoproj.io/sync-wave: '2'
+    platform.digiorg.io/upgrade-gate: issue-275-manual
 spec:
   project: default
   sources:
-    - repoURL: https://opencost.github.io/opencost-helm-chart
-      chart: opencost
-      # Issue #275: migrated 1.43.2 -> 2.x. Chart 2.5.27 ships appVersion 1.120.4
-      # (the release our custom subpath UI is built from). Values schema for our
-      # overrides (opencost.ui.image/extraEnv/uiPath, exporter, prometheus.external,
-      # customPricing, mcp, service.extraPorts) validated against the 2.5.27 chart
-      # tarball. Revalidate the exact patch against the chart repo before release.
-      targetRevision: "2.5.27"
-      helm:
-        releaseName: opencost
-        valueFiles:
-          - $values/platform/base/opencost/values.yaml
-    - repoURL: https://github.com/digiorg/core.git
-      targetRevision: main
-      ref: values
-    - repoURL: https://github.com/digiorg/core.git
-      targetRevision: main
-      path: platform/base/opencost
+  - repoURL: https://opencost.github.io/opencost-helm-chart
+    chart: opencost
+    targetRevision: 2.5.27
+    helm:
+      releaseName: opencost
+      valueFiles:
+      - $values/platform/base/opencost/values.yaml
+  - repoURL: https://github.com/digiorg/core.git
+    targetRevision: issue285-runtime-v9-20260724T122821Z
+    ref: values
+  - repoURL: https://github.com/digiorg/core.git
+    targetRevision: issue285-runtime-v9-20260724T122821Z
+    path: platform/base/opencost
   destination:
     server: https://kubernetes.default.svc
     namespace: cost-monitoring
   syncPolicy:
-    # Major chart migration: manually verify the /opencost contract before sync.
     syncOptions:
-      - CreateNamespace=true
-      - ServerSideApply=true
+    - CreateNamespace=true
+    - ServerSideApply=true
     retry:
       limit: 5
       backoff:

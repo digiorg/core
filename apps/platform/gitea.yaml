@@ -1,49 +1,33 @@
-# =============================================================================
-# Gitea ArgoCD Application
-# Deploys Gitea via official Helm chart with custom values
-# =============================================================================
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: gitea
   namespace: argocd
   finalizers:
-    - resources-finalizer.argocd.argoproj.io
+  - resources-finalizer.argocd.argoproj.io
   annotations:
-    # Wave 2: Depends on PostgreSQL (Wave 0) and Keycloak (Wave 1)
-    argocd.argoproj.io/sync-wave: "2"
-    platform.digiorg.io/upgrade-gate: "issue-275-manual"
+    argocd.argoproj.io/sync-wave: '2'
+    platform.digiorg.io/upgrade-gate: issue-275-manual
 spec:
   project: default
-  
   sources:
-    # Source 1: Gitea Helm chart
-    - repoURL: https://dl.gitea.com/charts/
-      chart: gitea
-      # Issue #275: migrated 10.6.0 -> 12.6.0 (appVersion Gitea 1.26.1).
-      # Breaking change: bundled cache provider moved Redis -> Valkey; the
-      # values file disables the now-default valkey-cluster/valkey subcharts.
-      # Revalidated 2026-07-18 against https://dl.gitea.com/charts/index.yaml.
-      targetRevision: "12.6.0"
-      helm:
-        releaseName: gitea
-        valueFiles:
-          - $values/platform/base/gitea/values.yaml
-    
-    # Source 2: Values from Git repository
-    - repoURL: https://github.com/digiorg/core.git
-      targetRevision: main
-      ref: values
-  
+  - repoURL: https://dl.gitea.com/charts/
+    chart: gitea
+    targetRevision: 12.6.0
+    helm:
+      releaseName: gitea
+      valueFiles:
+      - $values/platform/base/gitea/values.yaml
+  - repoURL: https://github.com/digiorg/core.git
+    targetRevision: issue285-runtime-v9-20260724T122821Z
+    ref: values
   destination:
     server: https://kubernetes.default.svc
     namespace: gitea
-  
   syncPolicy:
-    # Major chart/application DB migration: sync explicitly after backup.
     syncOptions:
-      - CreateNamespace=true
-      - ServerSideApply=true
+    - CreateNamespace=true
+    - ServerSideApply=true
     retry:
       limit: 5
       backoff:

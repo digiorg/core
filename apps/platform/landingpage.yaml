@@ -6,14 +6,14 @@ metadata:
   labels:
     app.kubernetes.io/part-of: digiorg-core-platform
   annotations:
-    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-wave: '2'
   finalizers:
-    - resources-finalizer.argocd.argoproj.io
+  - resources-finalizer.argocd.argoproj.io
 spec:
   project: default
   source:
     repoURL: https://github.com/digiorg/core.git
-    targetRevision: main
+    targetRevision: issue285-runtime-v9-20260724T122821Z
     path: platform/base/landingpage
   destination:
     server: https://kubernetes.default.svc
@@ -23,5 +23,5 @@ spec:
       prune: true
       selfHeal: true
     syncOptions:
-      - CreateNamespace=true
-      - ApplyOutOfSyncOnly=true
+    - CreateNamespace=true
+    - ApplyOutOfSyncOnly=true

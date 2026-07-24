@@ -4,29 +4,24 @@ metadata:
   name: namespaces
   namespace: argocd
   finalizers:
-    - resources-finalizer.argocd.argoproj.io
+  - resources-finalizer.argocd.argoproj.io
   annotations:
-    # Wave -1: Pre-create all platform namespaces before any workload app runs.
-    # This eliminates 409 Conflict races when multiple Wave 2 apps target the same namespace.
-    argocd.argoproj.io/sync-wave: "-1"
+    argocd.argoproj.io/sync-wave: '-1'
 spec:
   project: default
-
   source:
     repoURL: https://github.com/digiorg/core.git
-    targetRevision: main
+    targetRevision: issue285-runtime-v9-20260724T122821Z
     path: platform/base/namespaces
-
   destination:
     server: https://kubernetes.default.svc
     namespace: argocd
-
   syncPolicy:
     automated:
       selfHeal: true
-      prune: false  # Never prune namespaces — workloads may still be running
+      prune: false
     syncOptions:
-      - ServerSideApply=true
+    - ServerSideApply=true
     retry:
       limit: 5
       backoff:

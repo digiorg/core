@@ -4,82 +4,79 @@ metadata:
   name: harbor
   namespace: argocd
   finalizers:
-    - resources-finalizer.argocd.argoproj.io
+  - resources-finalizer.argocd.argoproj.io
   annotations:
-    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-wave: '2'
 spec:
   project: default
   sources:
-    - repoURL: https://helm.goharbor.io
-      chart: harbor
-      targetRevision: "1.19.1"
-      helm:
-        releaseName: harbor
-        valueFiles:
-          - $values/platform/base/harbor/values.yaml
-    - repoURL: https://github.com/digiorg/core.git
-      targetRevision: main
-      ref: values
-    - repoURL: https://github.com/digiorg/core.git
-      targetRevision: main
-      path: platform/base/harbor
+  - repoURL: https://helm.goharbor.io
+    chart: harbor
+    targetRevision: 1.19.1
+    helm:
+      releaseName: harbor
+      valueFiles:
+      - $values/platform/base/harbor/values.yaml
+  - repoURL: https://github.com/digiorg/core.git
+    targetRevision: issue285-runtime-v9-20260724T122821Z
+    ref: values
+  - repoURL: https://github.com/digiorg/core.git
+    targetRevision: issue285-runtime-v9-20260724T122821Z
+    path: platform/base/harbor
   destination:
     server: https://kubernetes.default.svc
     namespace: harbor
-  # The chart generates these internal values with randAlphaNum on every Helm
-  # render. Ignore only those generated keys and corresponding rollout checksums;
-  # all other Secret metadata and Deployment fields remain drift-managed.
   ignoreDifferences:
-    - group: ""
-      kind: Secret
-      name: harbor-core
-      jsonPointers:
-        - /data/CSRF_KEY
-        - /data/secret
-        - /data/tls.crt
-        - /data/tls.key
-    - group: ""
-      kind: Secret
-      name: harbor-jobservice
-      jsonPointers:
-        - /data/JOBSERVICE_SECRET
-    - group: ""
-      kind: Secret
-      name: harbor-registry
-      jsonPointers:
-        - /data/REGISTRY_HTTP_SECRET
-    - group: ""
-      kind: Secret
-      name: harbor-registry-htpasswd
-      jsonPointers:
-        - /data/REGISTRY_HTPASSWD
-    - group: apps
-      kind: Deployment
-      name: harbor-core
-      jsonPointers:
-        - /spec/template/metadata/annotations/checksum~1secret
-        - /spec/template/metadata/annotations/checksum~1secret-jobservice
-    - group: apps
-      kind: Deployment
-      name: harbor-jobservice
-      jsonPointers:
-        - /spec/template/metadata/annotations/checksum~1secret
-        - /spec/template/metadata/annotations/checksum~1secret-core
-    - group: apps
-      kind: Deployment
-      name: harbor-registry
-      jsonPointers:
-        - /spec/template/metadata/annotations/checksum~1secret
-        - /spec/template/metadata/annotations/checksum~1secret-core
-        - /spec/template/metadata/annotations/checksum~1secret-jobservice
+  - group: ''
+    kind: Secret
+    name: harbor-core
+    jsonPointers:
+    - /data/CSRF_KEY
+    - /data/secret
+    - /data/tls.crt
+    - /data/tls.key
+  - group: ''
+    kind: Secret
+    name: harbor-jobservice
+    jsonPointers:
+    - /data/JOBSERVICE_SECRET
+  - group: ''
+    kind: Secret
+    name: harbor-registry
+    jsonPointers:
+    - /data/REGISTRY_HTTP_SECRET
+  - group: ''
+    kind: Secret
+    name: harbor-registry-htpasswd
+    jsonPointers:
+    - /data/REGISTRY_HTPASSWD
+  - group: apps
+    kind: Deployment
+    name: harbor-core
+    jsonPointers:
+    - /spec/template/metadata/annotations/checksum~1secret
+    - /spec/template/metadata/annotations/checksum~1secret-jobservice
+  - group: apps
+    kind: Deployment
+    name: harbor-jobservice
+    jsonPointers:
+    - /spec/template/metadata/annotations/checksum~1secret
+    - /spec/template/metadata/annotations/checksum~1secret-core
+  - group: apps
+    kind: Deployment
+    name: harbor-registry
+    jsonPointers:
+    - /spec/template/metadata/annotations/checksum~1secret
+    - /spec/template/metadata/annotations/checksum~1secret-core
+    - /spec/template/metadata/annotations/checksum~1secret-jobservice
   syncPolicy:
     automated:
       selfHeal: true
       prune: true
     syncOptions:
-      - CreateNamespace=true
-      - ServerSideApply=true
-      - RespectIgnoreDifferences=true
+    - CreateNamespace=true
+    - ServerSideApply=true
+    - RespectIgnoreDifferences=true
     retry:
       limit: 5
       backoff:

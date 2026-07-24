@@ -4,51 +4,33 @@ metadata:
   name: sonarqube
   namespace: argocd
   finalizers:
-    - resources-finalizer.argocd.argoproj.io
+  - resources-finalizer.argocd.argoproj.io
   annotations:
-    # Wave 2: Code Quality tier — depends on PostgreSQL (wave 0) + Keycloak (wave 1)
-    argocd.argoproj.io/sync-wave: "2"
-    platform.digiorg.io/upgrade-gate: "issue-275-manual"
+    argocd.argoproj.io/sync-wave: '2'
+    platform.digiorg.io/upgrade-gate: issue-275-manual
 spec:
   project: default
-
   sources:
-    # SonarQube Community Build Helm chart
-    - repoURL: https://SonarSource.github.io/helm-chart-sonarqube
-      chart: sonarqube
-      # Issue #275: migrated 10.8.1 -> 2026.3.1 (SonarSource moved to calendar
-      # versioning). Community Build deployed via community.enabled + buildNumber
-      # in the values file. Revalidated 2026-07-18 against the chart index
-      # (https://SonarSource.github.io/helm-chart-sonarqube/index.yaml); the
-      # value keys this repo uses (jdbcOverwrite, monitoringPasscode*,
-      # sonarWebContext, deploymentType, initSysctl, sonarProperties) are all
-      # still valid in 2026.3.1. Follow the LTA/DB migration sequence in
-      # docs/guides/platform-versions.md before promoting real data.
-      targetRevision: "2026.3.1"
-      helm:
-        releaseName: sonarqube
-        valueFiles:
-          - $values/platform/base/sonarqube/values.yaml
-
-    # Reference to values file in Git repo
-    - repoURL: https://github.com/digiorg/core.git
-      targetRevision: main
-      ref: values
-
-    # Namespace + additional manifests via Kustomize
-    - repoURL: https://github.com/digiorg/core.git
-      targetRevision: main
-      path: platform/base/sonarqube
-
+  - repoURL: https://SonarSource.github.io/helm-chart-sonarqube
+    chart: sonarqube
+    targetRevision: 2026.3.1
+    helm:
+      releaseName: sonarqube
+      valueFiles:
+      - $values/platform/base/sonarqube/values.yaml
+  - repoURL: https://github.com/digiorg/core.git
+    targetRevision: issue285-runtime-v9-20260724T122821Z
+    ref: values
+  - repoURL: https://github.com/digiorg/core.git
+    targetRevision: issue285-runtime-v9-20260724T122821Z
+    path: platform/base/sonarqube
   destination:
     server: https://kubernetes.default.svc
     namespace: code-quality
-
   syncPolicy:
-    # Calendar-version/DB migration: follow the LTA sequence and sync manually.
     syncOptions:
-      - CreateNamespace=true
-      - ServerSideApply=true
+    - CreateNamespace=true
+    - ServerSideApply=true
     retry:
       limit: 5
       backoff:

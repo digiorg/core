@@ -4,40 +4,22 @@ metadata:
   name: cnpg-cluster
   namespace: argocd
   finalizers:
-    - resources-finalizer.argocd.argoproj.io
+  - resources-finalizer.argocd.argoproj.io
   annotations:
-    # Wave 10 (Issue #283): the CNPG Cluster — optional, future hosted-application
-    # database infrastructure. It never replaces or takes over the internal
-    # platform databases. Must sync AFTER the CNPG operator (apps/platform/cnpg.yaml,
-    # wave 9) so the postgresql.cnpg.io CRDs exist, and after every core-platform
-    # Application so it can never block core bootstrap. See
-    # docs/guides/cnpg-future-app-database.md.
-    argocd.argoproj.io/sync-wave: "10"
+    argocd.argoproj.io/sync-wave: '10'
 spec:
   project: default
-
   source:
     repoURL: https://github.com/digiorg/core.git
-    targetRevision: main
+    targetRevision: issue285-runtime-v9-20260724T122821Z
     path: platform/base/cnpg
-
   destination:
     server: https://kubernetes.default.svc
     namespace: platform-db
-
   syncPolicy:
-    # Issue #281: script-driven, NOT automated. On a clean bootstrap an automated
-    # sync applied Cluster/postgresql-cnpg before the CNPG operator's admission
-    # webhook accepted connections (`connection refused`), and the failed
-    # operation then stayed Running behind a Pending backup PVC so Argo's retry
-    # never recovered. The explicit `main future-infra` command first promotes
-    # the manual operator Application, waits for its Deployment and webhook,
-    # then syncs this Cluster with a fresh operation. It is never called by
-    # core bootstrap (Issue #283). Shared/
-    # production clusters follow docs/guides/cnpg-future-app-database.md.
     syncOptions:
-      - CreateNamespace=true
-      - ServerSideApply=true
+    - CreateNamespace=true
+    - ServerSideApply=true
     retry:
       limit: 10
       backoff:
