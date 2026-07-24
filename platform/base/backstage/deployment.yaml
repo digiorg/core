@@ -32,7 +32,7 @@ spec:
               echo "PostgreSQL is ready!"
       containers:
         - name: backstage
-          image: ghcr.io/digiorg/core-portal:b77e94a@sha256:44d00aba125e1e66d712222ec7f64cbc7cce02f05e5f05146af5af996bfe19dd
+          image: ghcr.io/digiorg/core-portal:e87210b@sha256:a255cf284f333741429ca84d17382d890a2536dc921a8d8ef189e14e2e6fb767
           imagePullPolicy: Always
           ports:
             - containerPort: 7007
@@ -66,10 +66,14 @@ spec:
             # Keycloak OIDC configuration
             - name: AUTH_OIDC_METADATA_URL
               value: "https://digiorg.local/keycloak/realms/digiorg-core-platform/.well-known/openid-configuration"
-            # Skip TLS verification for self-signed cert in local dev
-            # Remove NODE_TLS_REJECT_UNAUTHORIZED in production (use proper CA trust instead)
-            - name: NODE_TLS_REJECT_UNAUTHORIZED
-              value: "0"
+            # Issue #285 (TLS hardening): trust the digiorg.local CA via a
+            # mounted copy of the public certificate (see the
+            # digiorg-local-ca volume below), never
+            # NODE_TLS_REJECT_UNAUTHORIZED=0 -- that disables certificate
+            # verification for every outbound HTTPS call this process makes
+            # (Keycloak OIDC discovery, the Gitea integration), not just one.
+            - name: NODE_EXTRA_CA_CERTS
+              value: /etc/digiorg/ca/ca.crt
             - name: AUTH_OIDC_CLIENT_ID
               value: backstage
             - name: AUTH_OIDC_CLIENT_SECRET
@@ -85,6 +89,19 @@ spec:
                   name: backstage-secrets
                   key: GITHUB_TOKEN
                   optional: true
+            # Gitea integration (Issue #285): required for the AppClaim
+            # GitOps create-pull-request publish action. Dedicated
+            # least-privilege identity (write access to DigiOrg/app-config
+            # only), provisioned by scripts/local-setup.nu
+            # configure_backstage_gitea_publisher -- never the platform
+            # bootstrap/admin token. Fail-closed (not optional): publishing
+            # must never silently no-op with an empty credential.
+            - name: GITEA_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: backstage-gitea-credentials
+                  key: GITEA_TOKEN
+                  optional: false
             # Kubernetes Ingestor — in-cluster configuration
             # KUBERNETES_API_URL: internal cluster API server (Backstage runs in-cluster)
             - name: KUBERNETES_API_URL
@@ -96,6 +113,13 @@ spec:
                   name: backstage-k8s-token
                   key: token
                   optional: true
+          volumeMounts:
+            # Public certificate only (never cert-manager's private key) --
+            # kept in sync by scripts/local-setup.nu
+            # copy_digiorg_local_ca_to_namespace.
+            - name: digiorg-local-ca
+              mountPath: /etc/digiorg/ca
+              readOnly: true
           resources:
             requests:
               memory: "512Mi"
@@ -117,3 +141,7 @@ spec:
             initialDelaySeconds: 120
             periodSeconds: 30
             failureThreshold: 5
+      volumes:
+        - name: digiorg-local-ca
+          secret:
+            secretName: digiorg-local-ca

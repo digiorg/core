@@ -1,0 +1,11 @@
+apiVersion: pkg.crossplane.io/v1beta1
+kind: Function
+metadata:
+  name: function-auto-ready
+spec:
+  # Issue #285: paired with function-kcl (same pipeline) so composed Object/
+  # Request resources get real per-resource readiness checks instead of the
+  # composite's Ready condition defaulting to unready forever. v0.7.0 is the
+  # latest crossplane-contrib release. Revalidated 2026-07-21 against
+  # https://github.com/crossplane-contrib/function-auto-ready/releases.
+  package: xpkg.upbound.io/crossplane-contrib/function-auto-ready:v0.7.0

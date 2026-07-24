@@ -21,6 +21,50 @@ IMAGE_RE = re.compile(r"^\s*image:\s*[\"']?([^\"'\s]+)", re.MULTILINE)
 FLOATING_RE = re.compile(r"(?i)(?::|^)(latest|main|master|head)$")
 
 
+def nats_env_contract_errors(rendered: str) -> list[str]:
+    stateful_set = next(
+        (
+            document
+            for document in yaml.safe_load_all(rendered)
+            if isinstance(document, dict)
+            and document.get("kind") == "StatefulSet"
+            and document.get("metadata", {}).get("name") == "nats"
+        ),
+        None,
+    )
+    if stateful_set is None:
+        return ["nats: rendered StatefulSet/nats was not found"]
+
+    containers = stateful_set["spec"]["template"]["spec"].get("containers", [])
+    nats = next((container for container in containers if container.get("name") == "nats"), None)
+    if nats is None:
+        return ["nats: rendered StatefulSet/nats has no nats container"]
+
+    expected = {
+        "POD_NAME": {"valueFrom": {"fieldRef": {"fieldPath": "metadata.name"}}},
+        "SERVER_NAME": {"value": "$(POD_NAME)"},
+        "NATS_JSC_NKEY_PUBLIC": {
+            "valueFrom": {
+                "secretKeyRef": {
+                    "name": "nats-jetstream-controller-nkey",
+                    "key": "public.nk",
+                }
+            }
+        },
+    }
+    env = nats.get("env", [])
+    errors: list[str] = []
+    for name, fields in expected.items():
+        matches = [item for item in env if item.get("name") == name]
+        if len(matches) != 1:
+            errors.append(
+                f"nats: rendered nats container must have exactly one {name} env entry"
+            )
+        elif any(matches[0].get(key) != value for key, value in fields.items()):
+            errors.append(f"nats: rendered nats container has an invalid {name} env entry")
+    return errors
+
+
 def sources(app: dict) -> list[dict]:
     spec = app.get("spec", {})
     return spec.get("sources") or ([spec["source"]] if "source" in spec else [])
@@ -59,6 +103,7 @@ def main() -> int:
     rendered = 0
     floating: list[str] = []
     tag_only: set[str] = set()
+    contract_errors: list[str] = []
 
     with tempfile.TemporaryDirectory(prefix="platform-chart-values-") as td:
         tmp = Path(td)
@@ -86,6 +131,8 @@ def main() -> int:
                     return proc.returncode
                 out.write_text(proc.stdout, encoding="utf-8")
                 rendered += 1
+                if name == "nats":
+                    contract_errors.extend(nats_env_contract_errors(proc.stdout))
                 for ref in IMAGE_RE.findall(proc.stdout):
                     # CRD OpenAPI schemas contain `image: description:` prose;
                     # only OCI-like scalar references participate in the policy.
@@ -104,6 +151,11 @@ def main() -> int:
         print("Floating rendered images:", file=sys.stderr)
         for item in floating:
             print(f"  ERROR {item}", file=sys.stderr)
+    if contract_errors:
+        print("Rendered chart contract errors:", file=sys.stderr)
+        for item in contract_errors:
+            print(f"  ERROR {item}", file=sys.stderr)
+    if floating or contract_errors:
         return 1
     print(f"HELM_RENDER_PASS={rendered}; no floating rendered image tags")
     return 0

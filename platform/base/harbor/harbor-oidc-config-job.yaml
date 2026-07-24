@@ -44,17 +44,21 @@ spec:
             - -c
             - |
               set -e
-              HARBOR_API="http://harbor.harbor.svc.cluster.local/api/v2.0"
+              HARBOR_API="https://digiorg.local/api/v2.0"
+              CA_CERT="/etc/digiorg-ca/ca.crt"
+
+              echo "Waiting for the digiorg.local public CA..."
+              until [ -s "${CA_CERT}" ]; do sleep 2; done
 
               echo "Waiting for Harbor API to be ready..."
-              until curl -sf "${HARBOR_API}/ping" > /dev/null 2>&1; do
+              until curl --cacert "${CA_CERT}" -sf "${HARBOR_API}/ping" > /dev/null 2>&1; do
                 echo "  Harbor not ready yet, retrying in 5s..."
                 sleep 5
               done
               echo "Harbor API is ready."
 
               echo "Configuring OIDC authentication..."
-              HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
+              HTTP_STATUS=$(curl --cacert "${CA_CERT}" -s -o /dev/null -w "%{http_code}" -X PUT \
                 -u "admin:${HARBOR_ADMIN_PASSWORD}" \
                 -H "Content-Type: application/json" \
                 -d "{
@@ -64,7 +68,7 @@ spec:
                   \"oidc_client_id\": \"harbor\",
                   \"oidc_client_secret\": \"${OIDC_CLIENT_SECRET}\",
                   \"oidc_scope\": \"openid,profile,email\",
-                  \"oidc_verify_cert\": false,
+                  \"oidc_verify_cert\": true,
                   \"oidc_auto_onboard\": true,
                   \"oidc_user_claim\": \"preferred_username\",
                   \"oidc_groups_claim\": \"groups\"
@@ -77,3 +81,12 @@ spec:
                 echo "ERROR: Harbor API returned HTTP ${HTTP_STATUS}. OIDC configuration failed."
                 exit 1
               fi
+          volumeMounts:
+            - name: digiorg-local-ca
+              mountPath: /etc/digiorg-ca
+              readOnly: true
+      volumes:
+        - name: digiorg-local-ca
+          secret:
+            secretName: digiorg-local-ca
+            optional: true

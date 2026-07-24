@@ -111,13 +111,19 @@ class CoreDataLayerWaveTest(unittest.TestCase):
 class CnpgDecoupledWaveTest(unittest.TestCase):
     """CNPG is optional future-app infrastructure and must never gate core waves."""
 
+    # app-config is deliberately NOT a member here: unlike these, it must sync
+    # AFTER cnpg/cnpg-cluster (an AppClaim's database.enabled path depends on
+    # the CNPG prerequisite being resolvable), not before — see
+    # test_appclaim_delivery.AppConfigDeliveryWiringTest and
+    # apps/platform/app-config.yaml's own wave-11 comment.
     CORE_APPS = (
         "namespaces", "cert-manager", "external-secrets", "nats", "postgresql",
-        "opensearch", "keycloak", "argocd", "backstage", "gitea", "grafana",
+        "opensearch", "keycloak", "argocd", "nats-jetstream-controller",
+        "backstage", "gitea", "grafana",
         "harbor", "jaeger", "landingpage", "opencost", "sonarqube",
         "crossplane", "kyverno", "crossplane-providers", "fluentd",
         "kyverno-policies", "monitoring-extras", "crossplane-provider-configs",
-        "crossplane-xrds", "core-catalog",
+        "crossplane-xrds", "crossplane-harbor-bootstrap", "core-catalog",
     )
 
     def test_cnpg_operator_syncs_after_every_core_application(self):

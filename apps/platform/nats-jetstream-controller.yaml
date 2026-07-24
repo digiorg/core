@@ -1,0 +1,93 @@
+# =============================================================================
+# NACK (NATS Controller for Kubernetes) - JetStream Controller
+#
+# Issue #285 architecture decision #4: messaging means managed NATS JetStream
+# Stream/Consumer resources. The core-catalog pipeline Composition renders
+# jetstream.nats.io/v1beta2 Stream/Consumer objects per AppClaim; this
+# controller (NACK) is what actually reconciles those CRs against the
+# platform's NATS server. Without it, Stream/Consumer objects would sit
+# unreconciled in the cluster forever.
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: nats-jetstream-controller
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    # Wave 1: only needs NATS (wave 0) reachable at the Service DNS name; the
+    # controller retries its own connection, so it does not gate core bootstrap.
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+
+  source:
+    repoURL: https://nats-io.github.io/k8s/helm/charts
+    chart: nack
+    # Revalidated 2026-07-21 against https://nats-io.github.io/k8s/helm/charts/index.yaml.
+    # jetstream.image.tag 0.23.0 (bundled in this chart version) matches the
+    # jetstream.nats.io/v1beta2 CRD contract the pipeline Composition renders
+    # against (nats-io/nack v0.23.0 deploy/crds.yml).
+    targetRevision: "0.34.0"
+    helm:
+      releaseName: nats-jetstream-controller
+      values: |
+        namespaced: false
+        # The chart default grants cluster-wide get/list/watch on every Secret.
+        # NACK only needs the seed through a Kubelet-projected volume, so retain
+        # event writes and JetStream CRD reconciliation but remove Secret API access.
+        rbacRules: |
+          rules:
+            - apiGroups: [""]
+              resources: ["events"]
+              verbs: ["create", "update", "patch"]
+            - apiGroups: ["jetstream.nats.io"]
+              resources:
+                - streams
+                - streams/status
+                - objectstores
+                - objectstores/status
+                - keyvalues
+                - keyvalues/status
+                - consumers
+                - consumers/status
+                - streamtemplates
+                - streamtemplates/status
+                - accounts
+                - accounts/status
+              verbs: ["create", "get", "list", "watch", "patch", "update", "delete"]
+        jetstream:
+          enabled: true
+          nats:
+            url: "nats://nats.messaging.svc.cluster.local:4222"
+            nkey:
+              secret:
+                name: nats-jetstream-controller-nkey
+                key: seed.nk
+          controlLoop: false
+        resources:
+          requests:
+            cpu: 25m
+            memory: 32Mi
+          limits:
+            cpu: 100m
+            memory: 128Mi
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: messaging
+
+  syncPolicy:
+    automated:
+      selfHeal: true
+      prune: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

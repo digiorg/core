@@ -77,16 +77,17 @@ ArgoCD creates the child Applications via the root App. The core Applications us
 | bootstrap | root-app | Deployed by the script after the core data layer is functionally ready |
 | -1 | namespaces | Pre-create platform namespaces |
 | 0 | cert-manager, external-secrets, nats, opensearch, postgresql | Foundation + core data layer |
-| 1 | keycloak, argocd | Identity + self-managed ArgoCD |
+| 1 | keycloak, argocd, nats-jetstream-controller | Identity + self-managed ArgoCD + NACK JetStream controller |
 | 2 | backstage, gitea, grafana, harbor, jaeger, landingpage, opencost, sonarqube | Platform services |
 | 3 | crossplane, kyverno | Extensions and policy |
 | 4 | crossplane-providers, fluentd, kyverno-policies | Provider plugins, log shipping, policies |
 | 5 | monitoring-extras | ServiceMonitors (requires monitoring stack) |
 | 6 | crossplane-provider-configs | Provider configurations |
-| 7 | crossplane-xrds | Composite Resource Definitions |
-| 8 | core-catalog | Core catalog |
+| 7 | crossplane-xrds, crossplane-harbor-bootstrap | Composite Resource Definitions + least-privilege Harbor system robot (Issue #285) |
+| 8 | core-catalog | Core catalog (single deterministic AppClaim pipeline Composition) |
 | 9 | cnpg | **Manual** optional future-app database operator |
 | 10 | cnpg-cluster | **Manual** optional future-app database cluster |
+| 11 | app-config | AppClaim GitOps sink (Issue #285) — reconciles merged AppClaim manifests from the private DigiOrg/app-config Gitea repository |
 
 `up` directly applies PostgreSQL and OpenSearch and proves their real Service paths ready before creating the root App. Sync waves alone are not used as a readiness guarantee. CNPG is never promoted by `up`; run `nu scripts/local-setup.nu future-infra` explicitly when the optional future-app database infrastructure is required.
 
@@ -102,8 +103,12 @@ After all core ArgoCD apps reach their required state, the script runs the post-
 - Registers the self-signed CA cert in the Gitea container trust store
 - Adds Keycloak as an OIDC provider via `gitea admin auth add-oauth` CLI inside the pod
 - Creates initial realm users: `digiorgadmin` and `digiorgdeveloper`
-- Creates the `DigiOrg` organisation via the `tea` CLI (v0.9.2, downloaded into the pod)
+- Creates the `DigiOrg` organisation via the Gitea REST API (bootstrap admin token, generated once and persisted to `gitea/gitea-bootstrap-token`)
 - Adds both users to the DigiOrg Owners team via the Gitea API
+- **(Issue #285)** `configure_app_config_repo`: creates the private `DigiOrg/app-config` repository — the GitOps sink `apps/platform/app-config.yaml` watches — and seeds its `claims/` directory (matching core-portal's `publishPhase.git.targetPath` exactly)
+- **(Issue #285)** `configure_crossplane_gitea_credentials`: creates a dedicated `crossplane-provisioner` Gitea user + `platform-provisioners` team (repo-create only, no org admin), generates a `write:repository`-only token, and persists it to `crossplane-system/crossplane-gitea-credentials` — the Secret the AppClaim pipeline Composition's `{{ crossplane-gitea-credentials:crossplane-system:token }}` placeholders read
+- **(Issue #285)** `configure_argocd_gitea_access`: creates a dedicated `argocd-reader` Gitea user with `read`-only collaborator access on `DigiOrg/app-config` only, generates a `read:repository`-only token, and persists the ArgoCD repository-credential Secret `argocd/app-config-repo-creds`
+- All three new steps are resume-safe: if their target Secret already exists, it is preserved and the step is a no-op
 
 #### b) `configure_sonarqube`
 - Waits for SonarQube to report status `UP`
@@ -116,7 +121,10 @@ After all core ArgoCD apps reach their required state, the script runs the post-
 Restarts ArgoCD Server, Grafana, Backstage, and Landing Page to pick up Keycloak OIDC configuration.
 
 #### d) `patch_argocd_oidc_ca` (runs during Phase 2 wait)
-Embeds the self-signed CA certificate into the ArgoCD Helm release via `helm upgrade --reuse-values` so ArgoCD self-sync does not overwrite it. The cert is also saved to `./digiorg-local-ca.crt` for local trust store import.
+Embeds the self-signed CA certificate into the ArgoCD Helm release via `helm upgrade --reuse-values` so ArgoCD self-sync does not overwrite it. The cert is also saved to `./digiorg-local-ca.crt` for local trust store import. **(Issue #285)** The private `DigiOrg/app-config` GitOps sink repository is cloned through the trusted `https://digiorg.local/gitea` ingress; Argo CD receives the local CA so credential-bearing Git traffic never falls back to plaintext HTTP.
+
+#### e) Declarative Harbor system-robot bootstrap (`crossplane-harbor-bootstrap` Application, Issue #285)
+Not a Nushell step: `crossplane/bootstrap/harbor-robot-request.yaml` is a `provider-http` `Request` applied by ArgoCD (wave 7) that creates a least-privilege Harbor **system** robot (`project:create` system-wide plus `robot:create`, `robot:read`, and `artifact:read` project-wildcard access — never delete/user/registry access) using the Harbor admin Basic-auth value `create_platform_namespaces_secrets` precomputes into `harbor/harbor-admin-basic-auth`. Its response is captured via `secretInjectionConfigs` into `crossplane-system/crossplane-harbor-credentials` (`name`, `secret`, and a precomputed `basicAuth`), which the AppClaim pipeline Composition's Harbor project/robot `Request` resources read.
 
 ## Service Access
 

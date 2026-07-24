@@ -1,0 +1,95 @@
+# Issue #285 (TLS hardening): act_runner v0.6.1's entrypoint
+# (gitea.com/gitea/runner scripts/run.sh @ tag v0.6.1) only passes --config
+# to `act_runner register`/`daemon` when CONFIG_FILE is set -- there is no
+# other way to reach container.options, which is how the CA is mounted into
+# every ephemeral job container below (confirmed against the pinned
+# internal/pkg/config/config.example.yaml at the same tag).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gitea-actions-runner-config
+  namespace: gitea
+data:
+  config.yaml: |
+    log:
+      level: info
+    runner:
+      insecure: false
+    container:
+      privileged: true
+      # Bind-mounts the runner pod's own copy of the digiorg-local CA
+      # (mounted at /etc/digiorg/ca/ca.crt, see deployment.yaml) into every
+      # job container the embedded dockerd creates, at the path the
+      # generated CI workflow's GIT_SSL_CAINFO/NODE_EXTRA_CA_CERTS env vars
+      # point to (core-catalog compositions/local/pipeline.yaml
+      # jobContainerCaCertPath) -- so actions/checkout's git clone and any
+      # Node-based step both trust the same CA the runner itself does.
+      options: "--volume=/etc/digiorg/ca/ca.crt:/etc/digiorg/ca/ca.crt:ro"
+  # Issue #285 core review: the pinned image's own entrypoint
+  # (gitea.com/gitea/runner scripts/run.sh @ v0.6.1) reads
+  # GITEA_RUNNER_REGISTRATION_TOKEN_FILE into an env var and then passes it
+  # as `act_runner register --token <value>` -- a literal argv value,
+  # visible via `ps`/`/proc/<pid>/cmdline` to anything with exec access to
+  # the container for the life of that subprocess. This script is mounted
+  # over /usr/local/bin/run.sh (see deployment.yaml), which the image's
+  # s6-supervised act_runner service execs by name (scripts/s6/act_runner/run
+  # @ the same tag), and instead feeds the token to act_runner's
+  # *interactive* register path on stdin: omitting --no-interactive and
+  # --token drops into registerInteractive (internal/app/cmd/register.go @
+  # v0.6.1), which only prompts (reads stdin) for a stage whose value is
+  # still empty -- pre-filling --instance/--name/--labels as flags means the
+  # token is the only stdin prompt ever reached, and it never appears in the
+  # process's own argv or as an env var.
+  run.sh: |
+    #!/usr/bin/env bash
+
+    if [[ ! -d /data ]]; then
+      mkdir -p /data
+    fi
+    cd /data
+
+    RUNNER_STATE_FILE=".runner"
+
+    CONFIG_ARG=""
+    if [[ -n "${CONFIG_FILE:-}" ]]; then
+      CONFIG_ARG="--config ${CONFIG_FILE}"
+    fi
+    LABEL_ARG=""
+    if [[ -n "${GITEA_RUNNER_LABELS:-}" ]]; then
+      LABEL_ARG="--labels ${GITEA_RUNNER_LABELS}"
+    fi
+
+    # Registration state on the PVC makes re-registration resume-stable: a
+    # non-empty .runner file means this runner already registered in a
+    # previous run, so registration (and the token read below) is skipped
+    # entirely.
+    if [[ ! -s "$RUNNER_STATE_FILE" ]]; then
+      if [[ -z "${GITEA_RUNNER_REGISTRATION_TOKEN_FILE:-}" ]] || [[ ! -f "${GITEA_RUNNER_REGISTRATION_TOKEN_FILE}" ]]; then
+        echo "GITEA_RUNNER_REGISTRATION_TOKEN_FILE is not set or does not exist" >&2
+        exit 1
+      fi
+
+      try=0
+      success=0
+      while [[ $success -eq 0 ]] && [[ $try -lt ${GITEA_MAX_REG_ATTEMPTS:-10} ]]; do
+        try=$((try + 1))
+        printf '%s\n' "$(cat "${GITEA_RUNNER_REGISTRATION_TOKEN_FILE}")" | act_runner register \
+          --instance "${GITEA_INSTANCE_URL}" \
+          --name     "${GITEA_RUNNER_NAME:-$(hostname)}" \
+          ${CONFIG_ARG} ${LABEL_ARG} 2>&1 | tee /tmp/reg.log
+
+        if grep -q 'Runner registered successfully' /tmp/reg.log; then
+          success=1
+        else
+          echo "Waiting to retry ..."
+          sleep 5
+        fi
+      done
+
+      if [[ $success -eq 0 ]]; then
+        echo "Failed to register the Gitea Actions runner after ${GITEA_MAX_REG_ATTEMPTS:-10} attempts" >&2
+        exit 1
+      fi
+    fi
+
+    exec act_runner daemon ${CONFIG_ARG}

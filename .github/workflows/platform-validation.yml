@@ -34,10 +34,9 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install PyYAML
+      - name: Install Python test dependencies
         run: |
-          printf '%s\n' 'PyYAML==6.0.3 --hash=sha256:ba1cc08a7ccde2d2ec775841541641e4548226580ab850948cbfda66a1befcdc' > /tmp/pyyaml-requirements.txt
-          python3 -m pip install --disable-pip-version-check --only-binary=:all: --require-hashes -r /tmp/pyyaml-requirements.txt
+          python3 -m pip install --disable-pip-version-check --only-binary=:all: --require-hashes -r .github/requirements-platform-validation-py312-linux.txt
 
       - name: Pin policy (reject floating / unpinned references)
         run: python3 scripts/check_pins.py

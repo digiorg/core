@@ -108,7 +108,7 @@ See `platform/base/ingress/README.md` for routing details and ExternalName servi
 
 ## Wave Deployment Order
 
-The 27 child Applications carry the ordering metadata below; ingress is applied during cluster bootstrap by `local-setup.nu`. Sync waves are not a cross-Application readiness guarantee: the script directly applies and probes PostgreSQL and OpenSearch before it creates the root App.
+The 30 child Applications carry the ordering metadata below; ingress is applied during cluster bootstrap by `local-setup.nu`. Sync waves are not a cross-Application readiness guarantee: the script directly applies and probes PostgreSQL and OpenSearch before it creates the root App.
 
 | Wave | Component | Namespace |
 |------|-----------|-----------|
@@ -120,6 +120,7 @@ The 27 child Applications carry the ordering metadata below; ingress is applied 
 | 0 | postgresql | platform-db |
 | 1 | argocd | argocd |
 | 1 | keycloak | keycloak |
+| 1 | nats-jetstream-controller | messaging |
 | 2 | backstage | backstage |
 | 2 | gitea | gitea |
 | 2 | grafana | monitoring |
@@ -133,12 +134,15 @@ The 27 child Applications carry the ordering metadata below; ingress is applied 
 | 4 | crossplane-providers | crossplane-system |
 | 4 | fluentd | logging |
 | 4 | kyverno-policies | kyverno |
+| 4 | gitea-actions-runner | gitea |
 | 5 | monitoring-extras | monitoring |
 | 6 | crossplane-provider-configs | crossplane-system |
 | 7 | crossplane-xrds | crossplane-system |
+| 7 | crossplane-harbor-bootstrap | crossplane-system |
 | 8 | core-catalog | crossplane-system |
 | 9 | cnpg (**manual**) | cnpg-system |
 | 10 | cnpg-cluster (**manual**) | platform-db |
+| 11 | app-config | app-claims |
 
 Wave 0 contains the foundation and permanent core data layer. Normal `up` does not sync the manual CNPG Applications in waves 9–10. Use `nu scripts/local-setup.nu future-infra` to promote the optional future hosted-application database operator and Cluster in a fail-closed sequence.
 

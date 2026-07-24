@@ -58,8 +58,14 @@ def _run_with_fake_curl(fake_curl):
         env = os.environ.copy()
         env["PATH"] = tmp + os.pathsep + env["PATH"]
         env["HARBOR_ADMIN_PASSWORD"] = "fixture-password-never-print"
+        # Model the optional Secret volume after the bootstrap has populated it.
+        # Keep the harness unprivileged and isolated rather than writing /etc.
+        ca_path = os.path.join(tmp, "ca.crt")
+        with open(ca_path, "w", encoding="utf-8") as fh:
+            fh.write("fixture-public-ca\n")
+        script = _script().replace("/etc/digiorg-ca/ca.crt", ca_path)
         return subprocess.run(
-            ["/bin/sh", "-c", _script()],
+            ["/bin/sh", "-c", script],
             capture_output=True,
             text=True,
             env=env,

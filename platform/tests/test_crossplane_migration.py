@@ -43,14 +43,14 @@ FUNCTION = os.path.join(PKG_DIR, "function-patch-and-transform.yaml")
 PROVIDER_KUSTOMIZATION = os.path.join(PKG_DIR, "kustomization.yaml")
 VERSIONS_DOC = os.path.join(REPO_ROOT, "docs", "guides", "platform-versions.md")
 
-# core-catalog PR #17 merged as this commit; a GitHub comparison shows it one
-# commit ahead of the old implementation SHA with NO changed files, and
-# core-catalog/main points at it. Pin the canonical *reviewed merge* commit for
-# traceability (Issue #281 Phase 4). Update this constant, the manifest, and the
-# versions doc together when the reviewed revision advances.
-CANONICAL_CATALOG_REVISION = "13b7a3b4a0b7a5f5e692dc6d5a3fa416852c4273"
-# The prior (non-canonical) implementation SHA must no longer be referenced.
-SUPERSEDED_CATALOG_REVISION = "4c30d9c3fa5c3c401c19f26b66a025854c65ee02"
+# core-catalog PR #18's exact independently reviewed Issue #285 head. Keep the
+# Core pin, manifest documentation, and this constant aligned. If GitHub creates
+# a different merge/squash commit, update all three before merging the Core PR.
+REVIEWED_CATALOG_REVISION = "7fd51323db2c38e7ca36f5496e22686a93aa9fc4"
+SUPERSEDED_CATALOG_REVISIONS = (
+    "13b7a3b4a0b7a5f5e692dc6d5a3fa416852c4273",
+    "4c30d9c3fa5c3c401c19f26b66a025854c65ee02",
+)
 
 # Revalidated compatible provider package versions (exact pins).
 EXPECTED_PROVIDERS = {
@@ -144,24 +144,25 @@ class XrdLegacyClusterCompatTest(unittest.TestCase):
                             "Namespaced scope drops Claims support in Crossplane v2")
 
 
-class CoreCatalogCanonicalPinTest(unittest.TestCase):
-    """core-catalog must pin the canonical reviewed merge commit, stay immutable,
-    and remain manually gated (Issue #281 Phase 4)."""
+class CoreCatalogReviewedRevisionPinTest(unittest.TestCase):
+    """Core must pin the exact reviewed Issue #285 PR #18 head and keep the
+    Catalog Application immutable and manually gated."""
 
     def setUp(self):
         self.app = _docs(CATALOG_APP)[0]
 
-    def test_pins_canonical_merge_commit(self):
+    def test_pins_reviewed_issue_285_pr_head(self):
         rev = str(self.app["spec"]["source"]["targetRevision"])
         self.assertEqual(
-            rev, CANONICAL_CATALOG_REVISION,
-            "core-catalog must pin the canonical reviewed merge commit",
+            rev, REVIEWED_CATALOG_REVISION,
+            "core-catalog must pin the exact reviewed Issue #285 PR #18 head",
         )
 
     def test_superseded_revision_not_referenced_anywhere(self):
         # The old implementation SHA must be gone from the manifest and the doc.
-        self.assertNotIn(SUPERSEDED_CATALOG_REVISION, _read(CATALOG_APP))
-        self.assertNotIn(SUPERSEDED_CATALOG_REVISION, _read(VERSIONS_DOC))
+        for revision in SUPERSEDED_CATALOG_REVISIONS:
+            self.assertNotIn(revision, _read(CATALOG_APP))
+            self.assertNotIn(revision, _read(VERSIONS_DOC))
 
     def test_revision_is_immutable_40_hex(self):
         rev = str(self.app["spec"]["source"]["targetRevision"])
@@ -178,11 +179,11 @@ class CoreCatalogCanonicalPinTest(unittest.TestCase):
             "issue-275-manual",
         )
 
-    def test_versions_doc_records_canonical_revision(self):
+    def test_versions_doc_records_reviewed_revision(self):
         # The reviewed revision must be documented so the pin is traceable.
-        self.assertIn(CANONICAL_CATALOG_REVISION,
+        self.assertIn(REVIEWED_CATALOG_REVISION,
                       _read(VERSIONS_DOC),
-                      "platform-versions.md must record the canonical catalog revision")
+                      "platform-versions.md must record the reviewed catalog revision")
 
 
 if __name__ == "__main__":

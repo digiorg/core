@@ -38,10 +38,25 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ALLOWLIST_PATH = os.path.join(SCRIPT_DIR, "pin-policy-allowlist.yaml")
 
 # Directories scanned for manifests (repo-relative).
-SCAN_DIRS = ("apps", "platform/base")
+SCAN_DIRS = ("apps", "platform/base", "crossplane/providers/packages")
 
 # First-party repositories: GitOps self-references may track ``main``.
-FIRST_PARTY_REPOS = ("https://github.com/digiorg/core.git", "https://github.com/digiorg/core")
+#
+# ``https://digiorg.local/gitea/DigiOrg/app-config.git``
+# (Issue #285) is the platform's own GitOps sink for generated AppClaim
+# manifests, not an external supply-chain dependency: DigiOrg controls it,
+# every change is a reviewed pull request, and its entire purpose is that
+# merging a PR to ``main`` reconciles immediately. Pinning it to a commit
+# (like the external ``digiorg/core-catalog`` dependency, which legitimately
+# needs reproducible pins) would require a core-repo change for every single
+# AppClaim and defeat the self-service delivery path this issue exists to
+# unblock. The trusted ingress URL is used with the local CA distributed to
+# Argo CD -- see apps/platform/app-config.yaml and local-setup.nu.
+FIRST_PARTY_REPOS = (
+    "https://github.com/digiorg/core.git",
+    "https://github.com/digiorg/core",
+    "https://digiorg.local/gitea/DigiOrg/app-config.git",
+)
 
 DIGEST_RE = re.compile(r"@sha256:[0-9a-f]{64}$")
 EXACT_SEMVER_RE = re.compile(r"^v?\d+\.\d+\.\d+([-.][0-9A-Za-z.-]+)?$")
@@ -56,7 +71,7 @@ IMAGE_LIKE_RE = re.compile(r"^[a-z0-9]([a-z0-9._/-]*[a-z0-9])?(:[\w][\w.-]*)?(@s
 class Violation:
     file: str
     line: int
-    kind: str  # "image" | "chart" | "git"
+    kind: str  # "image" | "chart" | "git" | "package"
     ref: str
     message: str
 
@@ -111,6 +126,37 @@ def _check_chart_rev(rev) -> str | None:
     if not EXACT_SEMVER_RE.match(rev):
         return f"chart targetRevision '{rev}' is not an exact SemVer"
     return None
+
+
+def _check_package_rev(ref: str) -> str | None:
+    """Validate a Crossplane Provider/Function `spec.package` xpkg reference.
+
+    Same exact-SemVer discipline as Helm chart pins (Issue #285 added
+    function-kcl/function-auto-ready alongside the pre-existing
+    provider-http/provider-kubernetes/provider-helm/function-patch-and-transform
+    packages, none of which were previously covered by any pin check).
+    """
+    if not ref or ":" not in ref:
+        return f"package '{ref}' has no tag — pin an exact version"
+    tag = ref.rsplit(":", 1)[-1]
+    if tag in ("latest", "main", "master", "stable", "edge", ""):
+        return f"package tag ':{tag}' is floating — pin an exact version"
+    if RANGE_CHARS_RE.search(tag):
+        return f"package tag '{tag}' is a range/wildcard — pin an exact version"
+    if not EXACT_SEMVER_RE.match(tag):
+        return f"package tag '{tag}' is not an exact SemVer"
+    return None
+
+
+def _walk_package_refs(doc, out: list):
+    """Collect `spec.package` from Crossplane Provider/Function manifests."""
+    if not isinstance(doc, dict):
+        return
+    kind = doc.get("kind")
+    if kind in ("Provider", "Function"):
+        pkg = (doc.get("spec") or {}).get("package")
+        if isinstance(pkg, str) and pkg:
+            out.append(pkg)
 
 
 def _normalize_repo(url: str) -> str:
@@ -172,6 +218,13 @@ def scan_text(path: str, text: str, allow: set[str] | None = None) -> list[Viola
             msg = _check_image(ref, allow)
             if msg:
                 violations.append(Violation(path, _line_of(text, ref), "image", ref, msg))
+
+        packages: list = []
+        _walk_package_refs(doc, packages)
+        for ref in packages:
+            msg = _check_package_rev(ref)
+            if msg:
+                violations.append(Violation(path, _line_of(text, ref), "package", ref, msg))
 
         sources: list = []
         _walk_sources(doc, sources)

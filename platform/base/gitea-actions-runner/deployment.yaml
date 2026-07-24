@@ -1,0 +1,161 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gitea-actions-runner
+  namespace: gitea
+spec:
+  replicas: 1
+  # A single runner identity backed by one ReadWriteOnce PVC (see pvc.yaml) --
+  # a rolling update would try to run two pods against that volume at once.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gitea-actions-runner
+  template:
+    metadata:
+      labels:
+        app: gitea-actions-runner
+    spec:
+      containers:
+        - name: runner
+          # gitea/act_runner v0.6.1, dind variant: the official image bundles
+          # act_runner + dockerd (s6-supervised) in
+          # one container, so Gitea Actions CI jobs can build/push container
+          # images without a separate DinD sidecar or a host Docker socket.
+          # The embedded dockerd needs `privileged: true` to create nested
+          # container namespaces and mounts, matching the upstream
+          # gitea/runner Kubernetes DinD guidance (Issue #285 blocker #4).
+          # The rootless image variant was rejected by a clean Kind bootstrap:
+          # despite requiring this same Kubernetes privilege, RootlessKit also
+          # depends on host user-namespace policy and failed under Ubuntu's
+          # AppArmor restrictions before act_runner could register.
+          #
+          # TRUST BOUNDARY: this makes the `gitea` namespace a privileged
+          # trust boundary, distinct from every per-app namespace this
+          # platform creates for AppClaims (core-catalog's
+          # compositions/local/pipeline.yaml `namespaceObj`), none of which
+          # are privileged. Only this Deployment's pods in `gitea` may run
+          # privileged; a cluster-wide privileged/PSA-restricting Kyverno
+          # ClusterPolicy, if one is ever added, must except only this
+          # Deployment's pods in the `gitea` namespace, never a broader scope
+          # (see test_no_dangling_kyverno_policy_exception_is_introduced).
+          # Pinned by the exact multi-arch manifest-list digest (the
+          # `docker-content-digest` response header from
+          # registry-1.docker.io), verified 2026-07-23.
+          image: gitea/act_runner:0.6.1-dind@sha256:578925b4bdec5f60d93b5ba766cf02f2f9f32b1c8a4ec665ddf4d53d45f683c7
+          env:
+            # Issue #285 (TLS hardening): the trusted digiorg.local ingress
+            # over HTTPS, not the raw in-cluster Gitea Service address.
+            - name: GITEA_INSTANCE_URL
+              value: "https://digiorg.local/gitea"
+            # Go's crypto/x509 honors SSL_CERT_FILE on Linux (the base image
+            # is docker:28-dind, Alpine-based -- confirmed against
+            # the pinned Dockerfile at gitea.com/gitea/runner tag v0.6.1),
+            # so the runner's own calls to GITEA_INSTANCE_URL trust the
+            # digiorg-local CA without insecure/-k.
+            - name: SSL_CERT_FILE
+              value: /etc/digiorg/ca/ca.crt
+            # act_runner's entrypoint only passes --config when this is set
+            # (scripts/run.sh @ the same pinned tag) -- required to reach
+            # container.options below.
+            - name: CONFIG_FILE
+              value: /etc/act-runner-config/config.yaml
+            # Read by this Deployment's own run.sh (configmap.yaml, mounted
+            # over the image's stock entrypoint below) -- the Kubernetes-
+            # native equivalent of the "Docker Secret" pattern the official
+            # act_runner entrypoint documents. Deliberately NOT the direct
+            # GITEA_RUNNER_REGISTRATION_TOKEN env var: an env value is
+            # visible via `kubectl describe pod`/`/proc/<pid>/environ` for
+            # the container's whole lifetime. The pinned image's own
+            # scripts/run.sh reads this file into that env var and then
+            # passes it as `act_runner register --token <value>` -- a
+            # literal argv value, `ps`/`/proc/<pid>/cmdline`-visible for the
+            # life of that subprocess -- which is exactly why this
+            # Deployment overrides run.sh instead of using the stock one.
+            - name: GITEA_RUNNER_REGISTRATION_TOKEN_FILE
+              value: /run/secrets/gitea-actions-runner/token
+            - name: GITEA_RUNNER_NAME
+              value: "digiorg-local-runner"
+            # Maps the `ubuntu-latest` label the generated CI workflow uses
+            # (core-catalog compositions/local/pipeline.yaml) to a pinned
+            # job-runtime image, so a job never silently falls back to an
+            # unpinned/floating image.
+            - name: GITEA_RUNNER_LABELS
+              value: "ubuntu-latest:docker://catthehacker/ubuntu:act-latest@sha256:3220992391c1182a0cfe4c64453511772c54f4c39e960d26a5e327960675982e"
+          volumeMounts:
+            - name: registration-token
+              mountPath: /run/secrets/gitea-actions-runner
+              readOnly: true
+            - name: data
+              mountPath: /data
+            - name: act-runner-config
+              mountPath: /etc/act-runner-config
+              readOnly: true
+            # Issue #285 core review: shadow the image's own
+            # /usr/local/bin/run.sh (which the image's s6-supervised
+            # act_runner service execs by name) with the token-safe
+            # entrypoint in configmap.yaml's `run.sh` key, via subPath so
+            # only this one file is replaced.
+            - name: act-runner-config
+              mountPath: /usr/local/bin/run.sh
+              subPath: run.sh
+              readOnly: true
+            # Issue #285 (TLS hardening): the same digiorg-local-ca Secret
+            # volume, mounted twice -- once at a generic path for the
+            # runner's own SSL_CERT_FILE, and once at Docker's
+            # registry-specific trust convention
+            # (/etc/docker/certs.d/<host>/ca.crt) so the embedded
+            # dockerd trusts the digiorg.local registry without
+            # insecureSkipVerify. Each key in the Secret is projected as a
+            # file named after the key, so mounting the directory yields
+            # .../ca.crt automatically.
+            - name: digiorg-local-ca
+              mountPath: /etc/digiorg/ca
+              readOnly: true
+            - name: digiorg-local-ca
+              mountPath: /etc/docker/certs.d/digiorg.local
+              readOnly: true
+          securityContext:
+            # `privileged: true` and nothing else -- capabilities.drop,
+            # seccompProfile and allowPrivilegeEscalation are meaningless-to-
+            # misleading alongside it (a privileged container is granted
+            # every capability and an unconfined seccomp profile by the
+            # container runtime regardless of what's declared here), and
+            # declaring them anyway falsely implies this container is still
+            # confined. Matches the upstream gitea/runner official example
+            # exactly (see comment above).
+            privileged: true
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "512Mi"
+            limits:
+              cpu: "2000m"
+              memory: "2Gi"
+      volumes:
+        - name: registration-token
+          secret:
+            secretName: gitea-actions-runner-token
+            items:
+              - key: token
+                path: token
+        - name: data
+          persistentVolumeClaim:
+            claimName: gitea-actions-runner-data
+        - name: act-runner-config
+          configMap:
+            name: gitea-actions-runner-config
+            items:
+              - key: config.yaml
+                path: config.yaml
+              - key: run.sh
+                path: run.sh
+                # Executable so the s6-supervised act_runner service's
+                # `exec run.sh` (scripts/s6/act_runner/run @ v0.6.1, which
+                # resolves run.sh via PATH) can run it; ConfigMap volume
+                # entries default to 0644.
+                mode: 0755
+        - name: digiorg-local-ca
+          secret:
+            secretName: digiorg-local-ca

@@ -167,16 +167,19 @@ nu scripts/local-setup.nu reset
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                    ArgoCD (Phase 2)                                     │
 │                                                                         │
-│  Root App creates all 27 child Application CRs:                        │
+│  Root App creates all 30 child Application CRs:                        │
 │      Wave -1: namespaces                                                │
 │      Wave  0: cert-manager, external-secrets, nats, opensearch,         │
 │               postgresql                                               │
-│      Wave  1: argocd, keycloak                                         │
+│      Wave  1: argocd, keycloak, nats-jetstream-controller               │
 │      Wave  2: backstage, gitea, grafana, harbor, jaeger, landingpage,   │
 │               opencost, sonarqube                                      │
 │      Wave  3: crossplane, kyverno                                      │
-│      Waves 4-8: providers, logging, policies, monitoring, catalog       │
+│      Waves 4-7: providers, logging, policies, monitoring, provider-    │
+│               configs, xrds, crossplane-harbor-bootstrap                │
+│      Wave  8: core-catalog                                              │
 │      Waves 9-10: cnpg, cnpg-cluster (manual; `future-infra` only)       │
+│      Wave 11: app-config (AppClaim GitOps sink)                        │
 │                                                                         │
 └───────────────────────────────────┬─────────────────────────────────────┘
                                     │
@@ -200,7 +203,7 @@ nu scripts/local-setup.nu reset
 | 1 | keycloak, argocd | keycloak: postgresql, cert-manager; argocd: Ingress (self-managed after Helm install) |
 | 2 | landingpage, backstage, gitea, grafana, harbor, jaeger, opencost, sonarqube | keycloak (OIDC/SAML); SQL consumers: postgresql; jaeger: opensearch |
 | 3 | crossplane, kyverno | All platform services healthy |
-| 4 | crossplane-providers, fluentd, kyverno-policies | Provider, log shipping, and policy extensions |
+| 4 | crossplane-providers, fluentd, kyverno-policies, gitea-actions-runner | Provider, log shipping, policy extensions, and the Gitea Actions CI runner |
 | 5 | monitoring-extras | Monitoring CRDs ready |
 | 6 | crossplane-provider-configs | Crossplane providers ready |
 | 7 | crossplane-xrds | Provider configurations ready |

@@ -12,6 +12,16 @@
 #   - harbor:           harbor (wave 2)
 #   - code-quality:     sonarqube (wave 2)
 #   - messaging:        nats (wave 0)
+#
+# app-claims (Issue #285): the fixed, pre-existing destination namespace for
+# AppClaim custom resources merged from the DigiOrg/app-config GitOps sink
+# repository (apps/platform/app-config.yaml, wave 9). AppClaims are namespaced
+# Crossplane v2 Claims and must live somewhere that already exists before the
+# app-config Application's first sync; the Namespace each AppClaim's
+# Composition creates for its own workloads (named after spec.appName) is a
+# wholly separate, composed resource created afterwards. app-claims hosts
+# only Claim objects, never application workloads, so it is deliberately NOT
+# in policies/kyverno/cluster-policies/block-appclaims-in-system-namespaces.yaml.
 ---
 apiVersion: v1
 kind: Namespace
@@ -202,3 +212,13 @@ metadata:
   labels:
     app.kubernetes.io/managed-by: argocd
     digiorg.io/platform-component: observability
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false
+  name: app-claims
+  labels:
+    app.kubernetes.io/managed-by: argocd
+    digiorg.io/platform-component: appclaim-delivery

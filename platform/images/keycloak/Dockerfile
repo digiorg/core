@@ -16,7 +16,7 @@
 
 ARG UPSTREAM_IMAGE=quay.io/keycloak/keycloak
 ARG UPSTREAM_TAG=26.7.0
-ARG UPSTREAM_DIGEST=sha256:2eb3cd316835c990e69e26ade292ffa78f6fb0db7d5fc6377463c162e1979ac0
+ARG UPSTREAM_DIGEST=sha256:0f198be292568439d700cdbfb893e69a6009bb43a94a06a945b1d3d506c76b13
 
 # --- Stage 1: build the optimized server ------------------------------------ #
 FROM ${UPSTREAM_IMAGE}:${UPSTREAM_TAG}@${UPSTREAM_DIGEST} AS builder
@@ -41,7 +41,7 @@ COPY --from=builder /opt/keycloak/ /opt/keycloak/
 
 # Provenance (baked as OCI labels). base_digest records the immutable source.
 ARG version=26.7.0
-ARG base_digest=sha256:2eb3cd316835c990e69e26ade292ffa78f6fb0db7d5fc6377463c162e1979ac0
+ARG base_digest=sha256:0f198be292568439d700cdbfb893e69a6009bb43a94a06a945b1d3d506c76b13
 LABEL org.opencontainers.image.title="digiorg/keycloak" \
       org.opencontainers.image.description="DigiOrg production-optimized Keycloak (kc.sh build --optimized)" \
       org.opencontainers.image.source="https://github.com/digiorg/core" \

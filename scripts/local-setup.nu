@@ -72,6 +72,45 @@ def "main up" [] {
         {namespace: "cert-manager", name: "digiorg-local-ca"}
         {namespace: "ingress-nginx", name: "digiorg-local-tls"}
     ]
+
+    # Issue #285 (TLS hardening): copy only the public digiorg.local CA
+    # certificate (never cert-manager's private key) into every namespace
+    # running a client that must verify the digiorg.local ingress's
+    # certificate -- crossplane-system (provider-http's shared
+    # ProviderConfig), backstage (NODE_EXTRA_CA_CERTS) and gitea (the
+    # Actions runner's own trust + its embedded dockerd's registry trust).
+    # Idempotent, so safe on both a first bootstrap and a resumed run.
+    print "Copying the digiorg.local CA into consumer namespaces..."
+    copy_digiorg_local_ca_to_namespace "crossplane-system"
+    copy_digiorg_local_ca_to_namespace "backstage"
+    # Harbor PostSync hooks mount this Secret optionally and wait for ca.crt,
+    # avoiding a sync deadlock while keeping admin credentials off plaintext HTTP.
+    copy_digiorg_local_ca_to_namespace "harbor"
+    let gitea_ca_changed = (copy_digiorg_local_ca_to_namespace "gitea")
+
+    # A resumed run may be updating an already-registered CA on an
+    # already-running runner: restart it *before* configure_gitea runs, not
+    # after. configure_gitea calls configure_gitea_actions_runner, which
+    # unconditionally calls wait_for_gitea_actions_runner_online -- an
+    # already-running runner pod's cached TLS trust does not pick up a rotated
+    # CA without a restart. On a fresh bootstrap, however, Argo may already have
+    # created the Deployment while it is still waiting for the registration-token
+    # Secret that configure_gitea creates below; waiting for that rollout here
+    # would deadlock. Distinguish an absent Secret from API/RBAC failure and only
+    # restart a previously initialized runner.
+    let runner_token_lookup = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH get secret gitea-actions-runner-token -n gitea --ignore-not-found -o name
+    } | complete)
+    if $runner_token_lookup.exit_code != 0 {
+        error make {msg: "Failed to determine whether the Gitea Actions runner token exists"}
+    }
+    let runner_token_exists = not ($runner_token_lookup.stdout | str trim | is-empty)
+    if $gitea_ca_changed and $runner_token_exists {
+        restart_oidc_deployment_if_present "gitea" "gitea-actions-runner" "120s"
+    } else if $gitea_ca_changed {
+        print $"(ansi yellow)○ gitea/gitea-actions-runner is awaiting first-time registration; it will mount the current CA on first start(ansi reset)"
+    }
+
     configure_gitea
 
     # Configure SonarQube only after its direct Applications and the same local
@@ -687,8 +726,19 @@ type: kubernetes.io/service-account-token" | save --force $token_secret_file
         --dry-run=client -o yaml | kubectl apply -f -)
     persist_harbor_oidc_secret $harbor_oidc_secret
 
+    # Issue #285: precomputed HTTP Basic-auth value for the Harbor admin
+    # identity, consumed only by the declarative, one-time
+    # crossplane-harbor-bootstrap Request (crossplane/bootstrap/harbor-robot-request.yaml)
+    # to create the least-privilege crossplane-system system robot. provider-http's
+    # `{{ name:namespace:key }}` templating substitutes a secret value verbatim
+    # (it does not encode), so the base64(admin:password) pair is computed once
+    # here, kept out of argv/logs, and never reused as a per-app credential.
+    let harbor_admin_basic = ($"admin:($harbor_admin_password)" | encode base64)
+    persist_opaque_secret "harbor" "harbor-admin-basic-auth" "value" $harbor_admin_basic
+
     # Messaging namespace (for NATS server + Surveyor)
     kubectl create namespace messaging --dry-run=client -o yaml | kubectl apply -f -
+    ensure_nats_jetstream_controller_nkey
 
     kubectl create namespace tracing --dry-run=client -o yaml | kubectl apply -f -
 
@@ -873,7 +923,7 @@ def deploy_root_app [] {
     print "  Wave  1: keycloak, argocd (self-managed)"
     print "  Wave  2: backstage, gitea, grafana, harbor, jaeger, landingpage, opencost, sonarqube"
     print "  Wave  3: crossplane, kyverno"
-    print "  Wave  4: crossplane-providers, fluentd, kyverno-policies"
+    print "  Wave  4: crossplane-providers, fluentd, kyverno-policies, gitea-actions-runner"
     print "  Wave  5: monitoring-extras (ServiceMonitors)"
     print "  Wave  6: crossplane-provider-configs"
     print "  Wave  7: crossplane-xrds"
@@ -1226,6 +1276,131 @@ def print_sync_diagnostics [state: record] {
     }
 }
 
+def kubectl_result_is_not_found [result: record] {
+    let diagnostic = $"($result.stdout) ($result.stderr)" | str lowercase
+    # kubectl's Kubernetes API NotFound errors include the reason in parentheses.
+    # Do not match generic "not found": credential-helper/config errors use that
+    # wording too and must fail immediately.
+    $diagnostic | str contains "(notfound)"
+}
+
+def kubectl_wait_is_pending [result: record] {
+    let diagnostic = $"($result.stdout) ($result.stderr)" | str lowercase
+    (kubectl_result_is_not_found $result) or ($diagnostic | str contains "timed out waiting")
+}
+
+# Kubernetes object names are DNS-1123 subdomains. A value that doesn't match
+# cannot be a real resource name the apiserver would have assigned, so treat
+# it as untrusted and refuse to interpolate it into a request path.
+def is_valid_k8s_resource_name [name: string] {
+    if ($name | is-empty) or (($name | str length) > 253) {
+        return false
+    }
+    let labels = ($name | split row ".")
+    $labels | all {|label|
+        let non_empty = not ($label | is-empty)
+        let valid_length = (($label | str length) <= 63)
+        let valid_characters = (($label | parse --regex '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$' | length) == 1)
+        $non_empty and $valid_length and $valid_characters
+    }
+}
+
+def provider_http_failure_summary [result: record] {
+    let diagnostic = $"($result.stdout) ($result.stderr)" | str lowercase
+    if ($diagnostic | str contains "forbidden") {
+        return "Kubernetes API denied the request (Forbidden)"
+    }
+    if ($diagnostic | str contains "unauthorized") or ($diagnostic | str contains "unauthenticated") {
+        return "Kubernetes API rejected authentication"
+    }
+    if ($diagnostic | str contains "credential") or ($diagnostic | str contains "kubeconfig") or ($diagnostic | str contains "current-context") {
+        return "kubectl credential or configuration error"
+    }
+    let transport_markers = [
+        "connection refused", "connection reset", "no route to host",
+        "i/o timeout", "tls handshake timeout", "dial tcp",
+        "context deadline exceeded", "server misbehaving", "no such host",
+        "transport is closing", "error reading from server: eof",
+    ]
+    if ($transport_markers | any {|marker| $diagnostic | str contains $marker }) {
+        return "Kubernetes API transport error"
+    }
+    # kubectl and credential helpers are external processes. Their diagnostics
+    # are untrusted and can echo credentials in arbitrary formats, so never
+    # include raw stdout/stderr in the terminal error.
+    "kubectl request failed (details suppressed)"
+}
+
+# crossplane-harbor-bootstrap contains provider-http Request objects. Argo sync
+# waves order Application creation only; they do not prove that package CRDs
+# have been installed. Gate the first Request on the active revision and CRD.
+def wait_for_provider_http_ready [] {
+    print "  Waiting for provider-http ProviderRevision and Request CRD..."
+    for attempt in 1..180 {
+        # `kubectl get provider`/`providerrevision` resolves the resource
+        # through discovery/RESTMapper, which can still be stale right after
+        # the package CRDs install -- it then fails with a generic discovery
+        # error (not NotFound) that never recovers on its own. `--raw` hits
+        # the pinned pkg.crossplane.io/v1 path directly (group/version/scope
+        # confirmed against the Crossplane v2.3.3 upstream CRDs), bypassing
+        # discovery entirely.
+        let provider_result = (do {
+            kubectl get --raw /apis/pkg.crossplane.io/v1/providers/provider-http
+        } | complete)
+        if $provider_result.exit_code != 0 {
+            if not (kubectl_result_is_not_found $provider_result) {
+                error make {msg: $"Failed to query provider-http while waiting for readiness: (provider_http_failure_summary $provider_result)"}
+            }
+        } else {
+            let provider = (try { $provider_result.stdout | from json } catch {
+                error make {msg: "provider-http returned malformed JSON while waiting for readiness"}
+            })
+            let revision = ($provider | get -o status.currentRevision | default "")
+            if not ($revision | is-empty) {
+                if not (is_valid_k8s_resource_name $revision) {
+                    error make {msg: "provider-http reported a currentRevision that is not a valid Kubernetes resource name"}
+                }
+                let revision_result = (do {
+                    kubectl get --raw $"/apis/pkg.crossplane.io/v1/providerrevisions/($revision)"
+                } | complete)
+                if $revision_result.exit_code != 0 {
+                    if not (kubectl_result_is_not_found $revision_result) {
+                        error make {msg: $"Failed to query the active provider-http revision: (provider_http_failure_summary $revision_result)"}
+                    }
+                } else {
+                    let revision_state = (try { $revision_result.stdout | from json } catch {
+                        error make {msg: "The active provider-http revision returned malformed JSON"}
+                    })
+                    let desired = ($revision_state | get -o spec.desiredState | default "Active")
+                    let conditions = ($revision_state | get -o status.conditions | default [])
+                    # Crossplane v2.3.3's ProviderRevision never carries a bare
+                    # "Healthy" condition -- the revision reconciler only ever
+                    # marks RevisionHealthy/RuntimeHealthy on the revision itself;
+                    # the aggregate "Healthy" condition is written to the parent
+                    # Provider by PackageHealth() (apis/pkg/v1/conditions.go),
+                    # which itself requires both to be True. Mirror that here.
+                    let revision_healthy = ($conditions | any {|c| ((($c | get -o type | default "") == "RevisionHealthy") and (($c | get -o status | default "") == "True")) })
+                    let runtime_healthy = ($conditions | any {|c| ((($c | get -o type | default "") == "RuntimeHealthy") and (($c | get -o status | default "") == "True")) })
+                    if ($desired == "Active") and $revision_healthy and $runtime_healthy {
+                        let crd_result = (do {
+                            kubectl wait --for=condition=Established crd/requests.http.crossplane.io --timeout=5s
+                        } | complete)
+                        if $crd_result.exit_code == 0 {
+                            print "  ✓ provider-http revision is RevisionHealthy and RuntimeHealthy, and requests.http.crossplane.io is Established"
+                            return
+                        }
+                        if not (kubectl_wait_is_pending $crd_result) {
+                            error make {msg: "Failed to query the provider-http Request CRD while waiting for readiness"}
+                        }
+                    }
+                }
+            }
+        }
+        sleep 2sec
+    }
+    error make {msg: "provider-http did not become RevisionHealthy/RuntimeHealthy with an Established Request CRD"}
+}
+
 # Explicitly promote gated major upgrades on the disposable local KinD cluster.
 # Shared/production clusters must follow docs/guides/platform-versions.md instead.
 #
@@ -1240,7 +1415,8 @@ def sync_gated_apps_for_local_dev [] {
     let gated_apps = [
         "external-secrets", "nats", "grafana", "opencost", "gitea",
         "sonarqube", "crossplane", "crossplane-providers",
-        "crossplane-provider-configs", "crossplane-xrds", "core-catalog"
+        "crossplane-provider-configs", "crossplane-harbor-bootstrap",
+        "crossplane-xrds", "core-catalog"
     ]
     let sync_payload = '{"operation":{"sync":{"prune":true,"syncOptions":["CreateNamespace=true","ServerSideApply=true"]}}}'
     let max_operation_retries = 3
@@ -1248,6 +1424,21 @@ def sync_gated_apps_for_local_dev [] {
     print ""
     print $"(ansi cyan_bold)Promoting gated upgrades sequentially on local KinD(ansi reset)"
     for app in $gated_apps {
+        if $app == "crossplane-harbor-bootstrap" {
+            # Issue #285 runtime-v10: this Application's Request objects need
+            # crossplane-system/digiorg-local-ca (proven live ReconcileError:
+            # missing crossplane-system/digiorg-local-ca), but Phase 3's CA
+            # copy in `main up` runs AFTER this gated sync loop. Wait only for
+            # cert-manager itself and its Certificate here -- never for the
+            # Harbor Application, which is not yet synced and would deadlock
+            # on Harbor's own PostSync hooks -- then copy the CA before the
+            # existing provider-http gate runs. Idempotent with Phase 3's copy.
+            wait_for_configuration_dependencies "Crossplane Harbor bootstrap TLS" ["cert-manager"] [
+                {namespace: "cert-manager", name: "digiorg-local-ca"}
+            ]
+            copy_digiorg_local_ca_to_namespace "crossplane-system"
+            wait_for_provider_http_ready
+        }
         mut exists = false
         for attempt in 1..60 {
             let get_result = (do {
@@ -1720,22 +1911,24 @@ def wait_for_argocd_apps [] {
         # Wave 0
         "cert-manager", "external-secrets", "nats", "postgresql", "opensearch",
         # Wave 1
-        "keycloak", "argocd",
+        "keycloak", "argocd", "nats-jetstream-controller",
         # Wave 2
         "backstage", "gitea", "grafana", "harbor", "jaeger", "landingpage", "opencost", "sonarqube",
         # Wave 3
         "crossplane", "kyverno",
         # Wave 4
-        "crossplane-providers", "fluentd", "kyverno-policies",
+        "crossplane-providers", "fluentd", "kyverno-policies", "gitea-actions-runner",
         # Wave 5
         "monitoring-extras",
         # Wave 6
         "crossplane-provider-configs",
         # Wave 7
-        "crossplane-xrds",
+        "crossplane-xrds", "crossplane-harbor-bootstrap",
         # Wave 8
-        "core-catalog"
+        "core-catalog",
         # Wave 9/10 (cnpg, cnpg-cluster) intentionally excluded — see above.
+        # Wave 11
+        "app-config",
     ]
 
     mut all_healthy = false
@@ -1889,6 +2082,185 @@ def wait_for_configuration_dependencies [phase: string, apps: list, certificates
     error make {msg: $"($phase) configuration dependencies did not become ready: ($bounded)"}
 }
 
+# Remove client-side apply's credential-bearing metadata copy. Removal is safe
+# when the annotation is already absent and is verified without reading data.
+def scrub_secret_last_applied_annotation [namespace: string, name: string] {
+    let scrub_result = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH annotate secret $name -n $namespace kubectl.kubernetes.io/last-applied-configuration- --overwrite
+    } | complete)
+    if $scrub_result.exit_code != 0 {
+        error make {msg: $"Failed to scrub client-side apply metadata from secret ($namespace)/($name)"}
+    }
+    let annotation_result = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH get secret $name -n $namespace -o jsonpath='{.metadata.annotations.kubectl\.kubernetes\.io/last-applied-configuration}'
+    } | complete)
+    if ($annotation_result.exit_code != 0) or (not ($annotation_result.stdout | str trim | is-empty)) {
+        error make {msg: $"Secret ($namespace)/($name) still contains client-side apply metadata"}
+    }
+}
+
+# Generic single-key opaque Secret writer (Issue #285). Remove client-side
+# apply's annotation before the first SSA write so kubectl cannot migrate and
+# then prune ownership for the whole object. Apply only the target data key with
+# a stable per-key manager; unrelated keys can change concurrently and survive.
+# No credential enters argv, environment variables, logs, or disk.
+def persist_opaque_secret [namespace: string, name: string, key: string, value: string] {
+    if ($value | is-empty) {
+        error make {msg: $"Refusing to persist an empty value for secret ($namespace)/($name) key ($key)"}
+    }
+    let exists_result = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH get secret $name -n $namespace -o name --ignore-not-found
+    } | complete)
+    if $exists_result.exit_code != 0 {
+        error make {msg: $"Failed to inspect secret ($namespace)/($name) before persisting key ($key)"}
+    }
+    if not ($exists_result.stdout | str trim | is-empty) {
+        # This ordering is critical: without it, kubectl's client-side apply
+        # migration can transfer ownership of unrelated fields to this manager.
+        scrub_secret_last_applied_annotation $namespace $name
+    }
+
+    let encoded = ($value | encode base64)
+    let field_manager = $"digiorg-bootstrap-secret-($key | str replace --all '.' '-')"
+    let manifest = {
+        apiVersion: "v1"
+        kind: "Secret"
+        metadata: {name: $name, namespace: $namespace}
+        type: "Opaque"
+        data: {($key): $encoded}
+    }
+    let apply_result = (do {
+        $manifest | to json | kubectl --kubeconfig $KUBECONFIG_PATH apply --server-side --force-conflicts --field-manager $field_manager -f -
+    } | complete)
+    if $apply_result.exit_code != 0 {
+        error make {msg: $"Failed to persist secret ($namespace)/($name)"}
+    }
+    scrub_secret_last_applied_annotation $namespace $name
+
+    let readback = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH get secret $name -n $namespace -o json
+    } | complete)
+    if $readback.exit_code != 0 {
+        error make {msg: $"Failed to verify the persisted secret ($namespace)/($name)"}
+    }
+    let persisted = (try {
+        let secret = ($readback.stdout | from json)
+        $secret.data | get $key | decode base64 | decode utf-8
+    } catch { "" })
+    if ($persisted | is-empty) or ($persisted != $value) {
+        error make {msg: $"Persisted secret ($namespace)/($name) did not match its source"}
+    }
+}
+
+# Write (or resume-preserve) the Argo CD repository credential. Existing
+# credentials are not rotated implicitly, but stale client-side metadata is
+# removed on every run.
+def persist_argocd_repo_secret [name: string, repo_url: string, username: string, password: string] {
+    if ($password | is-empty) {
+        error make {msg: $"Refusing to persist an empty password for ArgoCD repo credential ($name)"}
+    }
+    let existing = ((do -i { kubectl --kubeconfig $KUBECONFIG_PATH get secret $name -n argocd } | complete).exit_code == 0)
+    if $existing {
+        scrub_secret_last_applied_annotation "argocd" $name
+        print $"(ansi yellow)✓ ArgoCD repository credential '($name)' already present — preserved(ansi reset)"
+        return
+    }
+    let manifest = ({
+        apiVersion: "v1"
+        kind: "Secret"
+        metadata: {
+            name: $name
+            namespace: "argocd"
+            labels: {"argocd.argoproj.io/secret-type": "repository"}
+        }
+        type: "Opaque"
+        data: {
+            url: ($repo_url | encode base64)
+            username: ($username | encode base64)
+            password: ($password | encode base64)
+        }
+    } | to json)
+    let apply_result = (do {
+        $manifest | kubectl --kubeconfig $KUBECONFIG_PATH apply --server-side --force-conflicts --field-manager digiorg-bootstrap-argocd-repository -f -
+    } | complete)
+    if $apply_result.exit_code != 0 {
+        error make {msg: $"Failed to persist ArgoCD repository credential ($name)"}
+    }
+    scrub_secret_last_applied_annotation "argocd" $name
+    let readback = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH get secret $name -n argocd -o jsonpath='{.data.password}'
+    } | complete)
+    if $readback.exit_code != 0 {
+        error make {msg: $"Failed to verify the persisted ArgoCD repository credential ($name)"}
+    }
+    let persisted = (try { $readback.stdout | str trim | decode base64 | decode utf-8 } catch { "" })
+    if ($persisted | is-empty) or ($persisted != $password) {
+        error make {msg: $"Persisted ArgoCD repository credential ($name) did not match its source"}
+    }
+}
+
+# Generate or validate the dedicated NACK user NKey. The digest-pinned Linux
+# tool container works on Docker Engine/Desktop without a host nsc/nk install.
+# The private seed stays in memory and is passed to nk over stdin only.
+def ensure_nats_jetstream_controller_nkey [] {
+    let name = "nats-jetstream-controller-nkey"
+    let tool_image = "natsio/nats-box:0.19.2@sha256:8031d190c7ee24081f3f27cc939fb647a1eeb29ebb5c60fef9b5b6c7a846d6a2"
+    let exists = ((do -i {
+        kubectl --kubeconfig $KUBECONFIG_PATH get secret $name -n messaging -o name
+    } | complete).exit_code == 0)
+
+    if $exists {
+        let seed_result = (do {
+            kubectl --kubeconfig $KUBECONFIG_PATH get secret $name -n messaging -o jsonpath='{.data.seed\.nk}'
+        } | complete)
+        let public_result = (do {
+            kubectl --kubeconfig $KUBECONFIG_PATH get secret $name -n messaging -o jsonpath='{.data.public\.nk}'
+        } | complete)
+        if $seed_result.exit_code != 0 or $public_result.exit_code != 0 {
+            error make {msg: "Failed to read the persisted NATS controller NKey pair"}
+        }
+        let seed = (try { $seed_result.stdout | str trim | decode base64 | decode utf-8 } catch { "" })
+        let public = (try { $public_result.stdout | str trim | decode base64 | decode utf-8 } catch { "" })
+        if ($seed | is-empty) {
+            error make {msg: "Persisted NATS controller NKey seed is missing"}
+        }
+        let derived_result = (do {
+            $seed | docker run --rm -i $tool_image nk -inkey /dev/stdin -pubout
+        } | complete)
+        let derived = ($derived_result.stdout | str trim)
+        if ($derived_result.exit_code != 0) or (not ($derived | str starts-with "U")) {
+            error make {msg: "Persisted NATS controller seed is invalid"}
+        }
+        if ($public | is-empty) {
+            persist_opaque_secret "messaging" $name "public.nk" $derived
+            print "✓ Repaired missing NATS JetStream controller public NKey from persisted seed"
+        } else if $derived != $public {
+            error make {msg: "Persisted NATS controller seed does not match its public NKey"}
+        }
+        scrub_secret_last_applied_annotation "messaging" $name
+        print "✓ NATS JetStream controller NKey pair already present and verified"
+        return
+    }
+
+    let seed_result = (do {
+        docker run --rm $tool_image nk -gen user
+    } | complete)
+    let seed = ($seed_result.stdout | str trim)
+    if ($seed_result.exit_code != 0) or (not ($seed | str starts-with "SU")) {
+        error make {msg: "Failed to generate a NATS user seed"}
+    }
+    let public_result = (do {
+        $seed | docker run --rm -i $tool_image nk -inkey /dev/stdin -pubout
+    } | complete)
+    let public = ($public_result.stdout | str trim)
+    if ($public_result.exit_code != 0) or (not ($public | str starts-with "U")) {
+        error make {msg: "Failed to derive the NATS user public key"}
+    }
+    persist_opaque_secret "messaging" "nats-jetstream-controller-nkey" "seed.nk" $seed
+    persist_opaque_secret "messaging" "nats-jetstream-controller-nkey" "public.nk" $public
+    print "✓ Dedicated NATS JetStream controller NKey created"
+}
+
 def persist_gitea_bootstrap_token [token: string] {
     if ($token | is-empty) {
         error make {msg: "Refusing to persist an empty Gitea bootstrap token"}
@@ -1919,6 +2291,37 @@ def persist_gitea_bootstrap_token [token: string] {
     let persisted = (try { $readback.stdout | str trim | decode base64 | decode utf-8 } catch { "" })
     if ($persisted | is-empty) or ($persisted != $token) {
         error make {msg: "Persisted Gitea bootstrap token did not match its source"}
+    }
+}
+
+# Create a Gitea user whose password is generated server-side by the `gitea`
+# CLI itself (`--random-password`) rather than interpolated into this exec's
+# process argument (Issue #285 blocker #3: a `ps`-visible generated password
+# on the node). The generated password is intentionally never captured or
+# printed -- every identity this helper creates authenticates solely via a
+# later admin-generated access token, so nothing of value is discarded.
+def gitea_create_user_random_password [gitea_pod: string, username: string, email: string, is_admin: bool] {
+    let admin_flag = if $is_admin { "true" } else { "false" }
+    let create_result = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- su git -c $'gitea admin user create --username "($username)" --email "($email)" --random-password --random-password-length 32 --must-change-password=false --admin ($admin_flag)'
+    } | complete)
+    if $create_result.exit_code != 0 {
+        error make {msg: $"Failed to create the Gitea user ($username)"}
+    }
+}
+
+# Gitea's Bool flag requires --must-change-password=false at creation. Repair
+# identities created by older bootstraps as well; otherwise Git Smart HTTP with
+# a PAT is redirected to the interactive password-change page.
+def gitea_unset_service_user_must_change_password [gitea_pod: string, username: string] {
+    if not ($username =~ '^[a-z0-9][a-z0-9-]{0,38}$') {
+        error make {msg: "Refusing an invalid Gitea service username"}
+    }
+    let unset_result = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- su git -c $'gitea admin user must-change-password --unset "($username)"'
+    } | complete)
+    if $unset_result.exit_code != 0 {
+        error make {msg: $"Failed to clear must-change-password for Gitea service user ($username)"}
     }
 }
 
@@ -2059,7 +2462,7 @@ def configure_gitea [] {
     # Create the organisation through the API so no CLI configuration needs the
     # administrative token in argv. Exact HTTP status handling is fail-closed.
     let org_check = (do {
-        $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - -sSk -o /dev/null -w "%{http_code}" https://digiorg.local/gitea/api/v1/orgs/DigiOrg'
+        $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /usr/local/share/ca-certificates/digiorg-local-ca.crt -sS -o /dev/null -w "%{http_code}" https://digiorg.local/gitea/api/v1/orgs/DigiOrg'
     } | complete)
     if $org_check.exit_code != 0 {
         error make {msg: "Failed to query the DigiOrg organisation in Gitea"}
@@ -2069,7 +2472,7 @@ def configure_gitea [] {
         print $"(ansi yellow)✓ Organisation 'DigiOrg' already exists(ansi reset)"
     } else if $org_status == "404" {
         let org_create = (do {
-            $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - -sSk -o /dev/null -w "%{http_code}" -X POST -H "Content-Type: application/json" --data "{\"username\":\"DigiOrg\",\"full_name\":\"DigiOrg Organization\",\"visibility\":\"public\",\"repo_admin_change_team_access\":true}" https://digiorg.local/gitea/api/v1/orgs'
+            $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /usr/local/share/ca-certificates/digiorg-local-ca.crt -sS -o /dev/null -w "%{http_code}" -X POST -H "Content-Type: application/json" --data "{\"username\":\"DigiOrg\",\"full_name\":\"DigiOrg Organization\",\"visibility\":\"public\",\"repo_admin_change_team_access\":true}" https://digiorg.local/gitea/api/v1/orgs'
         } | complete)
         if $org_create.exit_code != 0 or (($org_create.stdout | str trim) != "201") {
             error make {msg: "Failed to create the DigiOrg organisation in Gitea"}
@@ -2083,7 +2486,7 @@ def configure_gitea [] {
     # never embedded in a process argument or printed command; --fail turns
     # every HTTP 4xx/5xx response into a fail-closed command result.
     let teams_result = (do {
-        $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - -fsSk https://digiorg.local/gitea/api/v1/orgs/DigiOrg/teams'
+        $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /usr/local/share/ca-certificates/digiorg-local-ca.crt -fsS https://digiorg.local/gitea/api/v1/orgs/DigiOrg/teams'
     } | complete)
 
     if $teams_result.exit_code != 0 {
@@ -2098,14 +2501,14 @@ def configure_gitea [] {
 
     # 4g: Add digiorgadmin to Owners team (idempotent)
     let admin_check = (do {
-        $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c $'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - -sSk -o /dev/null -w "%{http_code}" https://digiorg.local/gitea/api/v1/teams/($owners_team_id)/members/digiorgadmin'
+        $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c $'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /usr/local/share/ca-certificates/digiorg-local-ca.crt -sS -o /dev/null -w "%{http_code}" https://digiorg.local/gitea/api/v1/teams/($owners_team_id)/members/digiorgadmin'
     } | complete)
 
     if ($admin_check.exit_code == 0) and (($admin_check.stdout | str trim) == "200") {
         print $"(ansi yellow)✓ 'digiorgadmin' already member of Owners team(ansi reset)"
     } else {
         let admin_add = (do {
-            $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c $'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - -fsSk -X PUT https://digiorg.local/gitea/api/v1/teams/($owners_team_id)/members/digiorgadmin'
+            $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c $'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /usr/local/share/ca-certificates/digiorg-local-ca.crt -fsS -X PUT https://digiorg.local/gitea/api/v1/teams/($owners_team_id)/members/digiorgadmin'
         } | complete)
         if $admin_add.exit_code == 0 {
             print $"(ansi green)✓ 'digiorgadmin' added to Owners team(ansi reset)"
@@ -2116,14 +2519,14 @@ def configure_gitea [] {
 
     # 4h: Add digiorgdeveloper to Owners team (idempotent)
     let dev_check = (do {
-        $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c $'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - -sSk -o /dev/null -w "%{http_code}" https://digiorg.local/gitea/api/v1/teams/($owners_team_id)/members/digiorgdeveloper'
+        $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c $'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /usr/local/share/ca-certificates/digiorg-local-ca.crt -sS -o /dev/null -w "%{http_code}" https://digiorg.local/gitea/api/v1/teams/($owners_team_id)/members/digiorgdeveloper'
     } | complete)
 
     if ($dev_check.exit_code == 0) and (($dev_check.stdout | str trim) == "200") {
         print $"(ansi yellow)✓ 'digiorgdeveloper' already member of Owners team(ansi reset)"
     } else {
         let dev_add = (do {
-            $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c $'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - -fsSk -X PUT https://digiorg.local/gitea/api/v1/teams/($owners_team_id)/members/digiorgdeveloper'
+            $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c $'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /usr/local/share/ca-certificates/digiorg-local-ca.crt -fsS -X PUT https://digiorg.local/gitea/api/v1/teams/($owners_team_id)/members/digiorgdeveloper'
         } | complete)
         if $dev_add.exit_code == 0 {
             print $"(ansi green)✓ 'digiorgdeveloper' added to Owners team(ansi reset)"
@@ -2134,7 +2537,7 @@ def configure_gitea [] {
 
     # 4i: Verification — list Owners team members
     let verify = (do {
-        $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c $'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - -fsSk https://digiorg.local/gitea/api/v1/teams/($owners_team_id)/members'
+        $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c $'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /usr/local/share/ca-certificates/digiorg-local-ca.crt -fsS https://digiorg.local/gitea/api/v1/teams/($owners_team_id)/members'
     } | complete)
     if $verify.exit_code == 0 {
         let members = ($verify.stdout | from json | get login)
@@ -2149,6 +2552,373 @@ def configure_gitea [] {
     }
 
     print $"(ansi green)✓ Gitea OIDC integration configured(ansi reset)"
+
+    # --- Step 5: Create the app-config GitOps sink repository (Issue #285) ---
+    print "5. Ensuring the app-config repository exists..."
+    configure_app_config_repo $gitea_pod $gitea_token
+
+    # --- Step 6: Least-privilege Crossplane Gitea credentials (Issue #285) ---
+    print "6. Ensuring least-privilege Crossplane Gitea credentials exist..."
+    configure_crossplane_gitea_credentials $gitea_pod $gitea_token
+
+    # --- Step 7: Least-privilege ArgoCD access to app-config (Issue #285) ---
+    print "7. Ensuring ArgoCD has least-privilege read-only access to app-config..."
+    configure_argocd_gitea_access $gitea_pod $gitea_token
+
+    # --- Step 8: Least-privilege Backstage publish credential (Issue #285) ---
+    print "8. Ensuring Backstage has a least-privilege GITEA_TOKEN for app-config publishing..."
+    configure_backstage_gitea_publisher $gitea_pod $gitea_token
+
+    # --- Step 9: Gitea Actions runner registration (Issue #285) ---
+    print "9. Ensuring the Gitea Actions runner is registered and online..."
+    configure_gitea_actions_runner $gitea_pod $gitea_token
+}
+
+# Create (idempotently) the private DigiOrg/app-config repository that is the
+# GitOps sink for generated AppClaim manifests (Issue #285 P0: "no declared
+# GitOps sink exists for generated manifests"), and seed the `claims/`
+# directory that the app-config ArgoCD Application (apps/platform/app-config.yaml)
+# watches -- this directory name MUST match core-portal's (already tested)
+# publishPhase.git.targetPath exactly, or every merged AppClaim PR silently
+# never reconciles. Uses the existing admin bootstrap token: this is one-time
+# platform bootstrap, not a per-AppClaim credential (see
+# configure_crossplane_gitea_credentials for that separate, narrower identity).
+def configure_app_config_repo [gitea_pod: string, gitea_token: string] {
+    let repo_check = (do {
+        $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /usr/local/share/ca-certificates/digiorg-local-ca.crt -sS -o /dev/null -w "%{http_code}" https://digiorg.local/gitea/api/v1/repos/DigiOrg/app-config'
+    } | complete)
+    if $repo_check.exit_code != 0 {
+        error make {msg: "Failed to query the DigiOrg/app-config repository in Gitea"}
+    }
+    let repo_status = ($repo_check.stdout | str trim)
+    if $repo_status == "200" {
+        print $"(ansi yellow)✓ Repository 'DigiOrg/app-config' already exists(ansi reset)"
+    } else if $repo_status == "404" {
+        let repo_create = (do {
+            $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /usr/local/share/ca-certificates/digiorg-local-ca.crt -sS -o /dev/null -w "%{http_code}" -X POST -H "Content-Type: application/json" --data "{\"name\":\"app-config\",\"description\":\"GitOps sink for generated AppClaim manifests (Issue #285). ArgoCD watches claims/ automatically.\",\"private\":true,\"auto_init\":true,\"default_branch\":\"main\"}" https://digiorg.local/gitea/api/v1/orgs/DigiOrg/repos'
+        } | complete)
+        if $repo_create.exit_code != 0 or (($repo_create.stdout | str trim) != "201") {
+            error make {msg: "Failed to create the DigiOrg/app-config repository in Gitea"}
+        }
+        print $"(ansi green)✓ Repository 'DigiOrg/app-config' created \(private\)(ansi reset)"
+    } else {
+        error make {msg: $"Unexpected HTTP status while querying DigiOrg/app-config: ($repo_status)"}
+    }
+
+    # Seed claims/.gitkeep so the directory the app-config Application
+    # watches exists from the first sync, even before any AppClaim PR merges.
+    let seed_check = (do {
+        $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /usr/local/share/ca-certificates/digiorg-local-ca.crt -sS -o /dev/null -w "%{http_code}" https://digiorg.local/gitea/api/v1/repos/DigiOrg/app-config/contents/claims/.gitkeep'
+    } | complete)
+    if $seed_check.exit_code != 0 {
+        error make {msg: "Failed to query the app-config claims/.gitkeep seed file"}
+    }
+    let seed_status = ($seed_check.stdout | str trim)
+    if $seed_status == "200" {
+        print $"(ansi yellow)✓ 'claims/' already seeded(ansi reset)"
+    } else if $seed_status == "404" {
+        let seed_content = ("" | encode base64)
+        let seed_create = (do {
+            $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c $'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /usr/local/share/ca-certificates/digiorg-local-ca.crt -sS -o /dev/null -w "%{http_code}" -X POST -H "Content-Type: application/json" --data "{\"content\":\"($seed_content)\",\"message\":\"chore: seed claims directory, issue 285\",\"branch\":\"main\"}" https://digiorg.local/gitea/api/v1/repos/DigiOrg/app-config/contents/claims/.gitkeep'
+        } | complete)
+        if $seed_create.exit_code != 0 or (($seed_create.stdout | str trim) != "201") {
+            error make {msg: "Failed to seed the app-config claims/ directory"}
+        }
+        print $"(ansi green)✓ 'claims/' seeded(ansi reset)"
+    } else {
+        error make {msg: $"Unexpected HTTP status while checking the claims/ seed file: ($seed_status)"}
+    }
+}
+
+# Create a dedicated, least-privilege Gitea identity for Crossplane's per-app
+# repository/CI provisioning (Issue #285 security constraint: "do not reuse a
+# broad platform administrator token"). Distinct from gitea_admin (one-time
+# platform bootstrap only) and from argocd-reader (read-only GitOps sink
+# access, below) -- this identity can only create repositories under DigiOrg
+# and push their contents, nothing else. Resume-safe: an existing Secret's
+# token is preserved; rotation is an explicit operator action.
+def configure_crossplane_gitea_credentials [gitea_pod: string, gitea_token: string] {
+    let secret_exists = ((do -i { kubectl --kubeconfig $KUBECONFIG_PATH get secret crossplane-gitea-credentials -n crossplane-system } | complete).exit_code == 0)
+
+    let users_result = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- su git -c 'gitea admin user list'
+    } | complete)
+    if $users_result.exit_code != 0 {
+        error make {msg: "Failed to list existing Gitea users"}
+    }
+    if not ($users_result.stdout | lines | any {|line| $line | str contains "crossplane-provisioner" }) {
+        gitea_create_user_random_password $gitea_pod "crossplane-provisioner" "crossplane-provisioner@digiorg.local" false
+    }
+    gitea_unset_service_user_must_change_password $gitea_pod "crossplane-provisioner"
+
+    # Team scoped to repo creation + code push only -- no org administration,
+    # no member/webhook management (can_create_org_repo is the specific Gitea
+    # team permission that lets a non-Owner member create repos in the org).
+    let teams_result = (do {
+        $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /usr/local/share/ca-certificates/digiorg-local-ca.crt -fsS https://digiorg.local/gitea/api/v1/orgs/DigiOrg/teams'
+    } | complete)
+    if $teams_result.exit_code != 0 {
+        error make {msg: "Failed to retrieve the DigiOrg teams from Gitea"}
+    }
+    let provisioners_team = ($teams_result.stdout | from json | where name == "platform-provisioners")
+    let provisioners_team_id = if ($provisioners_team | is-empty) {
+        let team_create = (do {
+            $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /usr/local/share/ca-certificates/digiorg-local-ca.crt -fsS -X POST -H "Content-Type: application/json" --data "{\"name\":\"platform-provisioners\",\"description\":\"Least-privilege team: create+push app source repositories only (Issue #285)\",\"permission\":\"write\",\"can_create_org_repo\":true,\"units\":[\"repo.code\"]}" https://digiorg.local/gitea/api/v1/orgs/DigiOrg/teams'
+        } | complete)
+        if $team_create.exit_code != 0 {
+            error make {msg: "Failed to create the platform-provisioners Gitea team"}
+        }
+        (($team_create.stdout | from json).id)
+    } else {
+        ($provisioners_team | get id | first)
+    }
+    print $"(ansi green)✓ DigiOrg 'platform-provisioners' team ID: ($provisioners_team_id)(ansi reset)"
+
+    let member_check = (do {
+        $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c $'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /usr/local/share/ca-certificates/digiorg-local-ca.crt -sS -o /dev/null -w "%{http_code}" https://digiorg.local/gitea/api/v1/teams/($provisioners_team_id)/members/crossplane-provisioner'
+    } | complete)
+    if not (($member_check.exit_code == 0) and (($member_check.stdout | str trim) == "200")) {
+        let member_add = (do {
+            $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c $'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /usr/local/share/ca-certificates/digiorg-local-ca.crt -fsS -X PUT https://digiorg.local/gitea/api/v1/teams/($provisioners_team_id)/members/crossplane-provisioner'
+        } | complete)
+        if $member_add.exit_code != 0 {
+            error make {msg: "Failed to add crossplane-provisioner to the platform-provisioners team"}
+        }
+    }
+
+    # Only the token itself is resume-preserved (rotation is an explicit
+    # operator action); user existence and team membership above are always
+    # re-verified/repaired first, even when the Secret already exists (Issue
+    # #285 blocker #9: authorization drift must not be silently trusted).
+    if $secret_exists {
+        print $"(ansi yellow)✓ 'crossplane-gitea-credentials' already present — preserved \(membership re-verified\)(ansi reset)"
+        return
+    }
+
+    # Scoped ONLY to write:repository -- not the broad admin scope list used
+    # for the one-time platform bootstrap token.
+    let token_name = $"crossplane-((date now | format date '%Y%m%d%H%M%S'))"
+    let token_result = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- su git -c $'gitea admin user generate-access-token --username crossplane-provisioner --token-name "($token_name)" --scopes write:repository --raw'
+    } | complete)
+    if $token_result.exit_code != 0 {
+        error make {msg: "Failed to generate the crossplane-provisioner access token"}
+    }
+    let provisioner_token = ($token_result.stdout | str trim)
+    if ($provisioner_token | is-empty) {
+        error make {msg: "Gitea returned an empty crossplane-provisioner access token"}
+    }
+    persist_opaque_secret "crossplane-system" "crossplane-gitea-credentials" "token" $provisioner_token
+    print $"(ansi green)✓ Least-privilege 'crossplane-gitea-credentials' created \(write:repository only\)(ansi reset)"
+}
+
+# Create a dedicated, read-only Gitea identity so ArgoCD's repo-server can
+# clone DigiOrg/app-config without any Gitea admin credential. The GitOps PR
+# destination and the credential that reads it back are a deliberately
+# separate concern from the per-app Gitea provisioning identity above (Issue
+# #285: "The GitOps pull-request repository and the per-application Gitea
+# source repository are separate concerns and must not be conflated").
+def configure_argocd_gitea_access [gitea_pod: string, gitea_token: string] {
+    let secret_exists = ((do -i { kubectl --kubeconfig $KUBECONFIG_PATH get secret app-config-repo-creds -n argocd } | complete).exit_code == 0)
+
+    let users_result = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- su git -c 'gitea admin user list'
+    } | complete)
+    if $users_result.exit_code != 0 {
+        error make {msg: "Failed to list existing Gitea users"}
+    }
+    if not ($users_result.stdout | lines | any {|line| $line | str contains "argocd-reader" }) {
+        gitea_create_user_random_password $gitea_pod "argocd-reader" "argocd-reader@digiorg.local" false
+    }
+    gitea_unset_service_user_must_change_password $gitea_pod "argocd-reader"
+
+    # Read-only collaborator on DigiOrg/app-config ONLY -- no org membership,
+    # no other repository. Re-applied every run (idempotent PUT) so a resumed
+    # run repairs drift even when the token Secret already exists (Issue #285
+    # blocker #9).
+    let collab_add = (do {
+        $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /usr/local/share/ca-certificates/digiorg-local-ca.crt -fsS -X PUT -H "Content-Type: application/json" --data "{\"permission\":\"read\"}" https://digiorg.local/gitea/api/v1/repos/DigiOrg/app-config/collaborators/argocd-reader'
+    } | complete)
+    if $collab_add.exit_code != 0 {
+        error make {msg: "Failed to grant argocd-reader read-only access to DigiOrg/app-config"}
+    }
+    print $"(ansi green)✓ 'argocd-reader' has read-only access to DigiOrg/app-config(ansi reset)"
+
+    # Only the token itself is resume-preserved (rotation is an explicit
+    # operator action); user existence and collaborator access above are
+    # always re-verified/repaired first, even when the Secret already exists.
+    if $secret_exists {
+        print $"(ansi yellow)✓ ArgoCD app-config repository credential already present — preserved \(membership re-verified\)(ansi reset)"
+        return
+    }
+
+    # Scoped ONLY to read:repository.
+    let token_name = $"argocd-((date now | format date '%Y%m%d%H%M%S'))"
+    let token_result = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- su git -c $'gitea admin user generate-access-token --username argocd-reader --token-name "($token_name)" --scopes read:repository --raw'
+    } | complete)
+    if $token_result.exit_code != 0 {
+        error make {msg: "Failed to generate the argocd-reader access token"}
+    }
+    let reader_token = ($token_result.stdout | str trim)
+    if ($reader_token | is-empty) {
+        error make {msg: "Gitea returned an empty argocd-reader access token"}
+    }
+    # The trusted digiorg.local ingress over HTTPS (Issue #285 TLS
+    # hardening) -- must exact-match apps/platform/app-config.yaml's
+    # spec.source.repoURL (see the comment there for why).
+    persist_argocd_repo_secret "app-config-repo-creds" "https://digiorg.local/gitea/DigiOrg/app-config.git" "argocd-reader" $reader_token
+    print $"(ansi green)✓ ArgoCD app-config repository credential created \(read:repository only\)(ansi reset)"
+}
+
+# Create a dedicated, least-privilege Gitea identity for Backstage's own
+# create-pull-request publish action (Issue #285 blocker #2: Backstage's
+# core-portal app-config.yaml expects GITEA_TOKEN -- integrations.gitea[0].
+# password: ${GITEA_TOKEN} -- but no dedicated identity/env wiring existed,
+# so publishing an AppClaim manifest could never authenticate). Write access
+# ONLY to the private DigiOrg/app-config repository -- no org membership, no
+# other repository, and a separate identity from crossplane-provisioner
+# (creates per-app source repos) and argocd-reader (read-only GitOps sync):
+# each of the three credentials this issue introduces is scoped to exactly
+# one actor's actual need.
+def configure_backstage_gitea_publisher [gitea_pod: string, gitea_token: string] {
+    let secret_exists = ((do -i { kubectl --kubeconfig $KUBECONFIG_PATH get secret backstage-gitea-credentials -n backstage } | complete).exit_code == 0)
+
+    let users_result = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- su git -c 'gitea admin user list'
+    } | complete)
+    if $users_result.exit_code != 0 {
+        error make {msg: "Failed to list existing Gitea users"}
+    }
+    if not ($users_result.stdout | lines | any {|line| $line | str contains "backstage-appclaim-publisher" }) {
+        gitea_create_user_random_password $gitea_pod "backstage-appclaim-publisher" "backstage-appclaim-publisher@digiorg.local" false
+    }
+    gitea_unset_service_user_must_change_password $gitea_pod "backstage-appclaim-publisher"
+
+    # Write collaborator on DigiOrg/app-config ONLY -- no org membership, no
+    # other repository. Re-applied every run (idempotent PUT) so a resumed
+    # run repairs drift even when the token Secret already exists (Issue #285
+    # blocker #9).
+    let collab_add = (do {
+        $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /usr/local/share/ca-certificates/digiorg-local-ca.crt -fsS -X PUT -H "Content-Type: application/json" --data "{\"permission\":\"write\"}" https://digiorg.local/gitea/api/v1/repos/DigiOrg/app-config/collaborators/backstage-appclaim-publisher'
+    } | complete)
+    if $collab_add.exit_code != 0 {
+        error make {msg: "Failed to grant backstage-appclaim-publisher write access to DigiOrg/app-config"}
+    }
+    print $"(ansi green)✓ 'backstage-appclaim-publisher' has write access to DigiOrg/app-config(ansi reset)"
+
+    # Only the token itself is resume-preserved (rotation is an explicit
+    # operator action); user existence and collaborator access above are
+    # always re-verified/repaired first, even when the Secret already exists.
+    if $secret_exists {
+        print $"(ansi yellow)✓ Backstage app-config publish credential already present — preserved \(membership re-verified\)(ansi reset)"
+        return
+    }
+
+    # Scoped ONLY to write:repository -- Backstage only needs to push a
+    # branch and open a pull request against DigiOrg/app-config.
+    let token_name = $"backstage-((date now | format date '%Y%m%d%H%M%S'))"
+    let token_result = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- su git -c $'gitea admin user generate-access-token --username backstage-appclaim-publisher --token-name "($token_name)" --scopes write:repository --raw'
+    } | complete)
+    if $token_result.exit_code != 0 {
+        error make {msg: "Failed to generate the backstage-appclaim-publisher access token"}
+    }
+    let publisher_token = ($token_result.stdout | str trim)
+    if ($publisher_token | is-empty) {
+        error make {msg: "Gitea returned an empty backstage-appclaim-publisher access token"}
+    }
+    # Dedicated single-purpose Secret, deliberately NOT a new key merged into
+    # the shared multi-key backstage-secrets object: persist_opaque_secret
+    # applies a Secret containing only this one key, and Kubernetes'
+    # three-way apply would otherwise prune backstage-secrets' other keys
+    # (POSTGRES_PASSWORD, AUTH_SESSION_SECRET, AUTH_OIDC_CLIENT_SECRET, ...).
+    persist_opaque_secret "backstage" "backstage-gitea-credentials" "GITEA_TOKEN" $publisher_token
+    print $"(ansi green)✓ Least-privilege 'backstage-gitea-credentials' created \(write:repository only\)(ansi reset)"
+}
+
+# Generate (once, resume-preserved) and persist the Gitea Actions runner
+# registration token, then unconditionally verify the runner is actually
+# online (Issue #285 blocker #4). Uses the exact Gitea Admin API this
+# platform's pinned chart actually runs (apps/platform/gitea.yaml: chart
+# 12.6.0, appVersion 1.26.1) -- confirmed against go-gitea/gitea's
+# templates/swagger/v1_json.tmpl at tag v1.26.1:
+# `POST /api/v1/admin/actions/runners/registration-token`. The older v1.23
+# `GET /api/v1/admin/runners/registration-token` no longer exists on this
+# chart's pinned appVersion. Registers at instance scope (the admin
+# endpoint), so the runner is available to every org/repo, including
+# DigiOrg/app-config and every per-app Gitea repository the pipeline
+# Composition creates. Uses the platform admin bootstrap token deliberately:
+# registering the one shared platform CI runner is one-time platform
+# bootstrap, not a per-app credential.
+def configure_gitea_actions_runner [gitea_pod: string, gitea_token: string] {
+    let secret_exists = ((do -i { kubectl --kubeconfig $KUBECONFIG_PATH get secret gitea-actions-runner-token -n gitea } | complete).exit_code == 0)
+
+    if not $secret_exists {
+        let token_result = (do {
+            $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /usr/local/share/ca-certificates/digiorg-local-ca.crt -fsS -X POST https://digiorg.local/gitea/api/v1/admin/actions/runners/registration-token'
+        } | complete)
+        if $token_result.exit_code != 0 {
+            error make {msg: "Failed to generate the Gitea Actions runner registration token"}
+        }
+        let parsed = (try { $token_result.stdout | from json } catch { null })
+        let runner_token = if (($parsed | describe | str starts-with "record")) { ($parsed | get -o token | default "") } else { "" }
+        if ($runner_token | is-empty) {
+            error make {msg: "Gitea returned an empty Actions runner registration token"}
+        }
+        persist_opaque_secret "gitea" "gitea-actions-runner-token" "token" $runner_token
+        print $"(ansi green)✓ Gitea Actions runner registration token generated and persisted(ansi reset)"
+    } else {
+        print $"(ansi yellow)✓ 'gitea-actions-runner-token' already present — preserved(ansi reset)"
+    }
+
+    # Registration state (act_runner's own `.runner` file, on the runner's
+    # PersistentVolumeClaim) is what makes re-registration resume-stable, not
+    # this Secret alone -- so coming online is re-verified every run,
+    # regardless of whether the token above was just generated or preserved.
+    wait_for_gitea_actions_runner_online $gitea_pod $gitea_token
+}
+
+# Poll Gitea's Admin API until the runner named "digiorg-local-runner" is
+# listed and its status is explicitly "online". Gitea's Admin API only ever
+# emits "status": "online" or "offline" for a runner (services/convert/
+# convert.go's ToActionRunner @ go-gitea/gitea v1.26.1 hardcodes apiStatus to
+# "offline" and overwrites it to "online" only when runner.IsOnline() --
+# there is no third value). Accepting anything other than the literal
+# "online" -- including this function's own "unknown" fallback for a
+# missing/malformed `status` field -- fails closed instead of treating an
+# unverified/unrecognized status as ready. Bounded and fails closed: a
+# runner that never registers (bad token, image pull failure, rootless
+# dockerd startup failure, ...) surfaces as a real, actionable error here
+# rather than a silently-broken CI/CD capability discovered only later on
+# the first AppClaim's Gitea Actions run.
+def wait_for_gitea_actions_runner_online [gitea_pod: string, gitea_token: string] {
+    print "Waiting for the Gitea Actions runner to register and come online..."
+    mut last_diagnostic = "runner status was not observed"
+    for attempt in 1..60 {
+        let result = (do {
+            $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /usr/local/share/ca-certificates/digiorg-local-ca.crt -fsS https://digiorg.local/gitea/api/v1/admin/actions/runners'
+        } | complete)
+        if $result.exit_code == 0 {
+            let parsed = (try { $result.stdout | from json } catch { null })
+            let runners = if (($parsed | describe | str starts-with "record")) { ($parsed | get -o runners | default []) } else { [] }
+            let matching = ($runners | where {|r| ($r | get -o name | default "") == "digiorg-local-runner" })
+            if (($matching | length) > 0) {
+                let status = ($matching | first | get -o status | default "unknown")
+                $last_diagnostic = $"status=($status)"
+                if $status == "online" {
+                    print $"(ansi green)✓ Gitea Actions runner 'digiorg-local-runner' is registered \(status: ($status)\)(ansi reset)"
+                    return
+                }
+            } else {
+                $last_diagnostic = "runner 'digiorg-local-runner' not yet listed"
+            }
+        } else {
+            $last_diagnostic = ($result.stderr | str trim)
+        }
+        sleep 5sec
+    }
+    error make {msg: $"Gitea Actions runner did not come online within the timeout \(last status: ($last_diagnostic)\)"}
 }
 
 # Compare SonarQube's /api/settings/values response with an expected JSON record.
@@ -2362,6 +3132,25 @@ def restart_oidc_deployment [namespace: string, deployment: string, timeout: str
     print $"(ansi green)✓ ($namespace)/($deployment) restarted(ansi reset)"
 }
 
+# A newly created CA Secret can precede Argo CD creating the Actions runner on
+# a clean cluster. Missing is therefore safe only for this early refresh path:
+# the runner will mount the current CA when it is first created. API, RBAC and
+# transport failures remain fatal, while an existing Deployment uses the same
+# strict restart/rollout gate as every other OIDC client.
+def restart_oidc_deployment_if_present [namespace: string, deployment: string, timeout: string] {
+    let lookup = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH get deployment $deployment -n $namespace --ignore-not-found -o name
+    } | complete)
+    if $lookup.exit_code != 0 {
+        error make {msg: $"Failed to determine whether deployment ($namespace)/($deployment) exists"}
+    }
+    if ($lookup.stdout | str trim | is-empty) {
+        print $"(ansi yellow)○ ($namespace)/($deployment) not created yet; it will mount the current CA on first start(ansi reset)"
+        return
+    }
+    restart_oidc_deployment $namespace $deployment $timeout
+}
+
 # Restart pods that depend on OIDC/Keycloak. This function is called only after
 # both Gitea and SonarQube configuration returned successfully.
 def restart_oidc_dependent_pods [] {
@@ -2381,6 +3170,54 @@ def restart_oidc_dependent_pods [] {
 # -----------------------------------------------------------------------------
 # Helper Functions
 # -----------------------------------------------------------------------------
+
+# Issue #285 (TLS hardening): copy only the public digiorg.local CA
+# certificate -- never cert-manager's private key -- from
+# cert-manager/digiorg-local-ca-secret into an Opaque Secret named
+# `digiorg-local-ca` in the given namespace, so credential-bearing clients
+# there (the crossplane provider-http ProviderConfig, Backstage, the Gitea
+# Actions runner) can verify the digiorg.local ingress's certificate without
+# insecureSkipVerify/NODE_TLS_REJECT_UNAUTHORIZED/-k. Idempotent (safe on
+# both a first bootstrap run and a resumed one): re-applies every run, and
+# returns whether the content actually changed so callers can decide whether
+# a dependent client needs restarting.
+def copy_digiorg_local_ca_to_namespace [target_namespace: string] {
+    $env.KUBECONFIG = $KUBECONFIG_PATH
+    let secret_name = "digiorg-local-ca"
+
+    let ca_cert_b64_result = (do {
+        kubectl get secret digiorg-local-ca-secret -n cert-manager -o jsonpath='{.data.ca\.crt}'
+    } | complete)
+    if $ca_cert_b64_result.exit_code != 0 or ($ca_cert_b64_result.stdout | str trim | is-empty) {
+        error make {msg: $"Could not extract the CA certificate to copy into ($target_namespace)"}
+    }
+    let ca_cert = ($ca_cert_b64_result.stdout | str trim)
+
+    let previous_b64_result = (do {
+        kubectl get secret $secret_name -n $target_namespace -o jsonpath='{.data.ca\.crt}'
+    } | complete)
+    let unchanged = ($previous_b64_result.exit_code == 0) and (($previous_b64_result.stdout | str trim) == $ca_cert)
+
+    # Windows/KinD-portable: a real temp file (not /dev/stdin) handed to
+    # `kubectl create secret --from-file`, matching the pattern
+    # patch_argocd_oidc_ca already uses for this same CA cert content.
+    let ca_tmp_file = $"digiorg-local-ca-($target_namespace).crt"
+    ($ca_cert | decode base64 | decode) | save -f $ca_tmp_file
+    let apply_result = (do {
+        (kubectl create secret generic $secret_name --namespace $target_namespace $"--from-file=ca.crt=($ca_tmp_file)" --dry-run=client -o yaml) | kubectl apply -f -
+    } | complete)
+    rm $ca_tmp_file
+    if $apply_result.exit_code != 0 {
+        error make {msg: $"Failed to copy the digiorg.local CA certificate into ($target_namespace)"}
+    }
+
+    if $unchanged {
+        print $"(ansi yellow)✓ CA cert already current in ($target_namespace)/($secret_name)(ansi reset)"
+    } else {
+        print $"(ansi green)✓ CA cert copied into ($target_namespace)/($secret_name)(ansi reset)"
+    }
+    not $unchanged
+}
 
 # Patch ArgoCD OIDC config with the self-signed CA cert via Helm upgrade.
 # Uses helm upgrade --reuse-values so ArgoCD self-sync does not overwrite it.
@@ -2437,8 +3274,19 @@ requestedScopes:
 rootCA: |\n($indented_cert)
 "
 
-    # Write Helm values override with oidc.config containing rootCA
-    let helm_override = {configs: {cm: {"oidc.config": $oidc_config}}}
+    # Write Helm values override with oidc.config containing rootCA, plus
+    # (Issue #285 TLS hardening) configs.tls.certificates -- the argo-cd
+    # chart's argocd-tls-certs-cm mechanism -- so ArgoCD's repo-server trusts
+    # this same CA for the app-config GitOps sink repo
+    # (apps/platform/app-config.yaml), now cloned via the trusted
+    # digiorg.local ingress over HTTPS rather than the raw in-cluster
+    # gitea-http Service address.
+    let helm_override = {
+        configs: {
+            cm: {"oidc.config": $oidc_config}
+            tls: {certificates: {"digiorg.local": $ca_cert}}
+        }
+    }
     $helm_override | to yaml | save -f ./argocd-oidc-override.yaml
 
     # Re-run helm upgrade with the override — embeds CA cert in the Helm release
@@ -2533,13 +3381,13 @@ def check_prerequisites [] {
     # never block `main up`; report it informationally instead.
     let expected_argocd_minor = "3.4"
     if (which argocd | is-empty) {
-        print $"(ansi yellow)  argocd CLI not found (optional) — the stale-status zero-diff fallback will be unavailable(ansi reset)"
+        print $"(ansi yellow)  argocd CLI not found \(optional\) — the stale-status zero-diff fallback will be unavailable(ansi reset)"
     } else {
         let argocd_version = (do { argocd version --client --short } | complete)
         if $argocd_version.exit_code == 0 and (argocd_client_version_compatible $argocd_version.stdout $expected_argocd_minor) {
             print $"(ansi green)✓ argocd CLI \(compatible with v($expected_argocd_minor).x\)(ansi reset)"
         } else {
-            print $"(ansi yellow)  argocd CLI found but not compatible with v($expected_argocd_minor).x (optional) — the stale-status zero-diff fallback will be unavailable(ansi reset)"
+            print $"(ansi yellow)  argocd CLI found but not compatible with v($expected_argocd_minor).x \(optional\) — the stale-status zero-diff fallback will be unavailable(ansi reset)"
         }
     }
 
