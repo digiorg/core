@@ -1425,6 +1425,18 @@ def sync_gated_apps_for_local_dev [] {
     print $"(ansi cyan_bold)Promoting gated upgrades sequentially on local KinD(ansi reset)"
     for app in $gated_apps {
         if $app == "crossplane-harbor-bootstrap" {
+            # Issue #285 runtime-v10: this Application's Request objects need
+            # crossplane-system/digiorg-local-ca (proven live ReconcileError:
+            # missing crossplane-system/digiorg-local-ca), but Phase 3's CA
+            # copy in `main up` runs AFTER this gated sync loop. Wait only for
+            # cert-manager itself and its Certificate here -- never for the
+            # Harbor Application, which is not yet synced and would deadlock
+            # on Harbor's own PostSync hooks -- then copy the CA before the
+            # existing provider-http gate runs. Idempotent with Phase 3's copy.
+            wait_for_configuration_dependencies "Crossplane Harbor bootstrap TLS" ["cert-manager"] [
+                {namespace: "cert-manager", name: "digiorg-local-ca"}
+            ]
+            copy_digiorg_local_ca_to_namespace "crossplane-system"
             wait_for_provider_http_ready
         }
         mut exists = false

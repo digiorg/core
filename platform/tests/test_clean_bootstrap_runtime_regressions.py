@@ -86,6 +86,48 @@ class CrossplaneHarborOrderingTest(unittest.TestCase):
         loop = func_body("sync_gated_apps_for_local_dev")
         self.assertLess(loop.index("wait_for_provider_http_ready"), loop.index("kubectl patch application $app"))
 
+    def test_harbor_bootstrap_waits_for_ca_before_sync_without_depending_on_harbor_app(self):
+        """Issue #285 runtime-v10: `crossplane-harbor-bootstrap` was promoted
+        by this gated loop before Phase 3 (main up) had copied the
+        digiorg.local CA into crossplane-system, so `Request
+        harbor-crossplane-system-robot` went OutOfSync/Synced=False with
+        ReconcileError: missing crossplane-system/digiorg-local-ca. The
+        branch that gates this Application must wait only for cert-manager
+        itself (never the not-yet-synced Harbor Application -- that would
+        deadlock on Harbor's own PostSync hooks) and its Certificate, then
+        copy the CA, then run the existing provider-http gate, in that exact
+        order, before this Application is patched to sync."""
+        body = func_body("sync_gated_apps_for_local_dev")
+        branch_start = body.index('if $app == "crossplane-harbor-bootstrap"')
+        branch_end = body.index("mut exists = false", branch_start)
+        branch = body[branch_start:branch_end]
+
+        self.assertIn("wait_for_configuration_dependencies", branch)
+        self.assertIn('copy_digiorg_local_ca_to_namespace "crossplane-system"', branch)
+        self.assertIn("wait_for_provider_http_ready", branch)
+
+        dependency_pos = branch.index("wait_for_configuration_dependencies")
+        copy_pos = branch.index('copy_digiorg_local_ca_to_namespace "crossplane-system"')
+        provider_pos = branch.index("wait_for_provider_http_ready")
+        self.assertLess(
+            dependency_pos, copy_pos,
+            "must wait for cert-manager/its Certificate before copying the CA",
+        )
+        self.assertLess(
+            copy_pos, provider_pos,
+            "must copy the CA before the existing provider-http gate runs",
+        )
+
+        dependency_call = branch[dependency_pos:copy_pos]
+        self.assertIn('"cert-manager"', dependency_call)
+        self.assertIn('"digiorg-local-ca"', dependency_call)
+        self.assertNotIn(
+            '"harbor"', dependency_call,
+            "must never wait on the not-yet-synced Harbor Application -- "
+            "that would deadlock on Harbor's own PostSync hooks",
+        )
+
+
     def test_gate_fails_fast_and_redacts_deterministic_kubectl_failures(self):
         scenarios = {
             "forbidden": (1, "", "Forbidden transport-secret-sentinel"),
