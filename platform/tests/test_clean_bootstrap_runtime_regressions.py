@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Regression contracts discovered by Issue #285 clean bootstrap run #6."""
 from pathlib import Path
+import json
 import os
 import re
 import subprocess
@@ -128,6 +129,153 @@ class CrossplaneHarborOrderingTest(unittest.TestCase):
         )
         self.assertEqual(not_found.returncode, 0, not_found.stderr)
         self.assertEqual(not_found.stdout.strip(), "true")
+
+
+class ProviderHttpRawApiGateTest(unittest.TestCase):
+    """PR #286: `kubectl get provider`/`providerrevision` resolves through
+    discovery/RESTMapper, which can be stale immediately after the package
+    CRDs install and then fails with a generic (non-NotFound) error that
+    never recovers -- this is exactly what stalled runtime-v8 stdout5 right
+    after crossplane-provider-configs went Healthy. The gate must instead
+    hit the pinned pkg.crossplane.io/v1 raw API directly."""
+
+    FAKE_KUBECTL = (
+        "#!/usr/bin/env python3\n"
+        "import json, os, sys\n"
+        "args = sys.argv[1:]\n"
+        "with open(os.environ['KUBECTL_ARGV_LOG'], 'a', encoding='utf-8') as log:\n"
+        "    log.write(json.dumps(args) + '\\n')\n"
+        "scenario = os.environ.get('FAKE_SCENARIO', 'healthy')\n"
+        "counter_path = os.environ['CALL_COUNTER']\n"
+        "def bump(key):\n"
+        "    counts = json.loads(open(counter_path, encoding='utf-8').read()) if os.path.exists(counter_path) else {}\n"
+        "    counts[key] = counts.get(key, 0) + 1\n"
+        "    open(counter_path, 'w', encoding='utf-8').write(json.dumps(counts))\n"
+        "    return counts[key]\n"
+        "if 'wait' in args:\n"
+        "    sys.exit(0)\n"
+        "if '--raw' not in args:\n"
+        "    sys.exit(2)\n"
+        "path = args[args.index('--raw') + 1]\n"
+        "if path.startswith('/apis/pkg.crossplane.io/v1/providers/'):\n"
+        "    n = bump('provider')\n"
+        "    if scenario == 'provider_not_found_then_success' and n < 3:\n"
+        "        sys.stderr.write('Error from server (NotFound): providers.pkg.crossplane.io \"provider-http\" not found\\n')\n"
+        "        sys.exit(1)\n"
+        "    if scenario == 'provider_forbidden':\n"
+        "        sys.stderr.write('Error from server (Forbidden): cannot get providers.pkg.crossplane.io: Authorization: Bearer ' + os.environ['SENTINEL'] + '\\n')\n"
+        "        sys.exit(1)\n"
+        "    if scenario == 'credential_helper_not_found':\n"
+        "        sys.stderr.write('error: getting credentials: exec: executable credential-helper not found: secret=' + os.environ['SENTINEL'] + '\\n')\n"
+        "        sys.exit(1)\n"
+        "    if scenario == 'provider_huge_stderr':\n"
+        "        sys.stderr.write('z' * 5000)\n"
+        "        sys.exit(1)\n"
+        "    if scenario == 'provider_malformed_json':\n"
+        "        sys.stdout.write('{not-json')\n"
+        "        sys.exit(0)\n"
+        "    if scenario == 'invalid_revision_name':\n"
+        "        sys.stdout.write(json.dumps({'status': {'currentRevision': '../../etc/passwd'}}))\n"
+        "        sys.exit(0)\n"
+        "    if scenario == 'oversized_revision_label':\n"
+        "        sys.stdout.write(json.dumps({'status': {'currentRevision': 'a' * 64}}))\n"
+        "        sys.exit(0)\n"
+        "    sys.stdout.write(json.dumps({'status': {'currentRevision': 'provider-http-abc123def456'}}))\n"
+        "    sys.exit(0)\n"
+        "if path.startswith('/apis/pkg.crossplane.io/v1/providerrevisions/'):\n"
+        "    n = bump('revision')\n"
+        "    if scenario == 'revision_not_found_then_success' and n < 3:\n"
+        "        sys.stderr.write('Error from server (NotFound): providerrevisions.pkg.crossplane.io \"x\" not found\\n')\n"
+        "        sys.exit(1)\n"
+        "    sys.stdout.write(json.dumps({'spec': {'desiredState': 'Active'}, 'status': {'conditions': [{'type': 'Healthy', 'status': 'True'}]}}))\n"
+        "    sys.exit(0)\n"
+        "sys.exit(2)\n"
+    )
+
+    def _run(self, scenario, sentinel="sentinel-http-credential-value", timeout=15):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = Path(tmp) / "kubectl"
+            fake.write_text(self.FAKE_KUBECTL, encoding="utf-8")
+            fake.chmod(0o755)
+            argv_log = Path(tmp) / "argv.log"
+            counter = Path(tmp) / "counter.json"
+            env = os.environ.copy()
+            env["PATH"] = tmp + os.pathsep + env.get("PATH", "")
+            env["KUBECTL_ARGV_LOG"] = str(argv_log)
+            env["CALL_COUNTER"] = str(counter)
+            env["FAKE_SCENARIO"] = scenario
+            env["SENTINEL"] = sentinel
+            started = time.monotonic()
+            result = subprocess.run(
+                ["nu", "-c", f"source {ROOT / 'scripts/local-setup.nu'}; wait_for_provider_http_ready"],
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=timeout,
+            )
+            elapsed = time.monotonic() - started
+            calls = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()] if argv_log.exists() else []
+            return result, elapsed, calls
+
+    def test_uses_exact_raw_v1_paths_for_provider_and_revision(self):
+        result, _elapsed, calls = self._run("healthy")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        raw_paths = [c[c.index("--raw") + 1] for c in calls if "--raw" in c]
+        self.assertIn("/apis/pkg.crossplane.io/v1/providers/provider-http", raw_paths)
+        self.assertIn(
+            "/apis/pkg.crossplane.io/v1/providerrevisions/provider-http-abc123def456",
+            raw_paths,
+        )
+        for call in calls:
+            if "get" in call:
+                self.assertIn("--raw", call, "must never resolve provider/providerrevision via discovery/RESTMapper")
+        wait_calls = [c for c in calls if c and c[0] == "wait"]
+        self.assertEqual(
+            wait_calls,
+            [["wait", "--for=condition=Established", "crd/requests.http.crossplane.io", "--timeout=5s"]],
+        )
+
+    def test_provider_not_found_retries_then_succeeds(self):
+        result, elapsed, _calls = self._run("provider_not_found_then_success")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertGreaterEqual(elapsed, 3.5)
+
+    def test_revision_not_found_retries_then_succeeds(self):
+        result, elapsed, _calls = self._run("revision_not_found_then_success")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertGreaterEqual(elapsed, 3.5)
+
+    def test_provider_forbidden_fails_fast_without_leaking_credential(self):
+        result, elapsed, _calls = self._run("provider_forbidden")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertLess(elapsed, 3)
+        self.assertNotIn("sentinel-http-credential-value", result.stdout + result.stderr)
+
+    def test_credential_helper_not_found_fails_fast_without_leaking_credential(self):
+        result, elapsed, _calls = self._run("credential_helper_not_found")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertLess(elapsed, 3)
+        self.assertNotIn("sentinel-http-credential-value", result.stdout + result.stderr)
+
+    def test_malformed_json_fails_fast(self):
+        result, elapsed, _calls = self._run("provider_malformed_json")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertLess(elapsed, 3)
+
+    def test_invalid_revision_name_fails_closed_without_querying_revision(self):
+        for scenario in ("invalid_revision_name", "oversized_revision_label"):
+            with self.subTest(scenario=scenario):
+                result, elapsed, calls = self._run(scenario)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertLess(elapsed, 3)
+                raw_paths = [c[c.index("--raw") + 1] for c in calls if "--raw" in c]
+                self.assertFalse(any("providerrevisions" in p for p in raw_paths))
+
+    def test_fatal_diagnostic_is_bounded_even_without_a_redactable_pattern(self):
+        result, elapsed, _calls = self._run("provider_huge_stderr")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertLess(elapsed, 3)
+        self.assertLess(len(result.stderr), 2000)
 
 
 class GiteaServiceIdentityTest(unittest.TestCase):

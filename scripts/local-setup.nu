@@ -1289,18 +1289,67 @@ def kubectl_wait_is_pending [result: record] {
     (kubectl_result_is_not_found $result) or ($diagnostic | str contains "timed out waiting")
 }
 
+# Kubernetes object names are DNS-1123 subdomains. A value that doesn't match
+# cannot be a real resource name the apiserver would have assigned, so treat
+# it as untrusted and refuse to interpolate it into a request path.
+def is_valid_k8s_resource_name [name: string] {
+    if ($name | is-empty) or (($name | str length) > 253) {
+        return false
+    }
+    let labels = ($name | split row ".")
+    $labels | all {|label|
+        let non_empty = not ($label | is-empty)
+        let valid_length = (($label | str length) <= 63)
+        let valid_characters = (($label | parse --regex '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$' | length) == 1)
+        $non_empty and $valid_length and $valid_characters
+    }
+}
+
+def provider_http_failure_summary [result: record] {
+    let diagnostic = $"($result.stdout) ($result.stderr)" | str lowercase
+    if ($diagnostic | str contains "forbidden") {
+        return "Kubernetes API denied the request (Forbidden)"
+    }
+    if ($diagnostic | str contains "unauthorized") or ($diagnostic | str contains "unauthenticated") {
+        return "Kubernetes API rejected authentication"
+    }
+    if ($diagnostic | str contains "credential") or ($diagnostic | str contains "kubeconfig") or ($diagnostic | str contains "current-context") {
+        return "kubectl credential or configuration error"
+    }
+    let transport_markers = [
+        "connection refused", "connection reset", "no route to host",
+        "i/o timeout", "tls handshake timeout", "dial tcp",
+        "context deadline exceeded", "server misbehaving", "no such host",
+        "transport is closing", "error reading from server: eof",
+    ]
+    if ($transport_markers | any {|marker| $diagnostic | str contains $marker }) {
+        return "Kubernetes API transport error"
+    }
+    # kubectl and credential helpers are external processes. Their diagnostics
+    # are untrusted and can echo credentials in arbitrary formats, so never
+    # include raw stdout/stderr in the terminal error.
+    "kubectl request failed (details suppressed)"
+}
+
 # crossplane-harbor-bootstrap contains provider-http Request objects. Argo sync
 # waves order Application creation only; they do not prove that package CRDs
 # have been installed. Gate the first Request on the active revision and CRD.
 def wait_for_provider_http_ready [] {
     print "  Waiting for provider-http ProviderRevision and Request CRD..."
     for attempt in 1..180 {
+        # `kubectl get provider`/`providerrevision` resolves the resource
+        # through discovery/RESTMapper, which can still be stale right after
+        # the package CRDs install -- it then fails with a generic discovery
+        # error (not NotFound) that never recovers on its own. `--raw` hits
+        # the pinned pkg.crossplane.io/v1 path directly (group/version/scope
+        # confirmed against the Crossplane v2.3.3 upstream CRDs), bypassing
+        # discovery entirely.
         let provider_result = (do {
-            kubectl get provider provider-http -o json
+            kubectl get --raw /apis/pkg.crossplane.io/v1/providers/provider-http
         } | complete)
         if $provider_result.exit_code != 0 {
             if not (kubectl_result_is_not_found $provider_result) {
-                error make {msg: "Failed to query provider-http while waiting for readiness"}
+                error make {msg: $"Failed to query provider-http while waiting for readiness: (provider_http_failure_summary $provider_result)"}
             }
         } else {
             let provider = (try { $provider_result.stdout | from json } catch {
@@ -1308,12 +1357,15 @@ def wait_for_provider_http_ready [] {
             })
             let revision = ($provider | get -o status.currentRevision | default "")
             if not ($revision | is-empty) {
+                if not (is_valid_k8s_resource_name $revision) {
+                    error make {msg: "provider-http reported a currentRevision that is not a valid Kubernetes resource name"}
+                }
                 let revision_result = (do {
-                    kubectl get providerrevision $revision -o json
+                    kubectl get --raw $"/apis/pkg.crossplane.io/v1/providerrevisions/($revision)"
                 } | complete)
                 if $revision_result.exit_code != 0 {
                     if not (kubectl_result_is_not_found $revision_result) {
-                        error make {msg: "Failed to query the active provider-http revision"}
+                        error make {msg: $"Failed to query the active provider-http revision: (provider_http_failure_summary $revision_result)"}
                     }
                 } else {
                     let revision_state = (try { $revision_result.stdout | from json } catch {
