@@ -15,7 +15,7 @@ spec:
 
   source:
     repoURL: https://github.com/digiorg/core.git
-    targetRevision: main
+    targetRevision: issue285-runtime-v10-20260725T162655Z
     path: policies/kyverno
 
   destination:
