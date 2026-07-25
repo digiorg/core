@@ -1185,9 +1185,34 @@ def is_retryable_sync_error [message: string] {
         }
     }
 
-    # One narrowly identified resource-health race is transient only when no
-    # deterministic marker occurs anywhere in the combined diagnostics.
-    if ($normalized | str contains "containers with incomplete status:") {
+    # Two narrowly identified resource-health races are transient only when no
+    # deterministic marker occurs anywhere in the combined diagnostics: the
+    # Prometheus config-reloader sidecar taking a few seconds to become ready
+    # after container start, confirmed under two exact wordings (init-container
+    # form and stdout10's live main-container form). Argo concatenates all failed
+    # resource diagnostics. Validate every line containing a container-health
+    # fragment independently and require one complete allowlisted fragment per
+    # line; malformed, unknown, duplicated, or mixed failures stay fail-closed.
+    let container_health_lines = (
+        $normalized
+        | lines
+        | where {|line| $line | str contains "containers with " }
+    )
+    if not ($container_health_lines | is-empty) {
+        for line in $container_health_lines {
+            if (($line | split row "containers with " | length) != 2) {
+                return false
+            }
+            let confirmed_init_race = (
+                $line | str ends-with "containers with incomplete status: [init-config-reloader]"
+            )
+            let confirmed_sidecar_race = (
+                $line | str ends-with "containers with unready status: [prometheus config-reloader]"
+            )
+            if not ($confirmed_init_race or $confirmed_sidecar_race) {
+                return false
+            }
+        }
         return true
     }
 
@@ -1423,20 +1448,27 @@ def sync_gated_apps_for_local_dev [] {
 
     print ""
     print $"(ansi cyan_bold)Promoting gated upgrades sequentially on local KinD(ansi reset)"
+
+    # Issue #285 runtime-v11: crossplane-harbor-bootstrap's Request objects need
+    # crossplane-system/digiorg-local-ca (proven live ReconcileError: missing
+    # crossplane-system/digiorg-local-ca), and Harbor's own PostSync hook
+    # (Job/harbor-oidc-config) needs that same CA copied into harbor's own
+    # namespace too (proven live: Harbor's Application reaches Synced/Healthy
+    # with every pod Ready while its Running operation still waits on that
+    # hook, because Phase 3's copy into harbor runs AFTER this entire gated
+    # loop). Copy the CA into both namespaces once, before the very first
+    # gated Application sync -- root-app has already created every
+    # Application by this point -- waiting only for cert-manager itself and
+    # its Certificate, never for Harbor (which is not yet synced and would
+    # deadlock on its own PostSync hook). Idempotent with Phase 3's copies.
+    wait_for_configuration_dependencies "Digiorg local CA" ["cert-manager"] [
+        {namespace: "cert-manager", name: "digiorg-local-ca"}
+    ]
+    copy_digiorg_local_ca_to_namespace "harbor"
+    copy_digiorg_local_ca_to_namespace "crossplane-system"
+
     for app in $gated_apps {
         if $app == "crossplane-harbor-bootstrap" {
-            # Issue #285 runtime-v10: this Application's Request objects need
-            # crossplane-system/digiorg-local-ca (proven live ReconcileError:
-            # missing crossplane-system/digiorg-local-ca), but Phase 3's CA
-            # copy in `main up` runs AFTER this gated sync loop. Wait only for
-            # cert-manager itself and its Certificate here -- never for the
-            # Harbor Application, which is not yet synced and would deadlock
-            # on Harbor's own PostSync hooks -- then copy the CA before the
-            # existing provider-http gate runs. Idempotent with Phase 3's copy.
-            wait_for_configuration_dependencies "Crossplane Harbor bootstrap TLS" ["cert-manager"] [
-                {namespace: "cert-manager", name: "digiorg-local-ca"}
-            ]
-            copy_digiorg_local_ca_to_namespace "crossplane-system"
             wait_for_provider_http_ready
         }
         mut exists = false

@@ -64,6 +64,43 @@ CASES = [
         "rpc error: code = Internal desc = error reading from server: EOF",
         True,
     ),
+    # stdout10 (Issue #285 fresh-cluster run): confirmed live evidence -- the
+    # initial grafana sync failed with this exact Prometheus resource message,
+    # and minutes later, with no intervention, Grafana was Synced/Healthy and
+    # Prometheus was Available=True/Reconciled=True with every monitoring
+    # container Ready and zero restarts. Same config-reloader startup race as
+    # the "incomplete status: [init-config-reloader]" case above, just the
+    # main-container wording instead of the init-container wording.
+    (
+        "one or more synchronization tasks completed unsuccessfully\n"
+        "Prometheus/prometheus: shard 0: pod prometheus-0: containers with "
+        "unready status: [prometheus config-reloader]",
+        True,
+    ),
+    # Guards: an "unready status" message must NOT be accepted for an
+    # unrelated container set, either alone or concatenated with the confirmed
+    # Prometheus race. Argo combines all failed resource diagnostics before
+    # classification, so an allowlisted failure must never mask another one.
+    (
+        "containers with unready status: [some-other-container]",
+        False,
+    ),
+    (
+        "Prometheus/prometheus: containers with unready status: "
+        "[prometheus config-reloader]\n"
+        "Deployment/other: containers with unready status: "
+        "[some-other-container]",
+        False,
+    ),
+    (
+        "Prometheus/prometheus: containers with unready status: "
+        "[prometheus config-reloader]\n"
+        "Deployment/other: containers with unready status: "
+        "[some-other-container",
+        False,
+    ),
+    ("containers with unready status: []", False),
+    ("containers with pending status: [some-other-container]", False,),
     (
         "rpc error: code = InvalidArgument desc = failed to unmarshal manifest: "
         "yaml: line 7: mapping values are not allowed here",
