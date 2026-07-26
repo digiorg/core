@@ -1426,6 +1426,1356 @@ def wait_for_provider_http_ready [] {
     error make {msg: "provider-http did not become RevisionHealthy/RuntimeHealthy with an Established Request CRD"}
 }
 
+# Issue #285 (stdout12 live evidence, two independent fresh runs): the exact
+# three keys the crossplane-harbor-bootstrap Request injects into
+# crossplane-system/crossplane-harbor-credentials
+# (crossplane/bootstrap/harbor-robot-request.yaml's secretInjectionConfigs).
+# Shared by the probe/repair boundary below so both sides always agree on the
+# contract.
+def harbor_credential_required_keys [] {
+    ["name", "secret", "basicAuth"]
+}
+
+# Runs inside the read-only probe Job (harbor_credential_probe_job). Reports
+# per-key presence/non-emptiness with `test -s` -- it never reads, decodes or
+# prints a credential byte, only the two literal tokens `true`/`false`.
+def harbor_credential_probe_script [] {
+    '#!/bin/sh
+set -e
+umask 077
+for key in name secret basicAuth; do
+  path="/var/run/secrets/harbor-credential/$key"
+  if [ -s "$path" ]; then
+    printf "%s=true\n" "$key"
+  else
+    printf "%s=false\n" "$key"
+  fi
+done
+'
+}
+
+# A Job whose pod mounts crossplane-harbor-credentials as an *optional*,
+# read-only projected Secret volume (Issue #285: the Secret may still be a
+# bare shell with zero data keys -- `optional: true` on the volume, verified
+# against kubernetes v1.36.1's pinned kubelet source
+# (pkg/volume/secret/secret.go MakePayload), skips any individual missing
+# *key* without failing volume setup, exactly like a missing Secret). No
+# ServiceAccount token is mounted -- this pod never talks to any API.
+def harbor_credential_probe_job [] {
+    {
+        apiVersion: "batch/v1"
+        kind: "Job"
+        metadata: {
+            name: "harbor-credential-probe"
+            namespace: "crossplane-system"
+        }
+        spec: {
+            backoffLimit: 0
+            template: {
+                spec: {
+                    automountServiceAccountToken: false
+                    restartPolicy: "Never"
+                    # The UID is pinned NUMERICALLY on purpose (Issue #285
+                    # review finding 8): curlimages/curl declares a
+                    # non-numeric image user (`curl_user`, UID 101 in its own
+                    # /etc/passwd), and with `runAsNonRoot: true` the kubelet
+                    # refuses to start a container whose image user it cannot
+                    # prove is non-root. 65534/nobody exists in this image and
+                    # needs no write access at all here; fsGroup keeps the
+                    # projected credential readable under the 0440 mode below.
+                    securityContext: {
+                        runAsNonRoot: true
+                        runAsUser: 65534
+                        runAsGroup: 65534
+                        fsGroup: 65534
+                        seccompProfile: {type: "RuntimeDefault"}
+                    }
+                    containers: [
+                        {
+                            name: "probe"
+                            image: "curlimages/curl:8.16.0@sha256:463eaf6072688fe96ac64fa623fe73e1dbe25d8ad6c34404a669ad3ce1f104b6"
+                            command: ["sh", "-c", (harbor_credential_probe_script)]
+                            securityContext: {
+                                allowPrivilegeEscalation: false
+                                readOnlyRootFilesystem: true
+                                capabilities: {drop: ["ALL"]}
+                            }
+                            volumeMounts: [
+                                {name: "credential", mountPath: "/var/run/secrets/harbor-credential", readOnly: true}
+                            ]
+                        }
+                    ]
+                    volumes: [
+                        {
+                            name: "credential"
+                            secret: {
+                                secretName: "crossplane-harbor-credentials"
+                                optional: true
+                                defaultMode: 288
+                                items: [
+                                    {key: "name", path: "name"}
+                                    {key: "secret", path: "secret"}
+                                    {key: "basicAuth", path: "basicAuth"}
+                                ]
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    }
+}
+
+# Runs the probe Job, reads only its stdout (the true/false lines -- never
+# the Secret via the Kubernetes API), and returns a record of key -> bool.
+def probe_harbor_credential_keys [] {
+    let report = (run_bootstrap_job (harbor_credential_probe_job) "harbor-credential-probe" "60s")
+    parse_harbor_credential_probe_output $report
+}
+
+# Single owner of the probe/repair Job lifecycle (Issue #285 review finding 3).
+#
+# These Jobs have fixed names, so a leftover from an earlier run is the
+# dangerous case: `kubectl apply` against a *stale completed* Job is a no-op,
+# `kubectl wait --for=condition=Complete` is then satisfied instantly by the
+# OLD condition, and `kubectl logs` returns the PREVIOUS run's report -- which
+# for the probe could report "all keys present" for a credential that is in
+# fact still empty. Every step here therefore fails closed:
+#
+#   1. the pre-delete must succeed (its exit code is checked, not discarded),
+#   2. the Job must be *observed absent* afterwards,
+#   3. the new Job is `create`d (never `apply`ed), so a surviving object is a
+#      hard error instead of a silent reuse,
+#   4. the created Job's metadata.uid is captured and re-verified after the
+#      wait, so the logs that are returned provably belong to this run's Job.
+#
+# Issue #285 third review finding 2: every one of the intermediate cleanup
+# calls below used to discard both the delete's exit code and the state
+# afterward -- a failed or partial deletion (e.g. a still-Terminating Pod)
+# could leave a stale Job, or worse for the probe, its Secret-mounting Pod,
+# behind while the run pressed on regardless. Cleanup is now a single
+# checked-delete-then-verify-absence helper used on *every* path (including
+# the Job UID fetch/validation step, which previously had no cleanup call at
+# all), and a cleanup failure is itself fatal rather than swallowed.
+#
+# Returns the Job's stdout. The caller deletes nothing: cleanup happens here.
+
+# Strictly parses a Kubernetes PodList. JSON records missing apiVersion/kind,
+# missing items, or carrying non-array items are malformed -- never equivalent
+# to an empty namespace.
+# PR#287 independent review (round 7): every downstream survivor/target/
+# leftover predicate accesses a Pod item's `metadata.name`, `metadata.uid`,
+# `metadata.labels`, `metadata.ownerReferences` and `spec.serviceAccountName`
+# by cell path. Nushell's `get -o` only suppresses a MISSING column -- it
+# still throws whenever an intermediate value has the wrong type (a string
+# where a record is expected, a record/foreign element where a list of
+# records is expected). Checked here, once, so a malformed item fails the
+# PodList closed instead of throwing inside a predicate far away.
+def pod_item_is_well_formed [pod: any] {
+    if (($pod | describe) | str starts-with "record") == false {
+        return false
+    }
+    let pod_columns = ($pod | columns)
+    if ("metadata" in $pod_columns) == false {
+        return false
+    }
+    let metadata = $pod.metadata
+    if (($metadata | describe) | str starts-with "record") == false {
+        return false
+    }
+    let metadata_columns = ($metadata | columns)
+    let pod_name = ($metadata | get -o name | default null)
+    if (($pod_name | describe) != "string") or ($pod_name | str trim | is-empty) {
+        return false
+    }
+    let pod_uid = ($metadata | get -o uid | default null)
+    if (($pod_uid | describe) != "string") or ($pod_uid | str trim | is-empty) {
+        return false
+    }
+    let owners = if "ownerReferences" in $metadata_columns {
+        $metadata.ownerReferences
+    } else {
+        []
+    }
+    let owners_type = ($owners | describe)
+    if (($owners_type | str starts-with "list") or ($owners_type | str starts-with "table")) == false {
+        return false
+    }
+    if ($owners | any {|owner| (($owner | describe) | str starts-with "record") == false }) {
+        return false
+    }
+    if ($owners | any {|owner|
+        let kind = ($owner | get -o kind | default null)
+        let name = ($owner | get -o name | default null)
+        let uid = ($owner | get -o uid | default null)
+        if ($kind | describe) != "string" {
+            true
+        } else if ($kind | str trim | is-empty) {
+            true
+        } else if ($name | describe) != "string" {
+            true
+        } else if ($name | str trim | is-empty) {
+            true
+        } else if ($uid | describe) != "string" {
+            true
+        } else if ($uid | str trim | is-empty) {
+            true
+        } else if ("controller" in ($owner | columns)) and (($owner.controller | describe) != "bool") {
+            true
+        } else {
+            false
+        }
+    }) {
+        return false
+    }
+    let labels = if "labels" in $metadata_columns {
+        $metadata.labels
+    } else {
+        {}
+    }
+    if (($labels | describe) | str starts-with "record") == false {
+        return false
+    }
+    if ("job-name" in ($labels | columns)) and ((($labels | get "job-name" | describe) != "string")) {
+        return false
+    }
+    if ("spec" in $pod_columns) == false {
+        return false
+    }
+    let spec = $pod.spec
+    if (($spec | describe) | str starts-with "record") == false {
+        return false
+    }
+    if ("serviceAccountName" in ($spec | columns)) and ((($spec.serviceAccountName | describe) != "string")) {
+        return false
+    }
+    true
+}
+
+def parse_pod_list [pods_json: string] {
+    let parsed = (try { $pods_json | from json } catch { null })
+    if ($parsed | describe | str starts-with "record") == false {
+        return {ok: false, items: [], reason: "unparseable PodList"}
+    }
+    let items = ($parsed | get -o items | default null)
+    let item_type = ($items | describe)
+    let items_are_array = (($item_type | str starts-with "list") or ($item_type | str starts-with "table"))
+    if (($parsed | get -o apiVersion | default "") != "v1") or (($parsed | get -o kind | default "") != "PodList") or (not $items_are_array) {
+        return {ok: false, items: [], reason: "malformed PodList"}
+    }
+    if ($items | any {|pod| not (pod_item_is_well_formed $pod) }) {
+        return {ok: false, items: [], reason: "malformed pod item in PodList"}
+    }
+    {ok: true, items: $items, reason: ""}
+}
+
+# Deletes a Job and positively re-verifies that neither the Job nor any Pod
+# traceable to this run remains. Mutable labels are only a fallback for the
+# pre-create cleanup; after creation the immutable Job/Pod identities are
+# carried into this boundary explicitly.
+def cleanup_bootstrap_job_verified [
+    job_name: string,
+    job_uid?: string,
+    pod_name?: string,
+    pod_uid?: string,
+] {
+    let tracked_job_uid = ($job_uid | default "")
+    let tracked_pod_name = ($pod_name | default "")
+    let tracked_pod_uid = ($pod_uid | default "")
+    let delete_result = (do {
+        kubectl delete job $job_name -n crossplane-system --ignore-not-found --wait=true --cascade=foreground
+    } | complete)
+    if $delete_result.exit_code != 0 {
+        return {ok: false, reason: $"failed to delete job/($job_name)"}
+    }
+
+    let residual_job = (do {
+        kubectl get job $job_name -n crossplane-system --ignore-not-found -o name
+    } | complete)
+    if $residual_job.exit_code != 0 {
+        return {ok: false, reason: $"failed to confirm job/($job_name) is absent"}
+    }
+    if not ($residual_job.stdout | str trim | is-empty) {
+        return {ok: false, reason: $"job/($job_name) still exists after deletion"}
+    }
+
+    # List the namespace, not only a mutable `job-name` label selector. This
+    # catches an orphan or relabelled Pod by its direct identity or immutable
+    # owner UID. Before create, when no UID exists yet, the label remains a
+    # conservative stale-resource fallback.
+    let residual_pods = (do {
+        kubectl get pods -n crossplane-system -o json
+    } | complete)
+    if $residual_pods.exit_code != 0 {
+        return {ok: false, reason: $"failed to confirm the pods of job/($job_name) are absent"}
+    }
+    let parsed_pods = (parse_pod_list $residual_pods.stdout)
+    if not $parsed_pods.ok {
+        return {ok: false, reason: $"could not verify the residual PodList for job/($job_name): ($parsed_pods.reason)"}
+    }
+    let items = $parsed_pods.items
+    let survivors = ($items | where {|pod|
+        let name = ($pod | get -o metadata.name | default "")
+        let uid = ($pod | get -o metadata.uid | default "")
+        let labels = ($pod | get -o metadata.labels | default {})
+        let owners = ($pod | get -o metadata.ownerReferences | default [])
+        let direct_identity = (($tracked_pod_name | is-not-empty)
+            and ($name == $tracked_pod_name)
+            and (($tracked_pod_uid | is-empty) or ($uid == $tracked_pod_uid)))
+        let reused_tracked_name = (($tracked_pod_name | is-not-empty) and ($name == $tracked_pod_name))
+        let immutable_owner = (($tracked_job_uid | is-not-empty) and ($owners | any {|owner|
+            ((($owner | get -o kind | default "") == "Job") and (($owner | get -o uid | default "") == $tracked_job_uid))
+        }))
+        # PR#287 independent review finding 1: this job_name is fixed and can
+        # only ever belong to one logical Job across incarnations, so a
+        # controller Job owner reference naming it is itself sufficient proof
+        # of survivorship -- independent of UID. Without this, a Pod owned by
+        # an EARLIER incarnation of this same fixed-name Job escaped both
+        # pre-cleanup (no UID tracked yet) and post-cleanup (the tracked UID
+        # belongs to the NEW incarnation and can never match the old owner)
+        # whenever its mutable job-name label had since been changed.
+        let owned_by_job_name = ($owners | any {|owner|
+            ((($owner | get -o kind | default "") == "Job")
+                and (($owner | get -o name | default "") == $job_name)
+                and (($owner | get -o controller | default false) == true))
+        })
+        let fallback_label = (($labels | get -o job-name | default "") == $job_name)
+        $direct_identity or $reused_tracked_name or $immutable_owner or $owned_by_job_name or $fallback_label
+    })
+    if ($survivors | length) > 0 {
+        return {ok: false, reason: $"a pod traceable to job/($job_name) still exists after deletion"}
+    }
+
+    {ok: true, reason: ""}
+}
+
+# Cleans up the Job (verified), then always raises -- with the cleanup
+# outcome folded into the message if cleanup itself failed, so a leftover
+# Job/Pod is never silently masked by the error that triggered it.
+def fail_bootstrap_job_after_cleanup [
+    job_name: string,
+    primary_msg: string,
+    job_uid?: string,
+    pod_name?: string,
+    pod_uid?: string,
+] {
+    let cleanup = (cleanup_bootstrap_job_verified $job_name ($job_uid | default "") ($pod_name | default "") ($pod_uid | default ""))
+    if not $cleanup.ok {
+        error make {msg: $"($primary_msg); additionally, cleanup failed: ($cleanup.reason)"}
+    }
+    error make {msg: $primary_msg}
+}
+
+# Validates a fixed-name Job lookup against the immutable UID returned by the
+# create response. Pure and fail-closed so malformed/missing objects are never
+# treated as continuity.
+def job_identity_matches [job_json: string, expected_name: string, expected_uid: string] {
+    let parsed = (try { $job_json | from json } catch { null })
+    if ($parsed | describe | str starts-with "record") == false {
+        return false
+    }
+    ((($parsed | get -o kind | default "") == "Job") and (($parsed | get -o metadata.name | default "") == $expected_name) and (($parsed | get -o metadata.uid | default "") == $expected_uid) and ($expected_uid | is-not-empty))
+}
+
+def run_bootstrap_job [manifest: record, job_name: string, timeout: string] {
+    $env.KUBECONFIG = $KUBECONFIG_PATH
+
+    let pre_cleanup = (cleanup_bootstrap_job_verified $job_name "" "" "")
+    if not $pre_cleanup.ok {
+        error make {msg: $"Failed to remove a previous ($job_name) Job before starting a new one: ($pre_cleanup.reason)"}
+    }
+
+    # The create response is the only atomic source of the object identity this
+    # invocation created. Never create by name and then bind to a separate
+    # name-based GET that may already resolve a replacement object.
+    let create_result = (do { $manifest | to json | kubectl create -f - -o json } | complete)
+    if $create_result.exit_code != 0 {
+        fail_bootstrap_job_after_cleanup $job_name $"Failed to create the ($job_name) Job" "" "" ""
+    }
+    let created = (try { $create_result.stdout | from json } catch { null })
+    if ($created | describe | str starts-with "record") == false {
+        fail_bootstrap_job_after_cleanup $job_name $"Failed to parse the identity of the ($job_name) Job that was just created" "" "" ""
+    }
+    let created_name = ($created | get -o metadata.name | default "")
+    let created_uid = ($created | get -o metadata.uid | default "")
+    if (($created | get -o kind | default "") != "Job") or ($created_name != $job_name) or ($created_uid | is-empty) {
+        fail_bootstrap_job_after_cleanup $job_name $"The created ($job_name) Job returned an invalid name or UID" $created_uid "" ""
+    }
+
+    let wait_result = (do {
+        kubectl wait --for=condition=Complete $"job/($job_name)" -n crossplane-system --timeout=$timeout
+    } | complete)
+    if $wait_result.exit_code != 0 {
+        fail_bootstrap_job_after_cleanup $job_name $"The ($job_name) Job did not complete successfully" $created_uid "" ""
+    }
+
+    # Enumerate the namespace and select exactly one Pod controlled by the
+    # expected Job name and immutable UID. A mutable label is not an identity.
+    let pods_result = (do {
+        kubectl get pods -n crossplane-system -o json
+    } | complete)
+    if $pods_result.exit_code != 0 {
+        fail_bootstrap_job_after_cleanup $job_name $"Failed to list the pods of the ($job_name) Job" $created_uid "" ""
+    }
+    let owned = (select_owned_pod $pods_result.stdout $job_name $created_uid)
+    if not $owned.ok {
+        fail_bootstrap_job_after_cleanup $job_name $"Refusing to trust the ($job_name) Job result: ($owned.reason)" $created_uid "" ""
+    }
+
+    # Immediately before log retrieval, prove both fixed-name Job continuity
+    # and exact Pod continuity. Any lookup or identity mismatch is fatal.
+    let pre_log_job_result = (do {
+        kubectl get job $job_name -n crossplane-system -o json
+    } | complete)
+    if ($pre_log_job_result.exit_code != 0) or (not (job_identity_matches $pre_log_job_result.stdout $job_name $created_uid)) {
+        fail_bootstrap_job_after_cleanup $job_name $"The ($job_name) Job identity changed before reading logs" $created_uid $owned.name $owned.uid
+    }
+    let relist_result = (do {
+        kubectl get pods -n crossplane-system -o json
+    } | complete)
+    if $relist_result.exit_code != 0 {
+        fail_bootstrap_job_after_cleanup $job_name $"Failed to re-verify the ($job_name) Job's pod before reading logs" $created_uid $owned.name $owned.uid
+    }
+    let reowned = (select_owned_pod $relist_result.stdout $job_name $created_uid)
+    if (not $reowned.ok) or ($reowned.uid != $owned.uid) or ($reowned.name != $owned.name) {
+        fail_bootstrap_job_after_cleanup $job_name $"The ($job_name) Job's pod could not be re-verified by name, owner and UID before reading logs" $created_uid $owned.name $owned.uid
+    }
+
+    let logs_result = (do {
+        kubectl logs $owned.name -n crossplane-system
+    } | complete)
+    if $logs_result.exit_code != 0 {
+        fail_bootstrap_job_after_cleanup $job_name $"Failed to read the ($job_name) Job result" $created_uid $owned.name $owned.uid
+    }
+
+    # `kubectl logs` resolves a mutable pod name. Buffer its output, then prove
+    # Job and Pod continuity again before returning a single byte to the caller.
+    let post_log_job_result = (do {
+        kubectl get job $job_name -n crossplane-system -o json
+    } | complete)
+    if ($post_log_job_result.exit_code != 0) or (not (job_identity_matches $post_log_job_result.stdout $job_name $created_uid)) {
+        fail_bootstrap_job_after_cleanup $job_name $"The ($job_name) Job identity changed after reading logs" $created_uid $owned.name $owned.uid
+    }
+    let post_log_relist_result = (do {
+        kubectl get pods -n crossplane-system -o json
+    } | complete)
+    if $post_log_relist_result.exit_code != 0 {
+        fail_bootstrap_job_after_cleanup $job_name $"Failed to re-verify the ($job_name) Job's pod after reading logs" $created_uid $owned.name $owned.uid
+    }
+    let post_log_reowned = (select_owned_pod $post_log_relist_result.stdout $job_name $created_uid)
+    if (not $post_log_reowned.ok) or ($post_log_reowned.uid != $owned.uid) or ($post_log_reowned.name != $owned.name) {
+        fail_bootstrap_job_after_cleanup $job_name $"The ($job_name) Job's pod could not be re-verified by name, owner UID and pod UID after reading logs" $created_uid $owned.name $owned.uid
+    }
+
+    let cleanup = (cleanup_bootstrap_job_verified $job_name $created_uid $owned.name $owned.uid)
+    if not $cleanup.ok {
+        error make {msg: $"The ($job_name) Job produced a result, but cleanup afterward failed: ($cleanup.reason)"}
+    }
+    $logs_result.stdout
+}
+
+# Picks the single pod controlled by the Job UID this run created, from a
+# `kubectl get pods -o json` payload. Pure and fail-closed: a pod owned by a
+# *replacement* Job, an ambiguous set, an orphan, a non-Job owner or an
+# unparseable payload all yield ok=false with a reason, so a caller can never
+# accept another Job's output.
+#
+# Issue #285 third review finding 2: the returned `name` alone let a caller
+# only ever re-resolve the pod by its (mutable) name. `uid` is now also
+# returned so a caller can bind logs to the exact pod object selected here --
+# not merely to whichever pod currently answers to that name.
+def select_owned_pod [pods_json: string, job_name: string, job_uid: string] {
+    let parsed = (parse_pod_list $pods_json)
+    if not $parsed.ok {
+        return {ok: false, name: "", uid: "", reason: $parsed.reason}
+    }
+    let items = $parsed.items
+    let owned = ($items | where {|pod|
+        ($pod | get -o metadata.ownerReferences | default [])
+        | any {|owner|
+            ((($owner | get -o kind | default "") == "Job")
+                and (($owner | get -o name | default "") == $job_name)
+                and (($owner | get -o uid | default "") == $job_uid)
+                and (($owner | get -o controller | default false) == true))
+        }
+    })
+    if ($owned | length) == 0 {
+        return {ok: false, name: "", uid: "", reason: "no pod is owned by the Job this run created"}
+    }
+    if ($owned | length) > 1 {
+        return {ok: false, name: "", uid: "", reason: "the Job owns more than one pod"}
+    }
+    let name = ($owned | first | get -o metadata.name | default "")
+    if ($name | is-empty) {
+        return {ok: false, name: "", uid: "", reason: "the owned pod has no name"}
+    }
+    let uid = ($owned | first | get -o metadata.uid | default "")
+    if ($uid | is-empty) {
+        return {ok: false, name: "", uid: "", reason: "the owned pod has no uid"}
+    }
+    {ok: true, name: $name, uid: $uid, reason: ""}
+}
+
+# Turns the probe Job's `<key>=true|false` report into a record of booleans.
+# Fail-closed by construction: every required key starts false, and only a
+# literal `true` for a known key flips it, so truncated, reordered, noisy or
+# unknown output can never be read as "credential present".
+#
+# `upsert` (never `insert`) is required for the second write: the keys are
+# pre-seeded above, and Nushell 0.114.1 raises `column_already_exists` when
+# `insert` targets an existing column -- which crashed every probe at runtime
+# while source-level tests still passed.
+def parse_harbor_credential_probe_output [output: string] {
+    mut result = {}
+    for key in (harbor_credential_required_keys) {
+        $result = ($result | upsert $key false)
+    }
+    for line in ($output | lines) {
+        let parsed = ($line | str trim | parse "{key}={value}")
+        if ($parsed | length) == 1 {
+            let key = ($parsed | get key | first | str trim)
+            let value = ($parsed | get value | first | str trim)
+            if $key in (harbor_credential_required_keys) {
+                $result = ($result | upsert $key ($value == "true"))
+            }
+        }
+    }
+    $result
+}
+
+# Keys the probe reported as missing/empty, given its result record.
+def harbor_credential_missing_keys [probe: record] {
+    (harbor_credential_required_keys) | where {|key| not ($probe | get -o $key | default false) }
+}
+
+# Ensures crossplane-system/crossplane-harbor-credentials exists as a Secret
+# (never overwriting or pruning any provider-owned data key already there --
+# only used on the genuinely-absent path, before the first probe ever runs).
+def ensure_harbor_credential_secret_shell [] {
+    $env.KUBECONFIG = $KUBECONFIG_PATH
+    let exists_result = (do {
+        kubectl get secret crossplane-harbor-credentials -n crossplane-system --ignore-not-found -o name
+    } | complete)
+    if $exists_result.exit_code != 0 {
+        error make {msg: "Failed to inspect crossplane-harbor-credentials before probing"}
+    }
+    if ($exists_result.stdout | str trim | is-empty) {
+        let manifest = {
+            apiVersion: "v1"
+            kind: "Secret"
+            metadata: {name: "crossplane-harbor-credentials", namespace: "crossplane-system"}
+            type: "Opaque"
+        }
+        let create_result = (do { $manifest | to json | kubectl create -f - } | complete)
+        if $create_result.exit_code != 0 {
+            error make {msg: "Failed to create the crossplane-harbor-credentials Secret shell"}
+        }
+    }
+}
+
+# Least-privilege, namespaced-only RBAC for the recovery Job below: `get` on
+# exactly the Harbor admin Basic-auth Secret (harbor namespace) needed to
+# authenticate to Harbor's API, `get`+`patch` on exactly the target
+# credential Secret (crossplane-system) needed for the optimistic-concurrency
+# readback and the merge-patch write. No ClusterRole, no list/watch/delete,
+# no wildcard verb -- torn down again immediately after the recovery Job
+# finishes (repair_harbor_credential_secret).
+def harbor_credential_recovery_rbac [] {
+    'apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: harbor-credential-recovery
+  namespace: crossplane-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: harbor-credential-recovery
+  namespace: crossplane-system
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["crossplane-harbor-credentials"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["crossplane-harbor-credentials"]
+    verbs: ["patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: harbor-credential-recovery
+  namespace: crossplane-system
+subjects:
+  - kind: ServiceAccount
+    name: harbor-credential-recovery
+    namespace: crossplane-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: harbor-credential-recovery
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: harbor-credential-recovery-admin-secret
+  namespace: harbor
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["harbor-admin-basic-auth"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: harbor-credential-recovery-admin-secret
+  namespace: harbor
+subjects:
+  - kind: ServiceAccount
+    name: harbor-credential-recovery
+    namespace: crossplane-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: harbor-credential-recovery-admin-secret
+'
+}
+
+# The exact least-privilege permission set the declarative bootstrap Request
+# (crossplane/bootstrap/harbor-robot-request.yaml) grants this robot. The
+# recovery compares Harbor's live permission set against this before rotating
+# anything -- an over-privileged or drifted robot must never be refreshed and
+# handed to the platform. Kept byte-identical to that manifest's payload by
+# platform/tests/test_harbor_bootstrap_credential_recovery.py.
+def harbor_robot_expected_permissions [] {
+    r#'[{"kind":"system","namespace":"/","access":[{"resource":"project","action":"create"}]},{"kind":"project","namespace":"*","access":[{"resource":"robot","action":"create"},{"resource":"robot","action":"read"},{"resource":"artifact","action":"read"}]}]'#
+}
+
+# Structural jq selection of the bootstrap robot from an accumulated (all
+# pages) Harbor robot list. Issue #285 review finding 6/7:
+#
+#  * identity is EXACT and requires Harbor's nonempty display prefix. Harbor
+#    stores the robot under an admin-configurable prefix (`robot$` by default;
+#    `populate()` in goharbor/harbor v2.15.1 src/controller/robot/controller.go
+#    adds it to responses). A response must contain a nonempty prefix followed
+#    by `$` (`^[^$]+\$`) before that prefix is stripped and the remainder
+#    compared exactly. Decoys and unprefixed responses therefore fail closed.
+#  * the complete permission set is compared exactly (order-insensitively, and
+#    ignoring Harbor's optional `effect`), so any extra or missing
+#    resource/action fails closed as permission drift.
+#  * anything ambiguous, absent, mistyped or drifted returns a reason instead
+#    of an id, and never any credential material.
+def harbor_robot_selector_jq [] {
+    r#'def hasprefix: ((.name // null) | type) == "string" and (.name | test("^[^$]+\\$"));
+def canonical: (.name // "") | sub("^[^$]+\\$"; "");
+def hasArrayOfObjects: (type == "array") and (all(type == "object"));
+def normperms:
+  if (hasArrayOfObjects | not) then null else
+    [ .[] | if ((.access) | hasArrayOfObjects | not) then null
+            else {kind: .kind, namespace: .namespace, access: ([ .access[] | {resource: .resource, action: .action} ] | sort)}
+            end ] | sort
+  end;
+[ .[] | select((.level == "system") and hasprefix and (canonical == $name)) ] as $matches
+| if ($matches | length) == 0 then {ok: false, reason: "no-match", matches: 0}
+  elif ($matches | length) > 1 then {ok: false, reason: "ambiguous", matches: ($matches | length)}
+  else ($matches[0]) as $r
+    | if (($r.id | type) != "number") then {ok: false, reason: "invalid-id", matches: 1}
+      elif (($r.permissions // []) | normperms) == ($expected | normperms)
+      then {ok: true, id: $r.id, name: $r.name, matches: 1}
+      else {ok: false, reason: "permission-drift", matches: 1}
+      end
+  end'#
+}
+
+# Runs entirely inside the recovery Job. Refreshes the EXISTING bootstrap
+# robot's secret (goharbor/harbor v2.15.1 PATCH /robots/{id} -> RefreshSec,
+# src/server/v2.0/handler/robot.go) instead of creating a second one --
+# re-POSTing would collide with Harbor's own
+# `unique_robot UNIQUE(name, project_id)` constraint anyway.
+#
+# Transaction order is deliberate (Issue #285 review finding 4): a Harbor
+# rotation is irreversible -- Harbor mints a new secret and forgets the old
+# one -- so the write target (the Kubernetes Secret and its resourceVersion)
+# and the robot's exact identity/permissions are read and validated FIRST.
+# Only then is the secret rotated, immediately conditional-patched under that
+# resourceVersion, and read back for byte-exact equality. A 409 (someone else
+# wrote concurrently) restarts the whole guarded transaction, bounded.
+#
+# Every credential value lives only in the memory-backed workspace, reaches
+# Harbor/Kubernetes only through curl `--config` header files or
+# `--data-binary @file`, and is never placed in argv, stdout or a host path.
+def harbor_credential_repair_script [] {
+    let template = r#'set -eu
+umask 077
+
+HARBOR_API="https://digiorg.local/api/v2.0"
+K8S_API="https://kubernetes.default.svc"
+HARBOR_CACERT="/var/run/secrets/digiorg-ca/ca.crt"
+K8S_CACERT="/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+K8S_TOKEN_FILE="/var/run/secrets/kubernetes.io/serviceaccount/token"
+WORKDIR="/workspace"
+TARGET_SECRET_URL="$K8S_API/api/v1/namespaces/crossplane-system/secrets/crossplane-harbor-credentials"
+ROBOT_NAME="crossplane-system"
+MAX_ATTEMPTS=3
+MAX_PAGES=20
+PAGE_SIZE=100
+
+expected_permissions_file="$WORKDIR/expected-permissions.json"
+selector_file="$WORKDIR/selector.jq"
+
+# Reads Harbor's authoritative X-Total-Count from a captured header block.
+#
+# Header parsing is LINE-WISE on purpose. The previous implementation piped
+# the block through `tr -d` of newlines first, which collapsed every header
+# onto a single line so the field test could never match -- the total came
+# back empty and an empty total was then accepted, letting a truncated robot
+# list be trusted (fail-open). Only CR is stripped now, and the result must be
+# exactly one syntactically valid, non-negative integer: a missing, malformed,
+# negative or ambiguous/duplicated total is a hard error, never a shrug.
+parse_total_count() {
+  headers_file="$1"
+  # Issue #285 third review finding 4: `awk '{print $2}'` field-splits on
+  # whitespace, so it silently drops everything after the first token
+  # (`X-Total-Count: 42 garbage` was accepted as `42`) and cannot match the
+  # zero-OWS form `X-Total-Count:42` (RFC 9110 5.5 permits no space after
+  # the colon; there $2 is empty). The complete value after the first colon
+  # is now taken and trimmed of only leading/trailing OWS, so both forms
+  # parse correctly and any non-numeric remainder fails the regex below.
+  totals=$(tr -d '\r' < "$headers_file" \
+    | awk '{
+        line = $0
+        colon = index(line, ":")
+        if (colon == 0) next
+        name = tolower(substr(line, 1, colon - 1))
+        if (name != "x-total-count") next
+        value = substr(line, colon + 1)
+        gsub(/^[ \t]+/, "", value)
+        gsub(/[ \t]+$/, "", value)
+        print value
+      }')
+  if [ -z "$totals" ]; then
+    echo "ERROR: Harbor response carried no X-Total-Count header" >&2
+    return 1
+  fi
+  total_lines=$(printf '%s\n' "$totals" | wc -l | tr -d ' ')
+  if [ "$total_lines" != "1" ]; then
+    echo "ERROR: Harbor response carried $total_lines X-Total-Count headers" >&2
+    return 1
+  fi
+  if ! printf '%s' "$totals" | grep -Eq '^[0-9]+$'; then
+    echo "ERROR: Harbor reported a malformed X-Total-Count" >&2
+    return 1
+  fi
+  printf '%s' "$totals"
+}
+
+# Collect the exact system-level robot candidate. Harbor v2.15.1's bare
+# `Name=value` syntax is an exact database-side filter; `Name=~value` is fuzzy
+# and is intentionally forbidden. Pagination/total reconciliation remains
+# fail-closed even though an exact canonical name should produce at most one
+# stored robot.
+#
+# Issue #285 third review finding 3: the previous version treated "the page
+# I just fetched came back short of PAGE_SIZE" as the sole loop-exit signal,
+# and treated "the loop counter walked past MAX_PAGES" as the sole overflow
+# signal -- so a result set of EXACTLY MAX_PAGES*PAGE_SIZE (every one of the
+# 20 allowed pages full) advanced the counter to MAX_PAGES+1 after the last
+# full page and was then rejected as "exceeded", even though it had already
+# collected the complete, authoritative total. Termination is now driven by
+# the running collected count against the authoritative total itself: once
+# collected reaches total the loop stops (whether or not that page was
+# full), and a short page reached *before* the total is met is a genuine
+# inconsistency, not silently accepted as "done" -- so overflow (a total
+# that genuinely cannot fit in MAX_PAGES*PAGE_SIZE) is the only remaining way
+# to exhaust the loop, and only fires strictly above the bound.
+collect_robots() {
+  page=1
+  : > "$WORKDIR/pages.json"
+  total=""
+  collected=0
+  while [ "$page" -le "$MAX_PAGES" ]; do
+    headers="$WORKDIR/robots-headers-$page.txt"
+    body="$WORKDIR/robots-page-$page.json"
+    curl --config "$harbor_auth_cfg" --cacert "$HARBOR_CACERT" -fsS -D "$headers" \
+      "$HARBOR_API/robots?q=Name=$ROBOT_NAME&page=$page&page_size=$PAGE_SIZE" -o "$body"
+    if ! jq -e 'type == "array"' "$body" > /dev/null 2>&1; then
+      echo "ERROR: Harbor returned a malformed robot list on page $page" >&2
+      return 1
+    fi
+    if [ -z "$total" ]; then
+      total=$(parse_total_count "$headers") || return 1
+    fi
+    cat "$body" >> "$WORKDIR/pages.json"
+    count=$(jq 'length' "$body")
+    collected=$((collected + count))
+    if [ "$collected" -ge "$total" ]; then
+      break
+    fi
+    if [ "$count" -lt "$PAGE_SIZE" ]; then
+      echo "ERROR: Harbor returned a short page ($count) on page $page before reaching the reported total ($total)" >&2
+      return 1
+    fi
+    page=$((page + 1))
+  done
+  jq -s 'add // []' "$WORKDIR/pages.json" > "$WORKDIR/robots.json"
+  collected_final=$(jq 'length' "$WORKDIR/robots.json")
+  if [ -z "$total" ]; then
+    echo "ERROR: Harbor never reported an authoritative X-Total-Count" >&2
+    return 1
+  fi
+  if [ "$collected_final" -ne "$total" ]; then
+    if [ "$page" -ge "$MAX_PAGES" ]; then
+      echo "ERROR: Harbor robot list exceeded $MAX_PAGES pages ($total robots reported)" >&2
+    else
+      echo "ERROR: collected $collected_final robots but Harbor reported $total" >&2
+    fi
+    return 1
+  fi
+  return 0
+}
+
+# Sourcing this script with HARBOR_REPAIR_LIB_ONLY=1 defines the pure helpers
+# above and stops before any I/O, so the real shell logic can be exercised
+# directly against fixtures (Issue #285 second review: source-level assertions
+# missed a header parser that could never match).
+if [ "${HARBOR_REPAIR_LIB_ONLY:-0}" = "1" ]; then
+  return 0 2>/dev/null || exit 0
+fi
+
+# --- Kubernetes API authentication -----------------------------------------
+# The bearer token is read from its projected file straight into a curl
+# config file; it never appears in argv or in any log line.
+k8s_auth_cfg="$WORKDIR/k8s.cfg"
+{ printf 'header = "Authorization: Bearer '; cat "$K8S_TOKEN_FILE"; printf '"
+'; } > "$k8s_auth_cfg"
+
+# --- Harbor API authentication ---------------------------------------------
+# `.data.value` is Kubernetes' OUTER base64 wrapper around a logical value
+# that is itself already base64(admin:password) -- exactly what HTTP Basic
+# needs. So it is decoded exactly once here, at this API boundary, and the
+# result is validated before use. Sending the outer text verbatim produced
+# Basic base64(base64(admin:password)) and could only ever yield 401.
+admin_auth_response="$WORKDIR/harbor-admin-auth.json"
+curl --config "$k8s_auth_cfg" --cacert "$K8S_CACERT" -fsS \
+  "$K8S_API/api/v1/namespaces/harbor/secrets/harbor-admin-basic-auth" \
+  -o "$admin_auth_response"
+
+harbor_basic_file="$WORKDIR/harbor-basic.txt"
+jq -r '.data.value // empty' "$admin_auth_response" | base64 -d > "$harbor_basic_file"
+if [ ! -s "$harbor_basic_file" ]; then
+  echo "ERROR: harbor-admin-basic-auth is missing or empty" >&2
+  exit 1
+fi
+# Validate the decoded Basic token without ever printing it: it must be
+# well-formed base64 that decodes to admin:<nonempty>.
+if ! tr -d '
+' < "$harbor_basic_file" | grep -Eq '^[A-Za-z0-9+/]+={0,2}$'; then
+  echo "ERROR: the Harbor admin Basic token is not valid base64" >&2
+  exit 1
+fi
+if ! tr -d '
+' < "$harbor_basic_file" | base64 -d 2>/dev/null | grep -Eq '^admin:.+$'; then
+  echo "ERROR: the Harbor admin Basic token does not decode to admin:<secret>" >&2
+  exit 1
+fi
+
+harbor_auth_cfg="$WORKDIR/harbor.cfg"
+{ printf 'header = "Authorization: Basic '; tr -d '
+' < "$harbor_basic_file"; printf '"
+'; } > "$harbor_auth_cfg"
+
+cat <<'EXPECTED_PERMISSIONS' > "$expected_permissions_file"
+__EXPECTED_PERMISSIONS__
+EXPECTED_PERMISSIONS
+
+cat <<'SELECTOR_FILTER' > "$selector_file"
+__SELECTOR_JQ__
+SELECTOR_FILTER
+
+attempt=1
+while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
+  # 1. Read and validate the WRITE TARGET first: the rotation below is
+  #    irreversible, so nothing may be rotated until it is known exactly where
+  #    the result will be stored and under which resourceVersion.
+  current_secret="$WORKDIR/current-secret.json"
+  curl --config "$k8s_auth_cfg" --cacert "$K8S_CACERT" -fsS "$TARGET_SECRET_URL" -o "$current_secret"
+  resource_version=$(jq -r '.metadata.resourceVersion // empty' "$current_secret")
+  if [ -z "$resource_version" ]; then
+    echo "ERROR: the target Secret has no resourceVersion" >&2
+    exit 1
+  fi
+
+  # 2. Re-resolve the robot structurally and re-verify its exact identity and
+  #    complete least-privilege permission set, immediately before rotating.
+  if ! collect_robots; then
+    exit 1
+  fi
+  selection=$(jq -c --arg name "$ROBOT_NAME" \
+    --argjson expected "$(cat "$expected_permissions_file")" \
+    -f "$selector_file" "$WORKDIR/robots.json")
+  if [ "$(printf '%s' "$selection" | jq -r '.ok')" != "true" ]; then
+    reason=$(printf '%s' "$selection" | jq -r '.reason')
+    matches=$(printf '%s' "$selection" | jq -r '.matches')
+    echo "ERROR: refusing to rotate; robot selection failed (reason=$reason matches=$matches)" >&2
+    exit 1
+  fi
+  robot_id=$(printf '%s' "$selection" | jq -r '.id')
+  robot_name=$(printf '%s' "$selection" | jq -r '.name')
+
+  # 3. Rotate. RefreshSec with an empty body: Harbor generates the secret
+  #    itself and returns it, leaving the permission set untouched.
+  refresh_body="$WORKDIR/refresh-body.json"
+  printf "{}" > "$refresh_body"
+  refresh_response="$WORKDIR/refresh-response.json"
+  curl --config "$harbor_auth_cfg" --cacert "$HARBOR_CACERT" -fsS -X PATCH \
+    -H "Content-Type: application/json" --data-binary @"$refresh_body" \
+    "$HARBOR_API/robots/$robot_id" -o "$refresh_response"
+
+  secret_file="$WORKDIR/refreshed-secret.txt"
+  jq -j '.secret // empty' "$refresh_response" > "$secret_file"
+  # goharbor v2.15.1 CreateSec -> utils.GenerateRandomStringWithLen(32) over
+  # [a-zA-Z0-9], retried until IsValidSec (8..128 chars, upper+lower+digit).
+  if ! grep -Eq '^[A-Za-z0-9]{8,128}$' "$secret_file" \
+     || ! grep -q '[a-z]' "$secret_file" \
+     || ! grep -q '[A-Z]' "$secret_file" \
+     || ! grep -q '[0-9]' "$secret_file"; then
+    echo "ERROR: the refreshed robot secret failed format validation" >&2
+    exit 1
+  fi
+
+  # Keep every encoded credential field in the memory-backed workspace. Even
+  # Kubernetes' base64 representation is credential material and must not be
+  # expanded into another process's argv.
+  name_b64_file="$WORKDIR/name.b64"
+  secret_b64_file="$WORKDIR/secret.b64"
+  basic_auth_b64_file="$WORKDIR/basic-auth.b64"
+  printf '%s' "$robot_name" | base64 | tr -cd 'A-Za-z0-9+/=' > "$name_b64_file"
+  base64 < "$secret_file" | tr -cd 'A-Za-z0-9+/=' > "$secret_b64_file"
+  { printf '%s:' "$robot_name"; cat "$secret_file"; } | base64 | tr -cd 'A-Za-z0-9+/=' > "$basic_auth_b64_file"
+
+  # 4. Conditional write. The resourceVersion precondition makes the API
+  #    server reject the patch if anything changed since step 1. A JSON merge
+  #    patch touches only these three keys: unrelated data keys, metadata and
+  #    type are preserved exactly. jq reads credential fields from tmpfs files;
+  #    only file paths and the non-secret resourceVersion appear in argv.
+  patch_body="$WORKDIR/secret-patch.json"
+  jq -n --arg rv "$resource_version" \
+    --rawfile n "$name_b64_file" --rawfile s "$secret_b64_file" --rawfile b "$basic_auth_b64_file" \
+    '{metadata: {resourceVersion: $rv}, data: {name: $n, secret: $s, basicAuth: $b}}' > "$patch_body"
+
+  patch_code=$(curl --config "$k8s_auth_cfg" --cacert "$K8S_CACERT" -s -o /dev/null -w '%{http_code}' \
+    -X PATCH -H "Content-Type: application/merge-patch+json" --data-binary @"$patch_body" \
+    "$TARGET_SECRET_URL")
+  if [ "$patch_code" = "409" ]; then
+    echo "conflict=true attempt=$attempt"
+    attempt=$((attempt + 1))
+    continue
+  fi
+  if [ "$patch_code" != "200" ]; then
+    echo "ERROR: Kubernetes API rejected the credential patch (HTTP $patch_code)" >&2
+    exit 1
+  fi
+
+  # 5. Authenticated byte-exact readback. A 200 only proves the request was
+  #    accepted, not what is stored. Extract the persisted opaque base64 values
+  #    into tmpfs files and compare file-to-file so credential material appears
+  #    neither in argv nor in logs.
+  post_patch_secret="$WORKDIR/post-patch-secret.json"
+  curl --config "$k8s_auth_cfg" --cacert "$K8S_CACERT" -fsS "$TARGET_SECRET_URL" -o "$post_patch_secret"
+  post_name_b64_file="$WORKDIR/post-name.b64"
+  post_secret_b64_file="$WORKDIR/post-secret.b64"
+  post_basic_auth_b64_file="$WORKDIR/post-basic-auth.b64"
+  jq -j '.data.name // empty' "$post_patch_secret" > "$post_name_b64_file"
+  jq -j '.data.secret // empty' "$post_patch_secret" > "$post_secret_b64_file"
+  jq -j '.data.basicAuth // empty' "$post_patch_secret" > "$post_basic_auth_b64_file"
+  if ! cmp -s "$post_name_b64_file" "$name_b64_file" \
+     || ! cmp -s "$post_secret_b64_file" "$secret_b64_file" \
+     || ! cmp -s "$post_basic_auth_b64_file" "$basic_auth_b64_file"; then
+    echo "ERROR: readback verification failed -- the persisted credential does not match" >&2
+    exit 1
+  fi
+
+  echo "credential_recovered=true"
+  exit 0
+done
+
+echo "ERROR: exhausted $MAX_ATTEMPTS attempts due to concurrent modification" >&2
+exit 1
+'#
+    # Composed rather than interpolated: the raw strings above stay byte-exact
+    # (no Nushell subexpression/escape processing inside the shell or jq text).
+    $template
+    | str replace "__EXPECTED_PERMISSIONS__" (harbor_robot_expected_permissions)
+    | str replace "__SELECTOR_JQ__" (harbor_robot_selector_jq)
+}
+
+# The recovery Job: mounts a memory-backed (tmpfs) workspace for every file
+# the repair script writes (never a host path), plus the digiorg.local CA
+# already copied into crossplane-system by copy_digiorg_local_ca_to_namespace.
+# Runs as the narrowly-scoped ServiceAccount from harbor_credential_recovery_rbac.
+def harbor_credential_repair_job [] {
+    {
+        apiVersion: "batch/v1"
+        kind: "Job"
+        metadata: {
+            name: "harbor-credential-repair"
+            namespace: "crossplane-system"
+        }
+        spec: {
+            backoffLimit: 0
+            template: {
+                spec: {
+                    serviceAccountName: "harbor-credential-recovery"
+                    restartPolicy: "Never"
+                    # Verified against the image's own layers rather than its
+                    # tag: nats-box 0.19.2 ships /usr/bin/jq and /usr/bin/curl
+                    # (its second layer) and defines nobody:65534. Runs
+                    # unprivileged: the memory-backed workspace is created 0777
+                    # by the kubelet (pkg/volume/emptydir/empty_dir.go `perm`)
+                    # and additionally group-owned via fsGroup, while the CA and
+                    # the projected ServiceAccount token are readable through
+                    # the same fsGroup.
+                    securityContext: {
+                        runAsNonRoot: true
+                        runAsUser: 65534
+                        runAsGroup: 65534
+                        fsGroup: 65534
+                        seccompProfile: {type: "RuntimeDefault"}
+                    }
+                    containers: [
+                        {
+                            name: "repair"
+                            image: "natsio/nats-box:0.19.2@sha256:8031d190c7ee24081f3f27cc939fb647a1eeb29ebb5c60fef9b5b6c7a846d6a2"
+                            command: ["sh", "-c", (harbor_credential_repair_script)]
+                            workingDir: "/workspace"
+                            securityContext: {
+                                allowPrivilegeEscalation: false
+                                readOnlyRootFilesystem: true
+                                capabilities: {drop: ["ALL"]}
+                            }
+                            volumeMounts: [
+                                {name: "workspace", mountPath: "/workspace"}
+                                {name: "harbor-ca", mountPath: "/var/run/secrets/digiorg-ca", readOnly: true}
+                            ]
+                        }
+                    ]
+                    volumes: [
+                        {name: "workspace", emptyDir: {medium: "Memory"}}
+                        {name: "harbor-ca", secret: {secretName: "digiorg-local-ca", defaultMode: 288}}
+                    ]
+                }
+            }
+        }
+    }
+}
+
+# Namespace-wide checked deletion of any Pod traceable to the recovery
+# identity by immutable ServiceAccount or owning-Job-name -- never a mutable
+# label -- so an orphaned or relabelled leftover Pod cannot escape the resume
+# preflight below. Mirrors the identity predicate `harbor_recovery_privilege_
+# leftovers` uses to detect them.
+def harbor_recovery_delete_leftover_pods [] {
+    $env.KUBECONFIG = $KUBECONFIG_PATH
+    let pods_result = (do { kubectl get pods -n crossplane-system -o json } | complete)
+    if $pods_result.exit_code != 0 {
+        return {ok: false, reason: "failed to list crossplane-system pods before resuming recovery"}
+    }
+    let parsed = (parse_pod_list $pods_result.stdout)
+    if not $parsed.ok {
+        return {ok: false, reason: $"could not verify crossplane-system pods before resuming recovery: ($parsed.reason)"}
+    }
+    let targets = ($parsed.items | where {|pod|
+        let recovery_sa = (($pod | get -o spec.serviceAccountName | default "") == "harbor-credential-recovery")
+        let recovery_owner = (($pod | get -o metadata.ownerReferences | default []) | any {|owner|
+            ((($owner | get -o kind | default "") == "Job") and (($owner | get -o name | default "") == "harbor-credential-repair"))
+        })
+        $recovery_sa or $recovery_owner
+    })
+    # PR#287 independent review finding 2 (round 7): every matching Pod must
+    # be attempted regardless of an earlier one's outcome -- returning on the
+    # first failed delete silently left every later stale recovery Pod
+    # running, still mounting the harbor-credential-recovery ServiceAccount.
+    # Failures are accumulated by pod name only; kubectl's own stderr is
+    # never folded in here to avoid leaking cluster/log detail.
+    mut failed_names = []
+    for pod in $targets {
+        let name = ($pod | get -o metadata.name | default "")
+        let delete_result = (do { kubectl delete pod $name -n crossplane-system --ignore-not-found --wait=true } | complete)
+        if $delete_result.exit_code != 0 {
+            $failed_names = ($failed_names | append $name)
+        }
+    }
+    if not ($failed_names | is-empty) {
+        return {ok: false, reason: $"failed to delete stale recovery pod\(s\) before resuming recovery: ($failed_names | str join ', ')"}
+    }
+    {ok: true, reason: ""}
+}
+
+# PR#287 independent review finding 2 (round 2): RBAC must be revoked BEFORE
+# any stale recovery Job or Pod cleanup is even attempted -- not merely
+# before any RBAC is (re)applied. Kubernetes authorizes every request
+# against the RBAC state that is current AT REQUEST TIME -- it is never
+# baked into a token at pod start -- so a Pod that survived an earlier crash
+# and still mounts the harbor-credential-recovery ServiceAccount token
+# retains the ability to read the Harbor admin credential for as long as its
+# Role/RoleBinding still exist, independent of whether or when that Pod
+# itself gets deleted. Revoking RBAC only after attempting Job/Pod cleanup
+# would leave such a surviving Pod fully privileged for the entire cleanup
+# window. This preflight therefore revokes the stale recovery RBAC FIRST,
+# then cleans up any stale Job and Pod traceable to the recovery identity --
+# by immutable owner/ServiceAccount identity, never the mutable job-name
+# label -- and only then positively re-verifies every one of them is gone.
+# Any failure in this sequence is fail-closed: fresh RBAC is never applied on
+# top of an unverified state.
+def harbor_recovery_resume_preflight [] {
+    $env.KUBECONFIG = $KUBECONFIG_PATH
+    let rbac_manifest = (harbor_credential_recovery_rbac)
+
+    let rbac_delete = (do { $rbac_manifest | kubectl delete -f - --ignore-not-found } | complete)
+    if $rbac_delete.exit_code != 0 {
+        return {ok: false, reason: "failed to revoke a stale recovery RBAC grant before resuming recovery"}
+    }
+
+    let job_cleanup = (cleanup_bootstrap_job_verified "harbor-credential-repair")
+    if not $job_cleanup.ok {
+        return {ok: false, reason: $"failed to remove a stale harbor-credential-repair Job before resuming recovery: ($job_cleanup.reason)"}
+    }
+
+    let pod_cleanup = (harbor_recovery_delete_leftover_pods)
+    if not $pod_cleanup.ok {
+        return {ok: false, reason: $pod_cleanup.reason}
+    }
+
+    let leftovers = (harbor_recovery_privilege_leftovers)
+    if not ($leftovers | is-empty) {
+        return {ok: false, reason: $"stale recovery privilege still present before resuming recovery: ($leftovers | str join ', ')"}
+    }
+
+    {ok: true, reason: ""}
+}
+
+# Applies the recovery RBAC + repair Job, waits for it to finish, and tears
+# both down unconditionally (success or failure) -- nothing from this
+# recovery boundary is left behind on the cluster afterwards.
+def repair_harbor_credential_secret [] {
+    $env.KUBECONFIG = $KUBECONFIG_PATH
+    print $"(ansi yellow)  ! crossplane-harbor-credentials is missing required key\(s\) -- attempting crash-safe recovery via Harbor RefreshSec...(ansi reset)"
+
+    let rbac_manifest = (harbor_credential_recovery_rbac)
+
+    # Issue #285 review finding 5: the RBAC apply itself belongs INSIDE the
+    # guarded region. It is a multi-document apply, so it can partially
+    # succeed -- creating the ServiceAccount and Role (which can read the
+    # Harbor admin credential) and only then failing on the RoleBinding. With
+    # the apply outside the guard, that path aborted with privileged objects
+    # already on the cluster and no cleanup at all. Everything from the apply
+    # onwards is now caught into a plain record so the teardown below always
+    # runs, whatever failed.
+    let outcome = (try {
+        # PR#287 independent review finding 2: a stale recovery grant from an
+        # earlier crashed run must be confirmed gone before this run grants a
+        # fresh one -- otherwise a surviving Pod using that grant's
+        # ServiceAccount could exploit it in the window before
+        # run_bootstrap_job's own pre-cleanup ever runs.
+        let preflight = (harbor_recovery_resume_preflight)
+        if not $preflight.ok {
+            error make {msg: $"Refusing to grant Harbor credential recovery privilege: ($preflight.reason)"}
+        }
+
+        let rbac_apply = (do { $rbac_manifest | kubectl apply -f - } | complete)
+        if $rbac_apply.exit_code != 0 {
+            error make {msg: "Failed to apply the least-privilege recovery RBAC for the Harbor credential repair job"}
+        }
+
+        ensure_harbor_credential_secret_shell
+        run_bootstrap_job (harbor_credential_repair_job) "harbor-credential-repair" "180s"
+        {ok: true, error: ""}
+    } catch {|err|
+        {ok: false, error: $err.msg}
+    })
+
+    # Guaranteed cleanup, on every path above: a partial RBAC apply, a shell
+    # setup failure, a Job create/wait failure, or success. Extracted into
+    # `harbor_recovery_final_teardown` so it is independently testable and
+    # runs identically regardless of the recovery outcome.
+    let verdict = (harbor_recovery_final_teardown $outcome $rbac_manifest)
+    if not $verdict.ok {
+        error make {msg: $verdict.msg}
+    }
+
+    print $"(ansi green)  ✓ Harbor bootstrap credential recovery job completed(ansi reset)"
+}
+
+# PR#287 independent review (round N): this final teardown -- which runs on
+# EVERY path, success or failure -- used to clean up the fixed-name repair
+# Job BEFORE revoking the recovery RBAC. Kubernetes authorizes every request
+# live against whatever RBAC state currently exists; it is never baked into
+# a Pod's token at start. A Pod that survived past this recovery attempt and
+# still mounts the harbor-credential-recovery ServiceAccount therefore stayed
+# fully privileged for the entire span of the Job/Pod cleanup below -- the
+# exact same exposure `harbor_recovery_resume_preflight` already closes for
+# the *next* run's preflight, but left open here at the end of *this* one.
+#
+# RBAC is now revoked (checked) FIRST. Every remaining cleanup step -- the
+# fixed-name Job cleanup and the recovery-identity Pod cleanup (by
+# ServiceAccount or by owning Job, independent of the Job's own cascade) --
+# is then attempted independently: none may short-circuit another, so a
+# malformed/unavailable Pod listing or a failed Job cleanup can never mask or
+# skip the RBAC revocation, or prevent the other cleanup from being
+# attempted. Absence is positively re-verified last, and every failure
+# (original outcome, RBAC, Job, Pod, or surviving leftovers) is combined into
+# one verdict.
+def harbor_recovery_final_teardown [outcome: record, rbac_manifest: string] {
+    $env.KUBECONFIG = $KUBECONFIG_PATH
+
+    let rbac_delete = (do { $rbac_manifest | kubectl delete -f - --ignore-not-found } | complete)
+
+    # PR#287 independent review findings 1 (rounds 7-8): each of these three steps
+    # is independently guarded. `parse_pod_list`/`pod_item_is_well_formed`
+    # already fail a malformed Pod shape closed rather than throwing, but this
+    # is defense in depth: a thrown error from ANY one of them -- anticipated
+    # or not -- must convert to a failed result for that step alone, and can
+    # never skip or short-circuit the other two, or the leftovers check below.
+    # Catch payloads are deliberately discarded: they can carry API output,
+    # logs, stderr, Pod JSON, or credentials and must never reach the verdict.
+    let job_cleanup = (try {
+        cleanup_bootstrap_job_verified "harbor-credential-repair"
+    } catch { {ok: false, reason: "recovery Job cleanup failed unexpectedly"} })
+    let pod_cleanup = (try {
+        harbor_recovery_delete_leftover_pods
+    } catch { {ok: false, reason: "recovery Pod cleanup failed unexpectedly"} })
+
+    let leftovers = (try {
+        harbor_recovery_privilege_leftovers
+    } catch { ["crossplane-system/recovery privilege state (unverifiable)"] })
+    (harbor_recovery_cleanup_verdict
+        $outcome.ok $outcome.error
+        $job_cleanup.ok ($rbac_delete.exit_code == 0) $pod_cleanup.ok
+        $leftovers)
+}
+
+# Enumerates every object the recovery boundary creates that is still present.
+# Never throws: a failed lookup is itself reported as an (unverifiable)
+# leftover, so an API error can never be mistaken for "cleanly removed".
+def harbor_recovery_privilege_leftovers [] {
+    $env.KUBECONFIG = $KUBECONFIG_PATH
+    let expected_absent = [
+        {kind: "job", name: "harbor-credential-repair", namespace: "crossplane-system"}
+        {kind: "serviceaccount", name: "harbor-credential-recovery", namespace: "crossplane-system"}
+        {kind: "role", name: "harbor-credential-recovery", namespace: "crossplane-system"}
+        {kind: "rolebinding", name: "harbor-credential-recovery", namespace: "crossplane-system"}
+        {kind: "role", name: "harbor-credential-recovery-admin-secret", namespace: "harbor"}
+        {kind: "rolebinding", name: "harbor-credential-recovery-admin-secret", namespace: "harbor"}
+    ]
+    mut leftovers = []
+    for target in $expected_absent {
+        let descriptor = $"($target.namespace)/($target.kind)/($target.name)"
+        let lookup = (do {
+            kubectl get $target.kind $target.name -n $target.namespace --ignore-not-found -o name
+        } | complete)
+        if $lookup.exit_code != 0 {
+            $leftovers = ($leftovers | append $"($descriptor) \(unverifiable\)")
+        } else if not ($lookup.stdout | str trim | is-empty) {
+            $leftovers = ($leftovers | append $descriptor)
+        }
+    }
+    let pod_descriptor = "crossplane-system/recovery-identity pods"
+    let pod_lookup = (do {
+        kubectl get pods -n crossplane-system -o json
+    } | complete)
+    if $pod_lookup.exit_code != 0 {
+        $leftovers = ($leftovers | append $"($pod_descriptor) \(unverifiable\)")
+    } else {
+        let parsed = (parse_pod_list $pod_lookup.stdout)
+        if not $parsed.ok {
+            $leftovers = ($leftovers | append $"($pod_descriptor) \(unverifiable\)")
+        } else {
+            let recovery_pods = ($parsed.items | where {|pod|
+                let recovery_sa = (($pod | get -o spec.serviceAccountName | default "") == "harbor-credential-recovery")
+                let recovery_owner = (($pod | get -o metadata.ownerReferences | default []) | any {|owner|
+                    ((($owner | get -o kind | default "") == "Job") and (($owner | get -o name | default "") == "harbor-credential-repair"))
+                })
+                $recovery_sa or $recovery_owner
+            })
+            if ($recovery_pods | length) > 0 {
+                $leftovers = ($leftovers | append $pod_descriptor)
+            }
+        }
+    }
+    $leftovers
+}
+
+# Pure decision function: combines the recovery outcome with the cleanup
+# results into a single verdict. Kept free of I/O so every combination is
+# directly testable. The message is assembled only from these inputs -- it can
+# never carry Job logs or Secret contents.
+def harbor_recovery_cleanup_verdict [
+    outcome_ok: bool
+    outcome_error: string
+    job_cleanup_ok: bool
+    rbac_cleanup_ok: bool
+    pod_cleanup_ok: bool
+    leftovers: list
+] {
+    mut problems = []
+    if not $outcome_ok {
+        $problems = ($problems | append $"Harbor credential recovery failed: ($outcome_error)")
+    }
+    if not $job_cleanup_ok {
+        $problems = ($problems | append "failed to delete the recovery Job")
+    }
+    if not $rbac_cleanup_ok {
+        $problems = ($problems | append "failed to delete the recovery RBAC objects")
+    }
+    if not $pod_cleanup_ok {
+        $problems = ($problems | append "failed to delete a stale recovery Pod")
+    }
+    if not ($leftovers | is-empty) {
+        $problems = ($problems | append $"temporary recovery privilege still present: ($leftovers | str join ', ')")
+    }
+    if ($problems | is-empty) {
+        {ok: true, msg: ""}
+    } else {
+        {ok: false, msg: ($problems | str join "; ")}
+    }
+}
+
+
+# Issue #285 stdout12: the gate that actually closes the loop. Argo sync/health
+# and the Request's own Ready/Synced conditions all proved insufficient -- the
+# credential Secret itself must be probed. A complete credential short-circuits
+# immediately (never rotated on a healthy resume); an incomplete one triggers
+# exactly one recovery attempt, then is re-probed before the run is failed.
+def ensure_crossplane_harbor_credentials [] {
+    $env.KUBECONFIG = $KUBECONFIG_PATH
+    print ""
+    print $"(ansi cyan_bold)Verifying the Harbor bootstrap credential(ansi reset)"
+
+    # The Request's own Ready/Synced conditions are not trusted as the final
+    # credential verdict. The exact server-side OBSERVE query converges the
+    # declarative lifecycle; the probe/recovery below independently verifies
+    # and, when necessary, repairs the credential Secret.
+
+    let probe = (probe_harbor_credential_keys)
+    let missing = (harbor_credential_missing_keys $probe)
+    if ($missing | is-empty) {
+        print $"(ansi green)  ✓ crossplane-harbor-credentials already carries every required key(ansi reset)"
+        return
+    }
+
+    print $"(ansi yellow)  ! crossplane-harbor-credentials is missing (($missing | length)) required key\(s\)(ansi reset)"
+    repair_harbor_credential_secret
+
+    let reprobe = (probe_harbor_credential_keys)
+    let still_missing = (harbor_credential_missing_keys $reprobe)
+    if not ($still_missing | is-empty) {
+        error make {msg: $"crossplane-harbor-credentials is still missing required key\(s\) after recovery: ($still_missing)"}
+    }
+    print $"(ansi green)  ✓ crossplane-harbor-credentials recovered(ansi reset)"
+}
+
 # Explicitly promote gated major upgrades on the disposable local KinD cluster.
 # Shared/production clusters must follow docs/guides/platform-versions.md instead.
 #
@@ -1567,6 +2917,15 @@ def sync_gated_apps_for_local_dev [] {
                 let safe_message = (redact_sync_diagnostic $message)
                 error make {msg: $"Gated Application ($app) sync failed with phase Error/Failed - not retryable or retries exhausted: ($safe_message)"}
             }
+        }
+
+        # Issue #285 stdout12: Argo's own Synced/Healthy verdict above proved
+        # insufficient for this one Application -- the credential Secret its
+        # Request injects must be independently verified (and, if needed,
+        # recovered) before any downstream Application (crossplane-xrds,
+        # core-catalog) is allowed to sync.
+        if $app == "crossplane-harbor-bootstrap" {
+            ensure_crossplane_harbor_credentials
         }
     }
 }

@@ -189,12 +189,192 @@ class CrashSafeIdentityLogicTest(unittest.TestCase):
         self.assertFalse(_run_jq(self._expected_logic(), doc))
         self.assertFalse(_run_jq(self._removed_logic(), doc))
 
+    def test_object_valued_permissions_containing_canonical_entries_is_not_synced(self):
+        # jq's `.[]` (and the guarded `.[]?`) iterates an OBJECT's VALUES just
+        # like an array's elements. A `permissions` field that is a JSON
+        # *object* (not an array) whose values happen to be the two
+        # canonical permission entries must never be accepted as the
+        # canonical array shape -- Harbor's own contract is `permissions`:
+        # array of objects. This is PR#287's finding: malformed,
+        # object-valued `permissions` must fail closed, not synced.
+        robot = self._matching_robot()
+        perms = robot["permissions"]
+        robot["permissions"] = {"first": perms[0], "second": perms[1]}
+        doc = {"response": {"statusCode": 200, "body": [robot]}}
+        self.assertFalse(_run_jq(self._expected_logic(), doc))
+        self.assertFalse(_run_jq(self._removed_logic(), doc))
+
+    def test_object_valued_access_containing_canonical_entries_is_not_synced(self):
+        # Same shape confusion one level deeper: a permission entry's
+        # `access` field must be an array of objects, never a JSON object
+        # whose values happen to be the canonical access entries.
+        robot = self._matching_robot()
+        access = robot["permissions"][1]["access"]
+        robot["permissions"][1]["access"] = {str(i): a for i, a in enumerate(access)}
+        doc = {"response": {"statusCode": 200, "body": [robot]}}
+        self.assertFalse(_run_jq(self._expected_logic(), doc))
+        self.assertFalse(_run_jq(self._removed_logic(), doc))
+
     def test_a_differently_named_robot_in_the_list_does_not_match(self):
         robot = self._matching_robot()
         robot["name"] = "robot$some-other-robot"
         doc = {"response": {"statusCode": 200, "body": [robot]}}
         self.assertFalse(_run_jq(self._expected_logic(), doc))
+        self.assertFalse(
+            _run_jq(self._removed_logic(), doc),
+            "Issue #285 slice M: under the exact server-side Name query, "
+            "isRemovedCheck no longer scans item identity at all -- ANY "
+            "nonempty response is fail-closed 'not removed', even one whose "
+            "sole item doesn't match this robot. (This exact shape can't "
+            "happen against the real exact query -- Harbor would never "
+            "return an unrelated name for it -- but the check must not "
+            "trust it either way if it somehow did.)",
+        )
+
+
+class ExactServerSideQueryTest(unittest.TestCase):
+    """Issue #285 review finding (round 4, final blocker): fuzzy
+    `q=Name=~crossplane-system` matches by SUBSTRING against every robot's
+    stored name Harbor-wide -- the `page_size=100` + truncation-guard
+    machinery in `ExactIdentityAndPaginationTest` (now superseded, see
+    below) existed purely to bound the damage of that fuzziness, never to
+    fix its root cause.
+
+    Verified against pinned goharbor/harbor v2.15.1 source fetched into
+    /tmp/harbor-v2151:
+    * `builder.go` `parsePattern`: a bare value (no leading `~`) takes the
+      `default:` branch -- `escapeValue`, an EXACT DB predicate. `~value` is
+      the fuzzy/substring branch (`parseFuzzyMatchValue`).
+    * `controller.go` `populate()`: `config.RobotPrefix(ctx)` is prepended
+      to the robot's `Name` only on the OUTGOING `Robot` struct returned to
+      the caller -- the DB row's stored `model.Robot.Name` (what `ListRobot`
+      -> `BuildQuery` -> the exact predicate above actually filters) never
+      carries it. `Create()` only prefixes `name` with `r.ProjectName` for
+      `LEVELPROJECT`; a system-level robot's stored name is the bare
+      declared name, `"crossplane-system"`.
+    * `robot.go` `ListRobot`: whenever the `Level` query keyword is absent
+      (as here), it defaults `Level=system, ProjectID=0` itself -- so this
+      OBSERVE was already implicitly system-scoped even under the old fuzzy
+      query.
+
+    Given Harbor's `unique_robot UNIQUE(name, project_id)` constraint, an
+    exact query for `Name=crossplane-system` at the implicit `ProjectID=0`
+    can therefore only ever return the one canonical row or `[]` --
+    Harbor-wide decoys and the `page_size` boundary both become
+    structurally irrelevant to this OBSERVE, and the checks collapse to a
+    plain array-length test with no per-item scan or pagination guard
+    needed. GitHub issue 20679 (a prior exact-match failure) was improper
+    URL-encoding of `+` in project-level robot names -- irrelevant here:
+    `crossplane-system` contains no character `url.QueryUnescape` treats
+    specially.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.doc = _load()
+        cls.forProvider = cls.doc["spec"]["forProvider"]
+
+    def _observe_url(self):
+        return next(
+            m for m in self.forProvider["mappings"] if m.get("action") == "OBSERVE"
+        )["url"]
+
+    def _removed_logic(self):
+        return self.forProvider["isRemovedCheck"]["logic"]
+
+    def _expected_logic(self):
+        return self.forProvider["expectedResponseCheck"]["logic"]
+
+    def _matching_robot(self, name="robot$crossplane-system"):
+        return {
+            "name": name,
+            "level": "system",
+            "permissions": [
+                {"kind": "system", "namespace": "/", "access": [{"resource": "project", "action": "create"}]},
+                {
+                    "kind": "project",
+                    "namespace": "*",
+                    "access": [
+                        {"resource": "robot", "action": "create"},
+                        {"resource": "robot", "action": "read"},
+                        {"resource": "artifact", "action": "read"},
+                    ],
+                },
+            ],
+        }
+
+    def test_observe_uses_exact_match_not_fuzzy(self):
+        url = self._observe_url()
+        self.assertIn("q=Name=crossplane-system", url)
+        self.assertNotIn("Name=~crossplane-system", url)
+
+    def test_a_hypothetical_hundred_global_decoys_still_converge_to_removed(self):
+        """The server-side exact filter means Harbor never puts decoys in
+        this response body no matter how many robots exist system-wide --
+        so the only response shape a genuine absence can produce is an
+        empty array, and that alone must be enough to report removed."""
+        doc = {"response": {"statusCode": 200, "body": []}}
         self.assertTrue(_run_jq(self._removed_logic(), doc))
+        self.assertFalse(_run_jq(self._expected_logic(), doc))
+
+    def test_canonical_prefixed_response_converges_synced(self):
+        doc = {"response": {"statusCode": 200, "body": [self._matching_robot()]}}
+        self.assertTrue(_run_jq(self._expected_logic(), doc))
+        self.assertFalse(_run_jq(self._removed_logic(), doc))
+
+    def test_an_unprefixed_response_fails_closed(self):
+        doc = {"response": {"statusCode": 200, "body": [self._matching_robot("crossplane-system")]}}
+        self.assertFalse(_run_jq(self._expected_logic(), doc))
+        self.assertFalse(_run_jq(self._removed_logic(), doc))
+
+    def test_an_impossible_multi_item_response_fails_closed(self):
+        """Harbor's own uniqueness constraint makes >1 item impossible for a
+        genuine exact-name query at ProjectID=0 -- but the checks must not
+        trust the shape as either state if it somehow occurred."""
+        body = [self._matching_robot(), self._matching_robot("crossplane-system")]
+        doc = {"response": {"statusCode": 200, "body": body}}
+        self.assertFalse(_run_jq(self._expected_logic(), doc))
+        self.assertFalse(_run_jq(self._removed_logic(), doc))
+
+    def test_a_hundred_item_response_fails_closed_not_removed(self):
+        """Same impossible-shape guarantee at a larger, decoy-shaped size --
+        this is exactly the "100 global decoys" case, but expressed as the
+        (contract-violating) response body itself rather than as unrelated
+        system-wide rows the exact filter would already have excluded."""
+        body = [self._matching_robot(f"robot$unrelated-{i}") for i in range(100)]
+        doc = {"response": {"statusCode": 200, "body": body}}
+        self.assertFalse(_run_jq(self._expected_logic(), doc))
+        self.assertFalse(_run_jq(self._removed_logic(), doc))
+
+    def test_a_single_non_matching_item_fails_closed(self):
+        doc = {"response": {"statusCode": 200, "body": [self._matching_robot("robot$unrelated")]}}
+        self.assertFalse(_run_jq(self._expected_logic(), doc))
+        self.assertFalse(_run_jq(self._removed_logic(), doc))
+
+    def test_a_malformed_body_fails_closed(self):
+        doc = {"response": {"statusCode": 200, "body": {"unexpected": "object"}}}
+        self.assertFalse(_run_jq(self._expected_logic(), doc))
+        self.assertFalse(_run_jq(self._removed_logic(), doc))
+
+    def test_a_401_fails_closed(self):
+        doc = {"response": {"statusCode": 401, "body": "unauthorized"}}
+        self.assertFalse(_run_jq(self._expected_logic(), doc))
+        self.assertFalse(_run_jq(self._removed_logic(), doc))
+
+    def test_a_500_fails_closed(self):
+        doc = {"response": {"statusCode": 500, "body": "error"}}
+        self.assertFalse(_run_jq(self._expected_logic(), doc))
+        self.assertFalse(_run_jq(self._removed_logic(), doc))
+
+    def test_is_removed_check_no_longer_depends_on_a_page_size_threshold(self):
+        """The truncation guard existed only to bound fuzzy-match pagination
+        risk; an exact query has nothing left to bound."""
+        logic = self._removed_logic()
+        self.assertNotIn("page_size", logic)
+        self.assertNotIn("100", logic)
+
+    def test_observe_url_carries_no_leftover_page_size_param(self):
+        self.assertNotIn("page_size", self._observe_url())
 
 
 if __name__ == "__main__":

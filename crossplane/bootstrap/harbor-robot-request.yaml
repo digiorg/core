@@ -43,6 +43,25 @@ metadata:
   name: harbor-crossplane-system-robot
 spec:
   deletionPolicy: Orphan
+  # Issue #285 (stdout12 live evidence): provider-http v1.0.14's packaged CRD
+  # (package/crds/http.crossplane.io_requests.yaml) declares
+  # `spec.managementPolicies` with `default: ["*"]`. This Application is applied
+  # with ServerSideApply=true, so the API server attributes that schema default
+  # to Argo's own field manager in .metadata.managedFields -- Argo's
+  # managed-fields diff normalizer keeps it in the live comparison, Git never
+  # declared it, and the Request stays OutOfSync forever (proven twice: the
+  # Application's own operation Succeeded and went Healthy while this single
+  # resource never converged, until the gated-sync budget expired). Declaring
+  # the API default verbatim is the whole correction -- deliberately NOT an
+  # ignoreDifferences rule, which would also blind the diff to real drift of
+  # the least-privilege permission payload below. `["*"]` is the full
+  # observe/create/update/delete set this one-time bootstrap already relied on.
+  managementPolicies: ["*"]
+  # The other three CRD defaults need no such treatment: deletionPolicy and
+  # every keyMapping's missingFieldStrategy are declared explicitly (below),
+  # and providerConfigRef.policy is an object with no default of its own, so
+  # the API server never materialises it and never defaults .policy.resolution
+  # while it stays absent -- confirmed live (rendered none).
   providerConfigRef:
     name: default
   forProvider:
@@ -101,16 +120,36 @@ spec:
       # (unlike the AppClaim pipeline's per-app *project*-level robot, which
       # Harbor's ListRobot forces to require a numeric ProjectID a single
       # provider-http mapping cannot resolve -- see
-      # core-catalog/tests/test_harbor_robot_hardening.py). `q=Name=~...`
-      # is Harbor's fuzzy/substring query syntax (`#/parameters/query` in
-      # api/v2.0/swagger.yaml), robust to the admin-configurable "robot$"
-      # display prefix (populate() in the same handler file) this bootstrap
-      # robot's stored name always carries. `action: OBSERVE` is explicit
-      # for the same requestmapping.GetMapping reason documented in
-      # core-catalog/tests/test_provider_http_mapping_contract.py.
+      # core-catalog/tests/test_harbor_robot_hardening.py). `action: OBSERVE`
+      # is explicit for the same requestmapping.GetMapping reason documented
+      # in core-catalog/tests/test_provider_http_mapping_contract.py.
+      #
+      # Issue #285 final blocker (round-4 review): `q=Name=~...` is Harbor's
+      # fuzzy/substring query syntax -- it matched by SUBSTRING against every
+      # robot's stored name Harbor-wide, so a global decoy could occupy the
+      # single page provider-http can fetch ahead of the canonical robot
+      # (the `page_size=100` + truncation-guard machinery this used to carry
+      # only bounded that risk, it never removed it). Verified against
+      # goharbor/harbor v2.15.1 source (fetched into /tmp/harbor-v2151):
+      # `src/lib/q/builder.go` `parsePattern` takes a bare value (no leading
+      # `~`) down the EXACT-match branch (`escapeValue`, a direct DB
+      # predicate) -- `~value` is the separate fuzzy branch. `controller.go`
+      # `populate()` prepends `config.RobotPrefix(ctx)` only to the Robot
+      # struct returned to the caller; the DB row `ListRobot`/`BuildQuery`
+      # actually filters (`model.Robot.Name`) never carries it, and `Create`
+      # only prefixes `name` with the project name for project-level robots
+      # -- this system-level robot's stored name is the bare declared
+      # `"crossplane-system"`. So `q=Name=crossplane-system` (exact) filters
+      # server-side on the same bare name this Request declares, and under
+      # Harbor's own `unique_robot UNIQUE(name, project_id)` constraint at
+      # the implicit `ProjectID=0` this OBSERVE already resolves to, it can
+      # only ever return the one canonical row or `[]` -- no global decoy,
+      # and no pagination boundary, can appear in the response at all. That
+      # is the whole fix: `page_size` and the truncation guard below are
+      # gone because they no longer protect against anything reachable.
       - method: "GET"
         action: OBSERVE
-        url: .payload.baseUrl + "/robots?q=Name=~crossplane-system"
+        url: .payload.baseUrl + "/robots?q=Name=crossplane-system"
     # Runtime blocker (crash-safe identity), continued: rather than trusting
     # a bare 2xx status (the DEFAULT check), these CUSTOM checks verify the
     # LIST response actually contains an item with this robot's exact
@@ -126,30 +165,28 @@ spec:
     # make/migrations/postgresql/0004_1.8.0_schema.up.sql, already holds).
     isRemovedCheck:
       type: CUSTOM
-      # Deliberately name/level-only (ignores permissions): a robot that
-      # already exists under this exact name but with drifted permissions
-      # must never be reported as "removed" (that would re-trigger CREATE
-      # against a name Harbor's own uniqueness constraint already holds --
-      # see the comment above expectedResponseCheck). Only a genuine absence
-      # (no matching name at all) counts as removed.
-      #
-      # Issue #285 review finding: negating the whole success predicate (the
-      # previous shape, `(200 and array and found) | not`) turned every
-      # error/malformed response (401, 500, a non-array body) into
-      # "removed", since `not` of a false success predicate is true whether
-      # that predicate failed because the robot was genuinely absent OR
-      # because the response was simply uninterpretable. An uncertain
-      # response must never be reported as removed -- only a confirmed HTTP
-      # 200, well-formed array that provably omits the robot counts. The AND
-      # chain below achieves that directly: it is only ever true when the
-      # 200/array preconditions hold AND the robot is absent from that
-      # array; any error/malformed case falls through to false (not
-      # removed), matching expectedResponseCheck's own fail-closed (not
-      # synced) behavior on the same inputs.
+      # Issue #285 final blocker (round-4 review): now that the OBSERVE
+      # above is Harbor's server-side EXACT `Name` match (not fuzzy), the
+      # response body is structurally bounded to the one canonical row or
+      # `[]` (see the OBSERVE mapping's comment for the full builder.go/
+      # controller.go citation) -- there is no decoy or truncated page left
+      # for a per-item identity scan to defend against, so this check
+      # collapses to exactly what the response shape can prove: a confirmed
+      # HTTP 200, well-formed, EMPTY array. `not` of the whole success
+      # predicate is deliberately avoided (the pre-#285 shape) because that
+      # would turn every error/malformed response (401, 500, a non-array
+      # body) into "removed" too -- an uncertain response must never be
+      # reported as removed, only a provable absence may (matching
+      # expectedResponseCheck's own fail-closed "not synced" on the same
+      # uncertain inputs). A NONEMPTY response -- whether it is the one
+      # correct row, or a shape Harbor's own `unique_robot
+      # UNIQUE(name, project_id)` constraint makes impossible for this exact
+      # query (>1 item, or an item that doesn't actually match) -- is
+      # therefore never treated as removed either: it falls through to
+      # "not removed", and expectedResponseCheck alone decides whether it is
+      # synced.
       logic: |-
-        def isCrossplaneSystemRobotByName(r):
-          r.name != null and (r.name | endswith("crossplane-system")) and r.level == "system";
-        (.response.statusCode == 200) and ((.response.body|type)=="array") and (([.response.body[] | isCrossplaneSystemRobotByName(.)] | any) | not)
+        (.response.statusCode == 200) and ((.response.body|type)=="array") and ((.response.body|length) == 0)
     expectedResponseCheck:
       type: CUSTOM
       # Issue #285 review finding: exact least-privilege enforcement. Each
@@ -160,14 +197,34 @@ spec:
       # synced. Each select now also pins `(.access // []) | length ==` the
       # exact expected count, so any extra action fails the match (and the
       # robot correctly falls through to "not synced").
+      #
+      # Issue #285 final blocker (round-4 review): under the OBSERVE's
+      # server-side EXACT `Name` match, a synced response can only ever be
+      # exactly one item (Harbor's own `unique_robot UNIQUE(name,
+      # project_id)` constraint at the implicit `ProjectID=0` this OBSERVE
+      # resolves to -- see the OBSERVE mapping's comment). The check now
+      # requires `length == 1` explicitly rather than scanning with `any(...)`
+      # over an unbounded array: `>1` items (impossible for a genuine
+      # response, but never trusted if it occurred) and `0` items both fall
+      # through to "not synced" here, matching isRemovedCheck's fail-closed
+      # treatment of the same non-canonical shapes. Identity is still EXACT
+      # on the single item: Harbor stores robots under an admin-configurable
+      # prefix terminated by `$` (`populate()` in goharbor/harbor v2.15.1
+      # src/controller/robot/controller.go, which adds it only to the response,
+      # never to what's queried). A non-empty `$`-terminated prefix is required,
+      # then stripped; the remainder must equal the declared name exactly.
       logic: |-
+        def canonicalName(r): (r.name // "") | sub("^[^$]*\\$"; "");
+        def hasCanonicalPrefix(r): r.name != null and (r.name | test("^[^$]+\\$"));
+        def hasArrayOfObjects(v): (v | type) == "array" and (v | all(type == "object"));
         def isCrossplaneSystemRobot(r):
-          r.name != null and (r.name | endswith("crossplane-system"))
+          hasCanonicalPrefix(r) and (canonicalName(r) == "crossplane-system")
           and r.level == "system"
+          and hasArrayOfObjects(r.permissions // [])
           and (r.permissions // [] | length) == 2
-          and ([r.permissions[] | select(.kind=="system" and .namespace=="/" and ((.access // []) | length) == 1 and ((.access // []) | any(.resource=="project" and .action=="create")))] | length) == 1
-          and ([r.permissions[] | select(.kind=="project" and .namespace=="*" and ((.access // []) | length) == 3 and ((.access // []) | any(.resource=="robot" and .action=="create")) and ((.access // []) | any(.resource=="robot" and .action=="read")) and ((.access // []) | any(.resource=="artifact" and .action=="read")))] | length) == 1;
-        (.response.statusCode == 200) and ((.response.body|type)=="array") and ([.response.body[] | isCrossplaneSystemRobot(.)] | any)
+          and ([r.permissions[] | select(hasArrayOfObjects(.access // []) and .kind=="system" and .namespace=="/" and ((.access // []) | length) == 1 and ((.access // []) | any(.resource=="project" and .action=="create")))] | length) == 1
+          and ([r.permissions[] | select(hasArrayOfObjects(.access // []) and .kind=="project" and .namespace=="*" and ((.access // []) | length) == 3 and ((.access // []) | any(.resource=="robot" and .action=="create")) and ((.access // []) | any(.resource=="robot" and .action=="read")) and ((.access // []) | any(.resource=="artifact" and .action=="read")))] | length) == 1;
+        (.response.statusCode == 200) and ((.response.body|type)=="array") and ((.response.body|length) == 1) and (isCrossplaneSystemRobot(.response.body[0]))
     secretInjectionConfigs:
       - secretRef:
           name: crossplane-harbor-credentials
