@@ -258,15 +258,38 @@ class RetryWiringStructureTest(unittest.TestCase):
 
 
 class MaterialDiffFallbackRuntimeTest(unittest.TestCase):
-    def _run_with_fake_argocd(self, exit_code: int) -> str:
+    def _run_with_fake_argocd(
+        self,
+        exit_code: int,
+        *,
+        expression: str = "argocd_app_has_no_material_diff kyverno",
+        version_exit_code: int = 0,
+        version: str = "argocd: v3.4.5+564b949",
+        kubectl_exit_code: int = 0,
+        include_argocd: bool = True,
+    ) -> tuple[str, str, str, str, bool]:
         nu = shutil.which("nu")
         assert nu is not None
         with tempfile.TemporaryDirectory() as tmp:
-            with open(os.path.join(tmp, "kubeconfig-local.yaml"), "w", encoding="utf-8") as fh:
-                fh.write("apiVersion: v1\nkind: Config\n")
+            work = os.path.join(tmp, "working directory with spaces")
+            native_temp = os.path.join(tmp, "native temp directory with spaces")
+            bin_dir = os.path.join(tmp, "fake tools")
+            os.makedirs(work)
+            os.makedirs(native_temp)
+            os.makedirs(bin_dir)
+            kubeconfig = os.path.join(work, "kubeconfig-local.yaml")
+            original = "apiVersion: v1\nkind: Config\ncurrent-context: sentinel\n"
+            with open(kubeconfig, "w", encoding="utf-8") as fh:
+                fh.write(original)
+            kubectl_observation = os.path.join(tmp, "kubectl-observation")
+            argocd_observation = os.path.join(tmp, "argocd-observation")
             for name, script in {
-                "kubectl": "#!/bin/sh\nexit 0\n",
-                "mktemp": "#!/bin/sh\nexec /usr/bin/mktemp \"$@\"\n",
+                "mktemp": "#!/bin/sh\nexit 127\n",
+                "kubectl": (
+                    "#!/bin/sh\n"
+                    "printf '%s\\n' \"$*\" > \"$KUBECTL_OBSERVATION\"\n"
+                    f"exit {kubectl_exit_code}\n"
+                ),
                 "argocd": (
                     "#!/bin/sh\n"
                     # Issue #283: argocd_app_has_no_material_diff also checks
@@ -275,38 +298,209 @@ class MaterialDiffFallbackRuntimeTest(unittest.TestCase):
                     # the diff exit-code path under test is still isolated.
                     "case \"$*\" in\n"
                     "  *'version --client --short'*)\n"
-                    "    echo 'argocd: v3.4.5+564b949'\n"
-                    "    exit 0\n"
+                    f"    echo '{version}'\n"
+                    f"    exit {version_exit_code}\n"
                     "    ;;\n"
                     "esac\n"
+                    "printf '%s\\n' \"$KUBECONFIG\" > \"$ARGOCD_OBSERVATION\"\n"
+                    "test -f \"$KUBECONFIG\" || exit 73\n"
                     "echo 'Authorization: Bearer should-not-leak'\n"
                     "echo 'password=should-not-leak' >&2\n"
                     f"exit {exit_code}\n"
                 ),
             }.items():
-                path = os.path.join(tmp, name)
+                if name == "argocd" and not include_argocd:
+                    continue
+                path = os.path.join(bin_dir, name)
                 with open(path, "w", encoding="utf-8") as fh:
                     fh.write(script)
                 os.chmod(path, 0o755)
 
             result = subprocess.run(
-                [nu, "-c", f"source {SETUP}; argocd_app_has_no_material_diff kyverno"],
-                cwd=tmp,
-                env={**os.environ, "PATH": f"{tmp}:/usr/bin:/bin"},
+                [nu, "--no-config-file", "-c", f"source {SETUP}; {expression}"],
+                cwd=work,
+                env={
+                    **os.environ,
+                    "PATH": f"{bin_dir}:/usr/bin:/bin",
+                    "TMPDIR": native_temp,
+                    "KUBECTL_OBSERVATION": kubectl_observation,
+                    "ARGOCD_OBSERVATION": argocd_observation,
+                },
                 capture_output=True,
                 text=True,
                 timeout=30,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertNotIn("should-not-leak", result.stdout + result.stderr)
-            return result.stdout.strip()
+            with open(kubeconfig, encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), original, "the original kubeconfig was mutated")
+            kubectl_args = ""
+            if os.path.exists(kubectl_observation):
+                with open(kubectl_observation, encoding="utf-8") as fh:
+                    kubectl_args = fh.read().strip()
+            temp_kubeconfig = ""
+            if os.path.exists(argocd_observation):
+                with open(argocd_observation, encoding="utf-8") as fh:
+                    temp_kubeconfig = fh.read().strip()
+            temp_still_exists = bool(temp_kubeconfig and os.path.exists(temp_kubeconfig))
+            return (
+                result.stdout.strip(),
+                result.stderr.strip(),
+                kubectl_args,
+                temp_kubeconfig,
+                temp_still_exists,
+            )
 
     def test_zero_diff_is_accepted(self):
-        self.assertEqual(self._run_with_fake_argocd(0), "true")
+        stdout, _, _, _, _ = self._run_with_fake_argocd(0)
+        self.assertEqual(stdout, "true")
 
     def test_diff_or_cli_error_is_rejected(self):
-        self.assertEqual(self._run_with_fake_argocd(1), "false")
-        self.assertEqual(self._run_with_fake_argocd(2), "false")
+        self.assertEqual(self._run_with_fake_argocd(1)[0], "false")
+        self.assertEqual(self._run_with_fake_argocd(2)[0], "false")
+
+    def test_uses_native_temp_path_with_spaces_and_removes_the_copy(self):
+        stdout, _, kubectl_args, temp_kubeconfig, temp_still_exists = (
+            self._run_with_fake_argocd(0)
+        )
+        self.assertEqual(stdout, "true")
+        self.assertIn("config set-context --current --namespace=argocd", kubectl_args)
+        self.assertIn("native temp directory with spaces", temp_kubeconfig)
+        self.assertFalse(temp_still_exists, "the copied kubeconfig was not removed")
+
+
+class FreshGatedOperationDecisionRuntimeTest(unittest.TestCase):
+    """Drive the exact fresh-operation acceptance predicate through real Nushell."""
+
+    def _decision(
+        self,
+        *,
+        saw_new: bool,
+        phase: str,
+        sync: str,
+        health: str,
+        diff_exit_code: int = 0,
+        version_exit_code: int = 0,
+        version: str = "argocd: v3.4.5+564b949",
+        kubectl_exit_code: int = 0,
+        include_argocd: bool = True,
+    ) -> str:
+        expression = (
+            "gated_sync_operation_succeeded crossplane-harbor-bootstrap "
+            f"{str(saw_new).lower()} {phase} {sync} {health}"
+        )
+        return MaterialDiffFallbackRuntimeTest()._run_with_fake_argocd(
+            diff_exit_code,
+            expression=expression,
+            version_exit_code=version_exit_code,
+            version=version,
+            kubectl_exit_code=kubectl_exit_code,
+            include_argocd=include_argocd,
+        )[0]
+
+    def test_accepts_only_fresh_succeeded_healthy_synced_or_zero_diff(self):
+        accepted = [
+            (True, "Succeeded", "Synced", "Healthy", 1),
+            (True, "Succeeded", "OutOfSync", "Healthy", 0),
+        ]
+        for saw_new, phase, sync, health, diff_exit_code in accepted:
+            with self.subTest(sync=sync):
+                self.assertEqual(
+                    self._decision(
+                        saw_new=saw_new,
+                        phase=phase,
+                        sync=sync,
+                        health=health,
+                        diff_exit_code=diff_exit_code,
+                    ),
+                    "true",
+                )
+
+    def test_rejects_stale_terminal_running_failed_unhealthy_and_unknown(self):
+        rejected = [
+            (False, "Succeeded", "Synced", "Healthy"),
+            (False, "Succeeded", "OutOfSync", "Healthy"),
+            (True, "Failed", "Synced", "Healthy"),
+            (True, "Error", "Synced", "Healthy"),
+            (True, "Running", "Synced", "Healthy"),
+            (True, "Succeeded", "Synced", "Progressing"),
+            (True, "Succeeded", "Synced", "Unknown"),
+            (True, "Succeeded", "Unknown", "Healthy"),
+        ]
+        for saw_new, phase, sync, health in rejected:
+            with self.subTest(
+                saw_new=saw_new, phase=phase, sync=sync, health=health
+            ):
+                self.assertEqual(
+                    self._decision(
+                        saw_new=saw_new,
+                        phase=phase,
+                        sync=sync,
+                        health=health,
+                    ),
+                    "false",
+                )
+
+    def test_rejects_material_diff_and_every_cli_setup_or_version_error(self):
+        cases = [
+            {"diff_exit_code": 1},
+            {"diff_exit_code": 2},
+            {"kubectl_exit_code": 1},
+            {"version_exit_code": 2},
+            {"version": "argocd: v3.5.0+incompatible"},
+            {"include_argocd": False},
+        ]
+        for case in cases:
+            with self.subTest(case=case):
+                self.assertEqual(
+                    self._decision(
+                        saw_new=True,
+                        phase="Succeeded",
+                        sync="OutOfSync",
+                        health="Healthy",
+                        **case,
+                    ),
+                    "false",
+                )
+
+
+class FreshGatedOperationWiringTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        with open(SETUP, encoding="utf-8") as fh:
+            cls.text = fh.read()
+        start = cls.text.index("def sync_gated_apps_for_local_dev")
+        end = cls.text.index("\ndef ", start + 10)
+        cls.loop = cls.text[start:end]
+
+    def test_decision_is_wired_before_the_post_sync_credential_gate(self):
+        self.assertIn("gated_sync_operation_succeeded", self.loop)
+        self.assertLess(
+            self.loop.index("gated_sync_operation_succeeded"),
+            self.loop.index("ensure_crossplane_harbor_credentials"),
+        )
+
+    def test_acceptance_prints_only_a_fixed_safe_note(self):
+        self.assertIn("fresh successful operation has no material diff", self.loop)
+        self.assertNotIn("$diff.stdout", self.loop)
+        self.assertNotIn("$diff.stderr", self.loop)
+
+
+class MaterialDiffWindowsPortabilityStructureTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        with open(SETUP, encoding="utf-8") as fh:
+            text = fh.read()
+        start = text.index("def argocd_app_has_no_material_diff")
+        end = text.index("\ndef ", start + 10)
+        cls.body = text[start:end]
+
+    def test_uses_nushell_native_unpredictable_temp_path(self):
+        self.assertNotIn("mktemp", self.body)
+        self.assertNotIn("/dev/", self.body)
+        self.assertIn("$nu.temp-dir", self.body)
+        self.assertIn("path join", self.body)
+        self.assertIn("random uuid", self.body)
 
 
 if __name__ == "__main__":

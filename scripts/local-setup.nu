@@ -2786,6 +2786,25 @@ def ensure_crossplane_harbor_credentials [] {
 # reissuing a genuinely fresh sync operation (`kubectl patch` again, not
 # re-reading the stale terminal operation). Deterministic manifest/resource/
 # hook/policy errors fail immediately — no retry.
+def gated_sync_operation_succeeded [
+    app: string,
+    saw_new_operation: bool,
+    phase: string,
+    sync: string,
+    health: string
+] {
+    if not $saw_new_operation or $phase != "Succeeded" or $health != "Healthy" {
+        return false
+    }
+    if $sync == "Synced" {
+        return true
+    }
+    if $sync != "OutOfSync" {
+        return false
+    }
+    argocd_app_has_no_material_diff $app
+}
+
 def sync_gated_apps_for_local_dev [] {
     let gated_apps = [
         "external-secrets", "nats", "grafana", "opencost", "gitea",
@@ -2852,6 +2871,7 @@ def sync_gated_apps_for_local_dev [] {
             mut completed = false
             mut saw_new_operation = false
             mut succeeded = false
+            mut accepted_zero_diff = false
             mut last_state = {}
             for attempt in 1..90 {
                 let state_result = (do {
@@ -2872,7 +2892,13 @@ def sync_gated_apps_for_local_dev [] {
                         $completed = true
                         break
                     }
-                    if $saw_new_operation and $phase == "Succeeded" and $sync == "Synced" and $health == "Healthy" {
+                    if (gated_sync_operation_succeeded $app $saw_new_operation $phase $sync $health) {
+                        if $sync == "OutOfSync" {
+                            # Fixed text only: the captured diff streams may
+                            # contain credentials and must never be printed.
+                            print $"  ($app): fresh successful operation has no material diff"
+                            $accepted_zero_diff = true
+                        }
                         $completed = true
                         $succeeded = true
                         break
@@ -2890,7 +2916,11 @@ def sync_gated_apps_for_local_dev [] {
             }
 
             if $succeeded {
-                print $"(ansi green)  ✓ ($app) sync Succeeded, Synced and Healthy(ansi reset)"
+                if $accepted_zero_diff {
+                    print $"(ansi green)  ✓ ($app) sync Succeeded and Healthy with no material diff(ansi reset)"
+                } else {
+                    print $"(ansi green)  ✓ ($app) sync Succeeded, Synced and Healthy(ansi reset)"
+                }
                 break
             }
 
@@ -3237,7 +3267,10 @@ def argocd_app_has_no_material_diff [app: string] {
         return false
     }
 
-    let temp_kubeconfig = (mktemp --tmpdir argocd-core-kubeconfig.XXXXXX | str trim)
+    let temp_kubeconfig = (
+        $nu.temp-dir
+        | path join $"argocd-core-kubeconfig.(random uuid).yaml"
+    )
     try {
         cp $KUBECONFIG_PATH $temp_kubeconfig
         let context = (do {
@@ -4765,11 +4798,11 @@ def check_prerequisites [] {
         exit 1
     }
 
-    # Issue #283: `argocd` is OPTIONAL. It is used only by
-    # argocd_app_has_no_material_diff, a fail-closed secondary check for the
-    # narrow case of a stale Healthy/OutOfSync Application status — every other
-    # bootstrap path works without it. Its absence or incompatibility must
-    # never block `main up`; report it informationally instead.
+    # Issue #283: `argocd` is OPTIONAL. It is used by
+    # argocd_app_has_no_material_diff, a fail-closed secondary check for stale
+    # Healthy/OutOfSync status in both the gated fresh-operation poll and the
+    # global Application wait. Its absence or incompatibility does not block
+    # startup, but either fallback remains closed; report it informationally.
     let expected_argocd_minor = "3.4"
     if (which argocd | is-empty) {
         print $"(ansi yellow)  argocd CLI not found \(optional\) — the stale-status zero-diff fallback will be unavailable(ansi reset)"
