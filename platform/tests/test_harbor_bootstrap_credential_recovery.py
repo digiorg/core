@@ -98,6 +98,7 @@ BOUNDARY_FUNCS = (
     "parse_harbor_credential_probe_output",
     "run_bootstrap_job",
     "cleanup_bootstrap_job_verified",
+    "get_crossplane_system_pod_list",
     "fail_bootstrap_job_after_cleanup",
     "select_owned_pod",
     "harbor_recovery_privilege_leftovers",
@@ -110,6 +111,8 @@ BOUNDARY_FUNCS = (
     "repair_harbor_credential_secret",
     "ensure_crossplane_harbor_credentials",
 )
+
+POD_LIST_RAW_PATH = "/api/v1/namespaces/crossplane-system/pods"
 
 
 def func_body(name: str) -> str:
@@ -1242,8 +1245,8 @@ class BootstrapJobLifecycleTest(unittest.TestCase):
         self.assertIn('--ignore-not-found', self.cleanup)
         job_absence_at = self.cleanup.index("kubectl get job")
         self.assertIn("is-empty", self.cleanup[job_absence_at:])
-        self.assertIn('kubectl get pods', self.cleanup)
-        pods_absence_at = self.cleanup.index("kubectl get pods")
+        self.assertIn("get_crossplane_system_pod_list", self.cleanup)
+        pods_absence_at = self.cleanup.index("get_crossplane_system_pod_list")
         self.assertIn("is-empty", self.cleanup[pods_absence_at:])
         self.assertLess(job_absence_at, pods_absence_at)
 
@@ -1352,7 +1355,7 @@ class BootstrapJobLifecycleTest(unittest.TestCase):
             "outer recovery cleanup must use the shared checked Job+Pod cleanup",
         )
         self.assertNotIn("kubectl delete job harbor-credential-repair", teardown)
-        self.assertIn("kubectl get pods", leftovers)
+        self.assertIn("get_crossplane_system_pod_list", leftovers)
         self.assertNotIn('--selector "job-name=harbor-credential-repair"', leftovers)
         self.assertIn("serviceAccountName", leftovers)
         self.assertIn("ownerReferences", leftovers)
@@ -1372,6 +1375,70 @@ class BootstrapJobLifecycleTest(unittest.TestCase):
         self.assertIn("cleanup_bootstrap_job_verified", tail)
         self.assertIn("not $cleanup.ok", tail)
         self.assertIn("error make", tail)
+
+
+class TypedCorePodListRequestContractTest(unittest.TestCase):
+    """Runtime-v11: kubectl's table printer can wrap Pods in kind=List.
+
+    Every security boundary must bypass discovery/output negotiation and use
+    the fixed typed Core API endpoint. The strict parser remains responsible
+    for rejecting anything except a real v1/PodList with well-formed Pods.
+    """
+
+    SECURITY_CRITICAL_CALLERS = {
+        "cleanup_bootstrap_job_verified": 1,
+        "run_bootstrap_job": 3,
+        "harbor_recovery_delete_leftover_pods": 1,
+        "harbor_recovery_privilege_leftovers": 1,
+    }
+
+    def test_exactly_six_security_critical_fetches_route_through_one_helper(self):
+        self.assertEqual(sum(self.SECURITY_CRITICAL_CALLERS.values()), 6)
+        for function, expected_calls in self.SECURITY_CRITICAL_CALLERS.items():
+            body = func_body(function)
+            self.assertEqual(
+                body.count("get_crossplane_system_pod_list"),
+                expected_calls,
+                f"{function} must route all {expected_calls} PodList fetches through the typed helper",
+            )
+
+    def test_helper_uses_exact_fixed_typed_core_api_request_and_captures_result(self):
+        helper = func_body("get_crossplane_system_pod_list")
+        kubectl_lines = [
+            line.strip() for line in helper.splitlines()
+            if line.strip().startswith("kubectl ")
+        ]
+        self.assertEqual(
+            kubectl_lines,
+            [f'kubectl get --raw "{POD_LIST_RAW_PATH}"'],
+        )
+        self.assertIn("| complete", helper)
+        self.assertNotIn("$", POD_LIST_RAW_PATH, "the path must contain no interpolation")
+
+    def test_no_legacy_table_negotiated_pod_list_remains_in_security_paths(self):
+        for function in self.SECURITY_CRITICAL_CALLERS:
+            body = func_body(function)
+            self.assertNotIn("kubectl get pods -n crossplane-system -o json", body)
+
+
+@unittest.skipIf(NU is None, "nushell (nu) is required")
+class LiveEvidencePodListParserContractTest(unittest.TestCase):
+    def parse(self, payload: dict) -> dict:
+        encoded = json.dumps(payload).replace("\\", "\\\\").replace('"', '\\"')
+        result = run_nu(f'parse_pod_list "{encoded}" | to json')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_runtime_v11_generic_list_is_rejected_but_typed_podlist_passes(self):
+        pod = {
+            "metadata": {"name": "crossplane-0", "uid": "pod-uid", "labels": {}},
+            "spec": {"serviceAccountName": "crossplane"},
+        }
+        generic = self.parse({"apiVersion": "v1", "kind": "List", "items": [pod]})
+        typed = self.parse({"apiVersion": "v1", "kind": "PodList", "items": [pod]})
+        self.assertFalse(generic["ok"], "generic kind=List must remain rejected")
+        self.assertEqual(generic["reason"], "malformed PodList")
+        self.assertTrue(typed["ok"], typed["reason"])
 
 
 FAKE_KUBECTL = r"""#!/bin/sh
@@ -1457,17 +1524,7 @@ case "$verb" in
       fi
       exit 0
     fi
-    if [ "$resource" = "pods" ]; then
-      if printf '%s' "$args" | grep -q -- '-o name'; then
-        n=$(count_file podnamecount)
-        if [ "$FAIL" = "pod-lingers" ] && [ "$n" -eq 2 ]; then
-          printf 'pod/job-pod-1\n'
-        else
-          printf ''
-        fi
-        exit 0
-      fi
-      if printf '%s' "$args" | grep -q -- '-o json'; then
+    if [ "$resource" = "--raw" ] && [ "$3" = "/api/v1/namespaces/crossplane-system/pods" ]; then
         deletes=$(cat "$LOG.deletecount" 2>/dev/null || echo 0)
         if [ "$deletes" -ge 2 ]; then
           if [ "$FAIL" = "pod-lingers" ]; then
@@ -1502,7 +1559,6 @@ case "$verb" in
         fi
         printf '{"apiVersion":"v1","kind":"PodList","items":[{"metadata":{"name":"job-pod-1","uid":"%s","labels":{"job-name":"pr287-test-job"},"ownerReferences":[{"kind":"Job","name":"pr287-test-job","uid":"%s","controller":true}]},"spec":{"serviceAccountName":"harbor-credential-recovery"}}]}' "$pod_uid" "$UID_VALUE"
         exit 0
-      fi
     fi
     exit 0
     ;;
@@ -1688,7 +1744,7 @@ class StaleOwnerRelabelledPodSurvivorTest(unittest.TestCase):
             "#!/bin/sh\n"
             "if [ \"$1\" = delete ]; then exit 0; fi\n"
             "if [ \"$1\" = get ] && [ \"$2\" = job ]; then printf ''; exit 0; fi\n"
-            "if [ \"$1\" = get ] && [ \"$2\" = pods ]; then printf '%s' \"$PODS_JSON\"; exit 0; fi\n"
+            "if [ \"$1\" = get ] && [ \"$2\" = --raw ] && [ \"$3\" = /api/v1/namespaces/crossplane-system/pods ]; then printf '%s' \"$PODS_JSON\"; exit 0; fi\n"
             "exit 0\n",
             encoding="utf-8",
         )
@@ -2014,7 +2070,7 @@ case "$verb" in
       printf ''
       exit 0
     fi
-    if [ "$kind" = "pods" ]; then
+    if [ "$kind" = "--raw" ] && [ "$2" = "/api/v1/namespaces/crossplane-system/pods" ]; then
       filtered="$PODS_JSON"
       if [ -f "$LOG.deletedpods" ]; then
         while IFS= read -r name; do
@@ -2499,7 +2555,7 @@ case "$verb" in
       fi
       exit 0
     fi
-    if [ "$kind" = "pods" ]; then
+    if [ "$kind" = "--raw" ] && [ "$2" = "/api/v1/namespaces/crossplane-system/pods" ]; then
       if [ "$PODS_LIST_FAILS" = "true" ]; then
         echo "boom: list pods failed" >&2
         exit 1
@@ -2718,7 +2774,10 @@ esac
 
     def test_a_primitive_pod_item_still_reaches_pod_cleanup_and_leftover_verification(self):
         _verdict, calls = self.run_teardown(self._malformed_item_pods("not-an-object"))
-        get_pods_calls = [c for c in calls if c.startswith("get pods")]
+        get_pods_calls = [
+            c for c in calls
+            if c == f"get --raw {POD_LIST_RAW_PATH}"
+        ]
         self.assertGreaterEqual(
             len(get_pods_calls), 3,
             "the Job cleanup's own residual-pod check, the recovery Pod "
@@ -2906,6 +2965,10 @@ printf '%s\n' "$*" >> "$LOG"
 verb="$1"; shift
 case "$verb" in
   get)
+    if [ "$1" != "--raw" ] || [ "$2" != "/api/v1/namespaces/crossplane-system/pods" ]; then
+      echo "unexpected pod list request: $*" >&2
+      exit 2
+    fi
     printf '%s' "$PODS_JSON"
     exit 0
     ;;
@@ -3010,7 +3073,7 @@ class RecoveryPodLeftoverBehaviourTest(unittest.TestCase):
         fake = cls.bindir / "kubectl"
         fake.write_text(
             "#!/bin/sh\n"
-            "if [ \"$1\" = get ] && [ \"$2\" = pods ]; then\n"
+            "if [ \"$1\" = get ] && [ \"$2\" = --raw ] && [ \"$3\" = /api/v1/namespaces/crossplane-system/pods ]; then\n"
             "  printf '%s' \"$PODS_JSON\"\n"
             "fi\n"
             "exit 0\n",

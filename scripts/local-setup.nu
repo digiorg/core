@@ -1669,6 +1669,15 @@ def parse_pod_list [pods_json: string] {
     {ok: true, items: $items, reason: ""}
 }
 
+# Fetches the typed Core API PodList directly so kubectl discovery or output
+# negotiation cannot wrap the response in a generic kind=List. The namespace
+# and resource path are fixed security-boundary constants, never input.
+def get_crossplane_system_pod_list [] {
+    do {
+        kubectl get --raw "/api/v1/namespaces/crossplane-system/pods"
+    } | complete
+}
+
 # Deletes a Job and positively re-verifies that neither the Job nor any Pod
 # traceable to this run remains. Mutable labels are only a fallback for the
 # pre-create cleanup; after creation the immutable Job/Pod identities are
@@ -1703,9 +1712,7 @@ def cleanup_bootstrap_job_verified [
     # catches an orphan or relabelled Pod by its direct identity or immutable
     # owner UID. Before create, when no UID exists yet, the label remains a
     # conservative stale-resource fallback.
-    let residual_pods = (do {
-        kubectl get pods -n crossplane-system -o json
-    } | complete)
+    let residual_pods = (get_crossplane_system_pod_list)
     if $residual_pods.exit_code != 0 {
         return {ok: false, reason: $"failed to confirm the pods of job/($job_name) are absent"}
     }
@@ -1811,9 +1818,7 @@ def run_bootstrap_job [manifest: record, job_name: string, timeout: string] {
 
     # Enumerate the namespace and select exactly one Pod controlled by the
     # expected Job name and immutable UID. A mutable label is not an identity.
-    let pods_result = (do {
-        kubectl get pods -n crossplane-system -o json
-    } | complete)
+    let pods_result = (get_crossplane_system_pod_list)
     if $pods_result.exit_code != 0 {
         fail_bootstrap_job_after_cleanup $job_name $"Failed to list the pods of the ($job_name) Job" $created_uid "" ""
     }
@@ -1830,9 +1835,7 @@ def run_bootstrap_job [manifest: record, job_name: string, timeout: string] {
     if ($pre_log_job_result.exit_code != 0) or (not (job_identity_matches $pre_log_job_result.stdout $job_name $created_uid)) {
         fail_bootstrap_job_after_cleanup $job_name $"The ($job_name) Job identity changed before reading logs" $created_uid $owned.name $owned.uid
     }
-    let relist_result = (do {
-        kubectl get pods -n crossplane-system -o json
-    } | complete)
+    let relist_result = (get_crossplane_system_pod_list)
     if $relist_result.exit_code != 0 {
         fail_bootstrap_job_after_cleanup $job_name $"Failed to re-verify the ($job_name) Job's pod before reading logs" $created_uid $owned.name $owned.uid
     }
@@ -1856,9 +1859,7 @@ def run_bootstrap_job [manifest: record, job_name: string, timeout: string] {
     if ($post_log_job_result.exit_code != 0) or (not (job_identity_matches $post_log_job_result.stdout $job_name $created_uid)) {
         fail_bootstrap_job_after_cleanup $job_name $"The ($job_name) Job identity changed after reading logs" $created_uid $owned.name $owned.uid
     }
-    let post_log_relist_result = (do {
-        kubectl get pods -n crossplane-system -o json
-    } | complete)
+    let post_log_relist_result = (get_crossplane_system_pod_list)
     if $post_log_relist_result.exit_code != 0 {
         fail_bootstrap_job_after_cleanup $job_name $"Failed to re-verify the ($job_name) Job's pod after reading logs" $created_uid $owned.name $owned.uid
     }
@@ -2478,7 +2479,7 @@ def harbor_credential_repair_job [] {
 # leftovers` uses to detect them.
 def harbor_recovery_delete_leftover_pods [] {
     $env.KUBECONFIG = $KUBECONFIG_PATH
-    let pods_result = (do { kubectl get pods -n crossplane-system -o json } | complete)
+    let pods_result = (get_crossplane_system_pod_list)
     if $pods_result.exit_code != 0 {
         return {ok: false, reason: "failed to list crossplane-system pods before resuming recovery"}
     }
@@ -2682,9 +2683,7 @@ def harbor_recovery_privilege_leftovers [] {
         }
     }
     let pod_descriptor = "crossplane-system/recovery-identity pods"
-    let pod_lookup = (do {
-        kubectl get pods -n crossplane-system -o json
-    } | complete)
+    let pod_lookup = (get_crossplane_system_pod_list)
     if $pod_lookup.exit_code != 0 {
         $leftovers = ($leftovers | append $"($pod_descriptor) \(unverifiable\)")
     } else {
