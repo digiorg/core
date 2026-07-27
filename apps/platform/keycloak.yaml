@@ -13,7 +13,7 @@ spec:
 
   source:
     repoURL: https://github.com/digiorg/core.git
-    targetRevision: main
+    targetRevision: issue285-runtime-v12-20260727T075108Z
     path: platform/base/keycloak
 
   destination:

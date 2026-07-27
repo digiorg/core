@@ -25,13 +25,13 @@ spec:
 
     # Reference to values file in Git repo
     - repoURL: https://github.com/digiorg/core.git
-      targetRevision: main
+      targetRevision: issue285-runtime-v12-20260727T075108Z
       ref: values
 
     # Surveyor and its Service via Kustomize. The messaging Namespace is owned
     # centrally by the namespaces Application.
     - repoURL: https://github.com/digiorg/core.git
-      targetRevision: main
+      targetRevision: issue285-runtime-v12-20260727T075108Z
       path: platform/base/nats
 
   destination:
