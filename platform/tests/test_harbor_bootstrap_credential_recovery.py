@@ -87,6 +87,7 @@ CREDENTIAL_SECRET = "crossplane-harbor-credentials"
 # Every Nushell function that makes up the new bootstrap boundary.
 BOUNDARY_FUNCS = (
     "harbor_credential_required_keys",
+    "normalize_posix_container_script",
     "harbor_credential_probe_script",
     "harbor_credential_repair_script",
     "harbor_robot_selector_jq",
@@ -1000,6 +1001,82 @@ class CredentialProbeSecurityTest(unittest.TestCase):
             "create the shell when it is genuinely absent",
         )
         self.assertNotIn("--from-literal", body)
+
+
+@unittest.skipIf(NU is None or shutil.which("sh") is None, "nu and sh are required")
+class ContainerCommandLineEndingBehaviourTest(unittest.TestCase):
+    """Exercise the generated in-container commands from real LF/CRLF sources.
+
+    Windows Git checkouts preserve CRLF inside Nushell multiline literals.
+    The resulting carriage returns must be removed at the production boundary,
+    before either script becomes the third ``sh -c`` container argument.
+    """
+
+    def generated_commands(self, source_bytes: bytes) -> dict:
+        with tempfile.TemporaryDirectory(prefix="pr287-line-endings-") as tmp:
+            setup = Path(tmp) / "local-setup.nu"
+            setup.write_bytes(source_bytes)
+            snippet = (
+                f"source {setup.as_posix()}\n"
+                "let probe = (harbor_credential_probe_job)\n"
+                "let repair = (harbor_credential_repair_job)\n"
+                "{probe: $probe.spec.template.spec.containers.0.command.2, "
+                "repair: $repair.spec.template.spec.containers.0.command.2} | to json"
+            )
+            result = subprocess.run(
+                [NU, "--no-config-file", "-c", snippet],
+                cwd=ROOT, text=True, capture_output=True, timeout=60, check=False,
+            )
+        self.assertEqual(
+            result.returncode, 0,
+            f"real Nushell could not source/generate jobs\nSTDERR:\n{result.stderr}",
+        )
+        return json.loads(result.stdout)
+
+    def assert_command_contract(self, commands: dict) -> None:
+        self.assertEqual(set(commands), {"probe", "repair"})
+        commands_with_cr = [name for name, script in commands.items() if "\r" in script]
+        self.assertEqual(
+            commands_with_cr, [],
+            f"generated commands retained carriage returns: {commands_with_cr}",
+        )
+        self.assertTrue(commands["probe"].startswith("#!/bin/sh\nset -e\n"))
+        self.assertTrue(commands["repair"].startswith("set -eu\numask 077\n"))
+        for name, script in commands.items():
+            self.assertIn("\n", script, f"{name} command lost its LF separators")
+
+        probe = subprocess.run(
+            ["sh", "-c", commands["probe"]],
+            cwd=ROOT, text=True, capture_output=True, timeout=30, check=False,
+        )
+        self.assertEqual(
+            probe.returncode, 0,
+            f"generated probe command failed\nSTDERR:\n{probe.stderr}",
+        )
+        self.assertNotIn("illegal option", probe.stderr.lower())
+        self.assertEqual(
+            probe.stdout,
+            "name=false\nsecret=false\nbasicAuth=false\n",
+            "probe stdout must contain only the three key-presence booleans",
+        )
+
+    def test_lf_checkout_preserves_generated_command_semantics(self):
+        source = SETUP_PATH.read_bytes()
+        self.assertNotIn(b"\r", source, "repository fixture is expected to be LF-only")
+        self.assert_command_contract(self.generated_commands(source))
+
+    def test_pure_normalizer_handles_crlf_lone_cr_and_lf(self):
+        result = run_nu(
+            r'normalize_posix_container_script "one\r\ntwo\rthree\n" | to json'
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), "one\ntwo\nthree\n")
+
+    def test_crlf_checkout_normalizes_both_generated_container_commands(self):
+        source = SETUP_PATH.read_bytes()
+        crlf_source = source.replace(b"\n", b"\r\n")
+        self.assertIn(b"\r\n", crlf_source)
+        self.assert_command_contract(self.generated_commands(crlf_source))
 
 
 class RobotSecretRecoveryTest(unittest.TestCase):

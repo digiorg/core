@@ -1436,6 +1436,15 @@ def harbor_credential_required_keys [] {
     ["name", "secret", "basicAuth"]
 }
 
+# Git preserves the checkout's line endings inside Nushell multiline strings.
+# Normalize only at the container-command boundary: POSIX `sh -c` requires LF,
+# and a CR in `set -e`/`set -eu` is parsed as part of the option token.
+def normalize_posix_container_script [script: string] {
+    $script
+    | str replace --all "\r\n" "\n"
+    | str replace --all "\r" "\n"
+}
+
 # Runs inside the read-only probe Job (harbor_credential_probe_job). Reports
 # per-key presence/non-emptiness with `test -s` -- it never reads, decodes or
 # prints a credential byte, only the two literal tokens `true`/`false`.
@@ -1452,6 +1461,7 @@ for key in name secret basicAuth; do
   fi
 done
 '
+    | normalize_posix_container_script $in
 }
 
 # A Job whose pod mounts crossplane-harbor-credentials as an *optional*,
@@ -2410,6 +2420,7 @@ exit 1
     $template
     | str replace "__EXPECTED_PERMISSIONS__" (harbor_robot_expected_permissions)
     | str replace "__SELECTOR_JQ__" (harbor_robot_selector_jq)
+    | normalize_posix_container_script $in
 }
 
 # The recovery Job: mounts a memory-backed (tmpfs) workspace for every file
