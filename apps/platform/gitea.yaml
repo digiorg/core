@@ -32,7 +32,7 @@ spec:
     
     # Source 2: Values from Git repository
     - repoURL: https://github.com/digiorg/core.git
-      targetRevision: main
+      targetRevision: issue285-runtime-v13-20260727T102730Z
       ref: values
   
   destination:
