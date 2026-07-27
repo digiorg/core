@@ -1300,6 +1300,24 @@ class BootstrapJobLifecycleTest(unittest.TestCase):
     def test_a_shared_runner_owns_job_lifecycle_for_probe_and_repair(self):
         self.assertIn("run_bootstrap_job", self.probe)
         self.assertIn("run_bootstrap_job", self.repair)
+        self.assertIn(
+            'run_bootstrap_job (harbor_credential_probe_job) '
+            '"harbor-credential-probe" "60s"',
+            self.probe,
+        )
+        self.assertIn(
+            'run_bootstrap_job (harbor_credential_repair_job) '
+            '"harbor-credential-repair" "180s"',
+            self.repair,
+        )
+
+    def test_startup_has_a_distinct_300_second_budget_before_functional_wait(self):
+        self.assertIn("startup_timeout?: duration", self.runner)
+        self.assertIn("$startup_timeout | default 300sec", self.runner)
+        startup_list_at = self.runner.index("let startup_pods_result")
+        wait_at = self.runner.index("kubectl wait --for=condition=Complete")
+        self.assertLess(startup_list_at, wait_at)
+        self.assertIn('$"--timeout=($timeout)"', self.runner[wait_at:])
 
     def test_pre_delete_failure_is_fatal_not_ignored(self):
         self.assertIn("cleanup_bootstrap_job_verified", self.runner)
@@ -1372,8 +1390,9 @@ class BootstrapJobLifecycleTest(unittest.TestCase):
         ):
             self.assertIn(needle, self.runner, f"missing expected failure message: {needle!r}")
         self.assertEqual(
-            self.runner.count("fail_bootstrap_job_after_cleanup"), 13,
-            "all 13 create/identity/wait/pod/job/log failure branches must route through checked cleanup",
+            self.runner.count("fail_bootstrap_job_after_cleanup"), 20,
+            "all 20 create/startup/identity/wait/pod/job/log failure branches "
+            "must route through checked cleanup",
         )
 
     def test_create_returns_the_job_uid_atomically_without_a_name_based_reread(self):
@@ -1606,6 +1625,10 @@ case "$verb" in
         if [ "$deletes" -ge 2 ]; then
           if [ "$FAIL" = "pod-lingers" ]; then
             printf '{"apiVersion":"v1","kind":"PodList","items":[{"metadata":{"name":"job-pod-1","uid":"POD-UID-STABLE","labels":{},"ownerReferences":[{"kind":"Job","name":"pr287-test-job","uid":"%s","controller":true}]},"spec":{"serviceAccountName":"harbor-credential-recovery"}}]}' "$UID_VALUE"
+          elif [ "$FAIL" = "tracked-pod-survives" ]; then
+            printf '{"apiVersion":"v1","kind":"PodList","items":[{"metadata":{"name":"job-pod-1","uid":"POD-UID-STABLE","labels":{}},"spec":{"serviceAccountName":"default"},"status":{"phase":"Failed"}}]}'
+          elif [ "$FAIL" = "tracked-job-owner-survives" ]; then
+            printf '{"apiVersion":"v1","kind":"PodList","items":[{"metadata":{"name":"unrelated-name","uid":"UNRELATED-POD-UID","labels":{},"ownerReferences":[{"kind":"Job","name":"other-job","uid":"%s","controller":true}]},"spec":{"serviceAccountName":"default"},"status":{"phase":"Failed"}}]}' "$UID_VALUE"
           else
             printf '{"apiVersion":"v1","kind":"PodList","items":[]}'
           fi
@@ -1634,7 +1657,41 @@ case "$verb" in
         if [ "$FAIL" = "pod-replaced-after-logs" ] && [ "$n" -ge 3 ]; then
           pod_uid="POD-UID-REPLACED-AFTER-LOGS"
         fi
-        printf '{"apiVersion":"v1","kind":"PodList","items":[{"metadata":{"name":"job-pod-1","uid":"%s","labels":{"job-name":"pr287-test-job"},"ownerReferences":[{"kind":"Job","name":"pr287-test-job","uid":"%s","controller":true}]},"spec":{"serviceAccountName":"harbor-credential-recovery"}}]}' "$pod_uid" "$UID_VALUE"
+        phase="Succeeded"
+        case "$FAIL" in
+          startup-missing-running)
+            if [ "$n" -eq 1 ]; then
+              printf '{"apiVersion":"v1","kind":"PodList","items":[]}'
+              exit 0
+            fi
+            phase="Running"
+            ;;
+          startup-pending-running)
+            if [ "$n" -le 2 ]; then phase="Pending"; else phase="Running"; fi
+            ;;
+          startup-never)
+            phase="Pending"
+            ;;
+          startup-failed|tracked-pod-survives|tracked-job-owner-survives)
+            phase="Failed"
+            ;;
+          startup-missing-status)
+            printf '{"apiVersion":"v1","kind":"PodList","items":[{"metadata":{"name":"job-pod-1","uid":"%s","labels":{"job-name":"pr287-test-job"},"ownerReferences":[{"kind":"Job","name":"pr287-test-job","uid":"%s","controller":true}]},"spec":{"serviceAccountName":"harbor-credential-recovery","containers":[{"name":"probe"}]}}]}' "$pod_uid" "$UID_VALUE"
+            exit 0
+            ;;
+          startup-malformed-phase)
+            phase="Unknown"
+            ;;
+          startup-nonstring-phase)
+            printf '{"apiVersion":"v1","kind":"PodList","items":[{"metadata":{"name":"job-pod-1","uid":"%s","labels":{"job-name":"pr287-test-job"},"ownerReferences":[{"kind":"Job","name":"pr287-test-job","uid":"%s","controller":true}]},"spec":{"serviceAccountName":"harbor-credential-recovery","containers":[{"name":"probe"}]},"status":{"phase":{"bad":true}}}]}' "$pod_uid" "$UID_VALUE"
+            exit 0
+            ;;
+          startup-malformed-workload)
+            printf '{"apiVersion":"v1","kind":"PodList","items":[{"metadata":{"name":"job-pod-1","uid":"%s","labels":{"job-name":"pr287-test-job"},"ownerReferences":[{"kind":"Job","name":"pr287-test-job","uid":"%s","controller":true}]},"spec":{"serviceAccountName":"harbor-credential-recovery","containers":[]},"status":{"phase":"Running"}}]}' "$pod_uid" "$UID_VALUE"
+            exit 0
+            ;;
+        esac
+        printf '{"apiVersion":"v1","kind":"PodList","items":[{"metadata":{"name":"job-pod-1","uid":"%s","labels":{"job-name":"pr287-test-job"},"ownerReferences":[{"kind":"Job","name":"pr287-test-job","uid":"%s","controller":true}]},"spec":{"serviceAccountName":"harbor-credential-recovery","containers":[{"name":"probe"}]},"status":{"phase":"%s"}}]}' "$pod_uid" "$UID_VALUE" "$phase"
         exit 0
     fi
     exit 0
@@ -1667,21 +1724,108 @@ class RunBootstrapJobCleanupBehaviourTest(unittest.TestCase):
         kubectl_path.write_text(FAKE_KUBECTL, encoding="utf-8")
         kubectl_path.chmod(0o755)
 
-    def run_job(self, fail_step: str = "none"):
+    def run_job(
+        self,
+        fail_step: str = "none",
+        functional_timeout: str = "5s",
+        startup_timeout: str | None = None,
+    ):
         log_path = Path(tempfile.mkdtemp(prefix="pr287-klog-")) / "calls.log"
         env = {
             "PATH": f"{self.bindir}:/usr/bin:/bin",
             "KLOG": str(log_path),
             "FAIL_STEP": fail_step,
         }
+        startup_arg = f' {startup_timeout}' if startup_timeout is not None else ""
         result = subprocess.run(
             [NU, "--no-config-file", "-c",
              f'source {SETUP_PATH.as_posix()}\n'
-             'run_bootstrap_job {fake: "manifest"} "pr287-test-job" "5s"'],
+             f'run_bootstrap_job {{fake: "manifest"}} "pr287-test-job" '
+             f'"{functional_timeout}"{startup_arg}'],
             cwd=ROOT, text=True, capture_output=True, timeout=30, env=env,
         )
         calls = log_path.read_text().splitlines() if log_path.exists() else []
         return result, calls
+
+    def _runtime_raw_calls_before_wait(self, calls: list[str]) -> list[str]:
+        create_at = next(i for i, call in enumerate(calls) if call.startswith("create "))
+        wait_at = next(i for i, call in enumerate(calls) if call.startswith("wait "))
+        return [
+            call for call in calls[create_at + 1:wait_at]
+            if call.startswith(
+                "get --raw /api/v1/namespaces/crossplane-system/pods"
+            )
+        ]
+
+    def test_delayed_pending_acquisition_precedes_the_full_functional_wait(self):
+        """Two one-second Pending observations exceed this 1s functional
+        budget. The functional clock must nevertheless start only after the
+        Pod reaches Running, and its original argument must be unchanged."""
+        result, calls = self.run_job(
+            "startup-pending-running", functional_timeout="1s",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertGreaterEqual(len(self._runtime_raw_calls_before_wait(calls)), 3)
+        wait = next(call for call in calls if call.startswith("wait "))
+        self.assertIn("--timeout=1s", wait)
+
+    def test_probe_functional_timeout_remains_exactly_60s_after_startup(self):
+        result, calls = self.run_job(
+            "startup-pending-running", functional_timeout="60s",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        wait = next(call for call in calls if call.startswith("wait "))
+        self.assertIn("--timeout=60s", wait)
+        self.assertGreaterEqual(len(self._runtime_raw_calls_before_wait(calls)), 3)
+
+    def test_missing_pod_is_pending_until_one_owned_pod_is_running(self):
+        result, calls = self.run_job("startup-missing-running")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertGreaterEqual(len(self._runtime_raw_calls_before_wait(calls)), 2)
+
+    def test_an_instantly_succeeded_short_job_is_accepted(self):
+        result, calls = self.run_job("none")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self._runtime_raw_calls_before_wait(calls)), 1)
+
+    def test_missing_or_unknown_pod_phase_fails_closed_and_cleans(self):
+        for scenario in (
+            "startup-missing-status",
+            "startup-malformed-phase",
+            "startup-nonstring-phase",
+            "startup-malformed-workload",
+        ):
+            with self.subTest(scenario=scenario):
+                result, calls = self.run_job(scenario)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(sum(c.startswith("wait ") for c in calls), 0)
+                self.assertGreaterEqual(sum(c.startswith("delete job") for c in calls), 2)
+
+    def test_startup_budget_expiry_cleans_without_starting_functional_wait(self):
+        result, calls = self.run_job("startup-never", startup_timeout="20ms")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(sum(c.startswith("wait ") for c in calls), 0)
+        self.assertGreaterEqual(sum(c.startswith("delete job") for c in calls), 2)
+
+    def test_failed_pod_fails_promptly_and_cleans(self):
+        result, calls = self.run_job("startup-failed")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(sum(c.startswith("wait ") for c in calls), 0)
+        self.assertGreaterEqual(sum(c.startswith("delete job") for c in calls), 2)
+
+    def test_cleanup_receives_the_discovered_pod_identity(self):
+        result, calls = self.run_job("tracked-pod-survives")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("additionally, cleanup failed", result.stderr)
+        self.assertIn("traceable", result.stderr)
+        self.assertEqual(sum(c.startswith("wait ") for c in calls), 0)
+
+    def test_cleanup_receives_the_created_job_uid_after_pod_discovery(self):
+        result, calls = self.run_job("tracked-job-owner-survives")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("additionally, cleanup failed", result.stderr)
+        self.assertIn("traceable", result.stderr)
+        self.assertEqual(sum(c.startswith("wait ") for c in calls), 0)
 
     def test_malformed_podlist_cleanup_aborts_before_create(self):
         for scenario in ("cleanup-missing-items", "cleanup-wrong-kind", "cleanup-nonlist-items"):

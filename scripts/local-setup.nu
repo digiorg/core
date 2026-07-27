@@ -1794,7 +1794,12 @@ def job_identity_matches [job_json: string, expected_name: string, expected_uid:
     ((($parsed | get -o kind | default "") == "Job") and (($parsed | get -o metadata.name | default "") == $expected_name) and (($parsed | get -o metadata.uid | default "") == $expected_uid) and ($expected_uid | is-not-empty))
 }
 
-def run_bootstrap_job [manifest: record, job_name: string, timeout: string] {
+def run_bootstrap_job [
+    manifest: record,
+    job_name: string,
+    timeout: string,
+    startup_timeout?: duration,
+] {
     $env.KUBECONFIG = $KUBECONFIG_PATH
 
     let pre_cleanup = (cleanup_bootstrap_job_verified $job_name "" "" "")
@@ -1819,23 +1824,89 @@ def run_bootstrap_job [manifest: record, job_name: string, timeout: string] {
         fail_bootstrap_job_after_cleanup $job_name $"The created ($job_name) Job returned an invalid name or UID" $created_uid "" ""
     }
 
-    let wait_result = (do {
-        kubectl wait --for=condition=Complete $"job/($job_name)" -n crossplane-system --timeout=$timeout
-    } | complete)
-    if $wait_result.exit_code != 0 {
-        fail_bootstrap_job_after_cleanup $job_name $"The ($job_name) Job did not complete successfully" $created_uid "" ""
+    # Image acquisition, scheduling and container startup have a separate
+    # budget from the caller's functional completion timeout. A fresh node
+    # may legitimately spend longer pulling the pinned image than the probe's
+    # 60-second execution budget, so that functional clock starts only after
+    # the exact Pod controlled by this Job is Running or terminal.
+    let startup_budget = ($startup_timeout | default 300sec)
+    let startup_started = (date now)
+    mut tracked_pod_name = ""
+    mut tracked_pod_uid = ""
+    loop {
+        let startup_pods_result = (get_crossplane_system_pod_list)
+        if $startup_pods_result.exit_code != 0 {
+            fail_bootstrap_job_after_cleanup $job_name $"Failed to list the pods of the ($job_name) Job while waiting for startup" $created_uid $tracked_pod_name $tracked_pod_uid
+        }
+        let startup_pods = (parse_pod_list $startup_pods_result.stdout)
+        if not $startup_pods.ok {
+            fail_bootstrap_job_after_cleanup $job_name $"Refusing to trust the ($job_name) Job startup state: ($startup_pods.reason)" $created_uid $tracked_pod_name $tracked_pod_uid
+        }
+        let startup_owned = (select_owned_pod $startup_pods_result.stdout $job_name $created_uid)
+        if not $startup_owned.ok {
+            if ($startup_owned.reason != "no pod is owned by the Job this run created") or ($tracked_pod_name | is-not-empty) {
+                fail_bootstrap_job_after_cleanup $job_name $"Refusing to trust the ($job_name) Job startup state: ($startup_owned.reason)" $created_uid $tracked_pod_name $tracked_pod_uid
+            }
+        } else {
+            if ($tracked_pod_name | is-empty) {
+                $tracked_pod_name = $startup_owned.name
+                $tracked_pod_uid = $startup_owned.uid
+            } else if ($startup_owned.name != $tracked_pod_name) or ($startup_owned.uid != $tracked_pod_uid) {
+                fail_bootstrap_job_after_cleanup $job_name $"The ($job_name) Job's pod identity changed while waiting for startup" $created_uid $tracked_pod_name $tracked_pod_uid
+            }
+
+            let pod = (
+                $startup_pods.items
+                | where {|item|
+                    ((($item | get -o metadata.name | default "") == $tracked_pod_name)
+                        and (($item | get -o metadata.uid | default "") == $tracked_pod_uid))
+                }
+                | first
+            )
+            let containers = ($pod | get -o spec.containers | default null)
+            let containers_type = ($containers | describe)
+            if (
+                ((($containers_type | str starts-with "list") or ($containers_type | str starts-with "table")) == false)
+                    or (($containers | length) != 1)
+                    or (((($containers | first) | describe) | str starts-with "record") == false)
+                    or (((($containers | first) | get -o name | default null) | describe) != "string")
+                    or (((($containers | first) | get -o name | default "") | str trim | is-empty))
+            ) {
+                fail_bootstrap_job_after_cleanup $job_name $"The ($job_name) Job's pod returned a malformed workload container" $created_uid $tracked_pod_name $tracked_pod_uid
+            }
+            let status = ($pod | get -o status | default null)
+            if (($status | describe) | str starts-with "record") == false {
+                fail_bootstrap_job_after_cleanup $job_name $"The ($job_name) Job's pod returned a malformed startup status" $created_uid $tracked_pod_name $tracked_pod_uid
+            }
+            let phase = ($status | get -o phase | default null)
+            if (($phase | describe) != "string") or (not ($phase in ["Pending" "Running" "Succeeded" "Failed"])) {
+                fail_bootstrap_job_after_cleanup $job_name $"The ($job_name) Job's pod returned a malformed startup phase" $created_uid $tracked_pod_name $tracked_pod_uid
+            }
+            if $phase == "Failed" {
+                fail_bootstrap_job_after_cleanup $job_name $"The ($job_name) Job's pod failed during startup" $created_uid $tracked_pod_name $tracked_pod_uid
+            }
+            if $phase in ["Running" "Succeeded"] {
+                break
+            }
+        }
+
+        if (((date now) - $startup_started) >= $startup_budget) {
+            fail_bootstrap_job_after_cleanup $job_name $"The ($job_name) Job did not start within its acquisition budget" $created_uid $tracked_pod_name $tracked_pod_uid
+        }
+        sleep 1sec
     }
 
-    # Enumerate the namespace and select exactly one Pod controlled by the
-    # expected Job name and immutable UID. A mutable label is not an identity.
-    let pods_result = (get_crossplane_system_pod_list)
-    if $pods_result.exit_code != 0 {
-        fail_bootstrap_job_after_cleanup $job_name $"Failed to list the pods of the ($job_name) Job" $created_uid "" ""
+    let wait_result = (do {
+        kubectl wait --for=condition=Complete $"job/($job_name)" -n crossplane-system $"--timeout=($timeout)"
+    } | complete)
+    if $wait_result.exit_code != 0 {
+        fail_bootstrap_job_after_cleanup $job_name $"The ($job_name) Job did not complete successfully" $created_uid $tracked_pod_name $tracked_pod_uid
     }
-    let owned = (select_owned_pod $pods_result.stdout $job_name $created_uid)
-    if not $owned.ok {
-        fail_bootstrap_job_after_cleanup $job_name $"Refusing to trust the ($job_name) Job result: ($owned.reason)" $created_uid "" ""
-    }
+
+    # Startup discovery already selected the one Pod by immutable Job owner
+    # UID. Carry that exact Pod identity across completion and into every
+    # subsequent revalidation and cleanup path.
+    let owned = {ok: true, name: $tracked_pod_name, uid: $tracked_pod_uid, reason: ""}
 
     # Immediately before log retrieval, prove both fixed-name Job continuity
     # and exact Pod continuity. Any lookup or identity mismatch is fatal.
