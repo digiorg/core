@@ -2,12 +2,13 @@
 """The host `argocd` CLI is optional, not a mandatory bootstrap prerequisite
 (Issue #283).
 
-It is used ONLY by `argocd_app_has_no_material_diff` — a fail-closed secondary
-check for the narrow case where Argo CD reports a stale `Healthy`/`OutOfSync`
-Application status. Requiring an exact-patch-matching `argocd` binary just to
-START the bootstrap was unrelated to the actual database-critical-path defect
-this issue fixes and made the tool a hard blocker for a fallback most runs
-never exercise. This module locks:
+It is used by `argocd_app_has_no_material_diff` — a fail-closed secondary
+check for the narrow cases where Argo CD reports a stale
+`Healthy`/`OutOfSync` Application status during either the gated fresh-operation
+poll or the global Application wait. Requiring an exact-patch-matching
+`argocd` binary just to START the bootstrap was unrelated to the actual
+database-critical-path defect this issue fixes and made the tool a hard blocker
+for a fallback most runs never exercise. This module locks:
 
   * `check_prerequisites` no longer exits when `argocd` is absent (kind,
     kubectl and helm remain mandatory).
