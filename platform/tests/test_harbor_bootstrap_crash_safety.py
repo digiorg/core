@@ -26,6 +26,15 @@ CUSTOM `isRemovedCheck`/`expectedResponseCheck` that independently
 rediscover the robot from its declared name/level/permissions alone,
 never relying on any previously cached response.
 
+Blocker C -- provider response boundary: provider-http v1.0.14 stores HTTP
+response bodies as strings. Its
+`internal/service/request/requestgen/request_generator.go`
+`GenerateRequestContext` calls
+`internal/json/util.go` `ConvertJSONStringsToMaps`, but `IsJSONString`
+attempts to unmarshal into `map[string]interface{}` and therefore leaves a
+top-level JSON array as a string. These tests must exercise that actual
+string boundary, while retaining explicit decoded-array compatibility.
+
 Run:
     python3 platform/tests/test_harbor_bootstrap_crash_safety.py
 """
@@ -44,6 +53,9 @@ except ImportError:  # pragma: no cover - environment guard
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 HARBOR_REQUEST = os.path.join(REPO_ROOT, "crossplane", "bootstrap", "harbor-robot-request.yaml")
+PROVIDER_HTTP_PACKAGE = os.path.join(
+    REPO_ROOT, "crossplane", "providers", "packages", "provider-http.yaml"
+)
 
 
 def _load():
@@ -101,6 +113,39 @@ class ListBasedObserveTest(unittest.TestCase):
         self.assertEqual(self.forProvider["isRemovedCheck"]["type"], "CUSTOM")
 
 
+class ProviderResponseBoundaryContractTest(unittest.TestCase):
+    """Lock the provider source/dependency contract behind the string fixtures.
+
+    provider-http v1.0.14 source:
+    * `internal/service/request/requestgen/request_generator.go`
+      `GenerateRequestContext`
+    * `internal/json/util.go` `ConvertJSONStringsToMaps` and `IsJSONString`
+
+    The tag's `go.mod` pins `github.com/itchyny/gojq v0.12.17`. That exact
+    dependency registers `"fromjson": argFunc0(funcFromJSON)` in `func.go`,
+    whose `funcFromJSON` decodes arbitrary JSON values, and its
+    `cli/test.yaml` "fromjson function" case explicitly decodes `["foo"]`.
+    Thus `try ... fromjson ... catch` is supported by the provider's
+    embedded jq engine and is the compatibility boundary tested below.
+    """
+
+    def test_provider_http_remains_pinned_to_verified_boundary(self):
+        with open(PROVIDER_HTTP_PACKAGE, encoding="utf-8") as fh:
+            package = yaml.safe_load(fh)
+        self.assertEqual(
+            package["spec"]["package"],
+            "xpkg.upbound.io/crossplane-contrib/provider-http:v1.0.14",
+        )
+
+    def test_both_custom_checks_normalize_string_bodies_with_fail_closed_fromjson(self):
+        for check_name in ("isRemovedCheck", "expectedResponseCheck"):
+            with self.subTest(check=check_name):
+                logic = _load()["spec"]["forProvider"][check_name]["logic"]
+                self.assertIn("fromjson", logic)
+                self.assertIn("try", logic)
+                self.assertIn("catch", logic)
+
+
 class CrashSafeIdentityLogicTest(unittest.TestCase):
     """Exercise the actual CUSTOM jq logic against synthetic LIST responses --
     the concrete, provider-verified meaning of "rediscovers the robot from
@@ -134,12 +179,27 @@ class CrashSafeIdentityLogicTest(unittest.TestCase):
             ],
         }
 
-    def test_a_matching_robot_in_the_list_is_synced_and_not_removed(self):
+    def test_provider_string_matching_array_is_synced_and_not_removed(self):
+        doc = {
+            "response": {
+                "statusCode": 200,
+                "body": json.dumps([self._matching_robot()]),
+            }
+        }
+        self.assertTrue(_run_jq(self._expected_logic(), doc))
+        self.assertFalse(_run_jq(self._removed_logic(), doc))
+
+    def test_provider_string_empty_array_is_removed_and_not_synced(self):
+        doc = {"response": {"statusCode": 200, "body": "[]"}}
+        self.assertFalse(_run_jq(self._expected_logic(), doc))
+        self.assertTrue(_run_jq(self._removed_logic(), doc))
+
+    def test_predecoded_matching_array_remains_backward_compatible(self):
         doc = {"response": {"statusCode": 200, "body": [self._matching_robot()]}}
         self.assertTrue(_run_jq(self._expected_logic(), doc))
         self.assertFalse(_run_jq(self._removed_logic(), doc))
 
-    def test_an_empty_list_is_removed_and_not_synced(self):
+    def test_predecoded_empty_array_remains_backward_compatible(self):
         doc = {"response": {"statusCode": 200, "body": []}}
         self.assertFalse(_run_jq(self._expected_logic(), doc))
         self.assertTrue(_run_jq(self._removed_logic(), doc))
@@ -166,6 +226,33 @@ class CrashSafeIdentityLogicTest(unittest.TestCase):
         self.assertFalse(_run_jq(self._expected_logic(), doc))
         self.assertFalse(_run_jq(self._removed_logic(), doc))
 
+    def test_a_malformed_json_string_fails_closed(self):
+        doc = {"response": {"statusCode": 200, "body": "[}"}}
+        self.assertFalse(_run_jq(self._expected_logic(), doc))
+        self.assertFalse(_run_jq(self._removed_logic(), doc))
+
+    def test_a_json_object_string_fails_closed(self):
+        doc = {"response": {"statusCode": 200, "body": '{"unexpected":"object"}'}}
+        self.assertFalse(_run_jq(self._expected_logic(), doc))
+        self.assertFalse(_run_jq(self._removed_logic(), doc))
+
+    def test_json_null_string_fails_closed(self):
+        doc = {"response": {"statusCode": 200, "body": "null"}}
+        self.assertFalse(_run_jq(self._expected_logic(), doc))
+        self.assertFalse(_run_jq(self._removed_logic(), doc))
+
+    def test_json_scalar_strings_fail_closed(self):
+        for body in ('"unexpected"', "true", "42"):
+            with self.subTest(body=body):
+                doc = {"response": {"statusCode": 200, "body": body}}
+                self.assertFalse(_run_jq(self._expected_logic(), doc))
+                self.assertFalse(_run_jq(self._removed_logic(), doc))
+
+    def test_predecoded_null_fails_closed(self):
+        doc = {"response": {"statusCode": 200, "body": None}}
+        self.assertFalse(_run_jq(self._expected_logic(), doc))
+        self.assertFalse(_run_jq(self._removed_logic(), doc))
+
     def test_wrong_permissions_is_not_synced_but_not_removed(self):
         # The name already exists in Harbor (matched by name/level) -- must
         # not be reported as removed, or a mismatched/drifted identity would
@@ -173,7 +260,7 @@ class CrashSafeIdentityLogicTest(unittest.TestCase):
         # constraint already holds.
         robot = self._matching_robot()
         robot["permissions"][1]["access"] = [{"resource": "robot", "action": "delete"}]
-        doc = {"response": {"statusCode": 200, "body": [robot]}}
+        doc = {"response": {"statusCode": 200, "body": json.dumps([robot])}}
         self.assertFalse(_run_jq(self._expected_logic(), doc))
         self.assertFalse(_run_jq(self._removed_logic(), doc))
 
@@ -185,7 +272,7 @@ class CrashSafeIdentityLogicTest(unittest.TestCase):
         # still matches, so this must not be reported as removed either.
         robot = self._matching_robot()
         robot["permissions"][1]["access"].append({"resource": "robot", "action": "delete"})
-        doc = {"response": {"statusCode": 200, "body": [robot]}}
+        doc = {"response": {"statusCode": 200, "body": json.dumps([robot])}}
         self.assertFalse(_run_jq(self._expected_logic(), doc))
         self.assertFalse(_run_jq(self._removed_logic(), doc))
 
@@ -200,7 +287,7 @@ class CrashSafeIdentityLogicTest(unittest.TestCase):
         robot = self._matching_robot()
         perms = robot["permissions"]
         robot["permissions"] = {"first": perms[0], "second": perms[1]}
-        doc = {"response": {"statusCode": 200, "body": [robot]}}
+        doc = {"response": {"statusCode": 200, "body": json.dumps([robot])}}
         self.assertFalse(_run_jq(self._expected_logic(), doc))
         self.assertFalse(_run_jq(self._removed_logic(), doc))
 
@@ -211,14 +298,14 @@ class CrashSafeIdentityLogicTest(unittest.TestCase):
         robot = self._matching_robot()
         access = robot["permissions"][1]["access"]
         robot["permissions"][1]["access"] = {str(i): a for i, a in enumerate(access)}
-        doc = {"response": {"statusCode": 200, "body": [robot]}}
+        doc = {"response": {"statusCode": 200, "body": json.dumps([robot])}}
         self.assertFalse(_run_jq(self._expected_logic(), doc))
         self.assertFalse(_run_jq(self._removed_logic(), doc))
 
     def test_a_differently_named_robot_in_the_list_does_not_match(self):
         robot = self._matching_robot()
         robot["name"] = "robot$some-other-robot"
-        doc = {"response": {"statusCode": 200, "body": [robot]}}
+        doc = {"response": {"statusCode": 200, "body": json.dumps([robot])}}
         self.assertFalse(_run_jq(self._expected_logic(), doc))
         self.assertFalse(
             _run_jq(self._removed_logic(), doc),
@@ -323,7 +410,12 @@ class ExactServerSideQueryTest(unittest.TestCase):
         self.assertFalse(_run_jq(self._removed_logic(), doc))
 
     def test_an_unprefixed_response_fails_closed(self):
-        doc = {"response": {"statusCode": 200, "body": [self._matching_robot("crossplane-system")]}}
+        doc = {
+            "response": {
+                "statusCode": 200,
+                "body": json.dumps([self._matching_robot("crossplane-system")]),
+            }
+        }
         self.assertFalse(_run_jq(self._expected_logic(), doc))
         self.assertFalse(_run_jq(self._removed_logic(), doc))
 
@@ -332,7 +424,7 @@ class ExactServerSideQueryTest(unittest.TestCase):
         genuine exact-name query at ProjectID=0 -- but the checks must not
         trust the shape as either state if it somehow occurred."""
         body = [self._matching_robot(), self._matching_robot("crossplane-system")]
-        doc = {"response": {"statusCode": 200, "body": body}}
+        doc = {"response": {"statusCode": 200, "body": json.dumps(body)}}
         self.assertFalse(_run_jq(self._expected_logic(), doc))
         self.assertFalse(_run_jq(self._removed_logic(), doc))
 
@@ -347,7 +439,12 @@ class ExactServerSideQueryTest(unittest.TestCase):
         self.assertFalse(_run_jq(self._removed_logic(), doc))
 
     def test_a_single_non_matching_item_fails_closed(self):
-        doc = {"response": {"statusCode": 200, "body": [self._matching_robot("robot$unrelated")]}}
+        doc = {
+            "response": {
+                "statusCode": 200,
+                "body": json.dumps([self._matching_robot("robot$unrelated")]),
+            }
+        }
         self.assertFalse(_run_jq(self._expected_logic(), doc))
         self.assertFalse(_run_jq(self._removed_logic(), doc))
 

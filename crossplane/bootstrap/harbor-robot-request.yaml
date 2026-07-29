@@ -154,8 +154,19 @@ spec:
     # a bare 2xx status (the DEFAULT check), these CUSTOM checks verify the
     # LIST response actually contains an item with this robot's exact
     # intended identity (name suffix + level=system + both permission
-    # entries, nothing more/less) -- confirmed executable against gojq
-    # (itchyny/gojq v0.12.17) via `jq` locally in
+    # entries, nothing more/less).
+    #
+    # Issue #285 provider boundary: provider-http v1.0.14's
+    # `internal/service/request/requestgen/request_generator.go`
+    # `GenerateRequestContext` calls `internal/json/util.go`
+    # `ConvertJSONStringsToMaps`, whose `IsJSONString` unmarshals only into
+    # `map[string]interface{}`. It therefore leaves a top-level JSON array
+    # response as a string. Each CUSTOM check normalizes that body at its
+    # boundary with fail-closed `try ... fromjson ... catch null`, while
+    # retaining compatibility with an already-decoded array. The provider
+    # tag's go.mod pins github.com/itchyny/gojq v0.12.17; that exact
+    # dependency registers `fromjson` in `func.go` and covers array decoding
+    # in `cli/test.yaml` ("fromjson function"). Both paths are exercised in
     # core/platform/tests/test_harbor_bootstrap_crash_safety.py. A
     # mismatched/uncertain response (wrong permissions, empty list, non-200)
     # is reported as both "not synced" and "not removed" -- it must never be
@@ -186,7 +197,13 @@ spec:
       # "not removed", and expectedResponseCheck alone decides whether it is
       # synced.
       logic: |-
-        (.response.statusCode == 200) and ((.response.body|type)=="array") and ((.response.body|length) == 0)
+        def normalizedBody:
+          if (.response.body | type) == "string"
+          then try (.response.body | fromjson) catch null
+          else .response.body
+          end;
+        normalizedBody as $body |
+        (.response.statusCode == 200) and (($body|type)=="array") and (($body|length) == 0)
     expectedResponseCheck:
       type: CUSTOM
       # Issue #285 review finding: exact least-privilege enforcement. Each
@@ -214,6 +231,11 @@ spec:
       # never to what's queried). A non-empty `$`-terminated prefix is required,
       # then stripped; the remainder must equal the declared name exactly.
       logic: |-
+        def normalizedBody:
+          if (.response.body | type) == "string"
+          then try (.response.body | fromjson) catch null
+          else .response.body
+          end;
         def canonicalName(r): (r.name // "") | sub("^[^$]*\\$"; "");
         def hasCanonicalPrefix(r): r.name != null and (r.name | test("^[^$]+\\$"));
         def hasArrayOfObjects(v): (v | type) == "array" and (v | all(type == "object"));
@@ -224,7 +246,8 @@ spec:
           and (r.permissions // [] | length) == 2
           and ([r.permissions[] | select(hasArrayOfObjects(.access // []) and .kind=="system" and .namespace=="/" and ((.access // []) | length) == 1 and ((.access // []) | any(.resource=="project" and .action=="create")))] | length) == 1
           and ([r.permissions[] | select(hasArrayOfObjects(.access // []) and .kind=="project" and .namespace=="*" and ((.access // []) | length) == 3 and ((.access // []) | any(.resource=="robot" and .action=="create")) and ((.access // []) | any(.resource=="robot" and .action=="read")) and ((.access // []) | any(.resource=="artifact" and .action=="read")))] | length) == 1;
-        (.response.statusCode == 200) and ((.response.body|type)=="array") and ((.response.body|length) == 1) and (isCrossplaneSystemRobot(.response.body[0]))
+        normalizedBody as $body |
+        (.response.statusCode == 200) and (($body|type)=="array") and (($body|length) == 1) and (isCrossplaneSystemRobot($body[0]))
     secretInjectionConfigs:
       - secretRef:
           name: crossplane-harbor-credentials
