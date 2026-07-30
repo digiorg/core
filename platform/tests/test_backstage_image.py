@@ -7,12 +7,13 @@
 ``c74fe7c``/``b77e94a``) were added. Pinning it explained why the deployed UI
 looked unstyled/uncustomized.
 
-``e87210b270ab94539db85e21fd6bc8f943fb7bf4`` is core-portal PR #9's
-reviewed Issue #285 commit and CI built and pushed it successfully
-(workflow run 29983067024, conclusion "success").
-The digest below was resolved independently from the GHCR anonymous registry
-API (``docker buildx imagetools inspect ghcr.io/digiorg/core-portal:e87210b``), not
-invented.
+``9e58baed46482361cfc5038f96611ea8c09097d2`` is core-portal PR #10's
+reviewed Issue #290 commit. PR CI run 30529314569 passed that exact SHA, and
+workflow_dispatch publish run 30529864513 successfully published SHA tag
+``9e58bae``.
+On 2026-07-30, the anonymous GHCR OCI header digest and raw manifest sha256
+independently resolved to the digest below. The OCI index includes linux/amd64
+and linux/arm64 images plus unknown/unknown attestations.
 
 Pure python3 + PyYAML, no cluster/network access::
 
@@ -28,14 +29,15 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 DEPLOYMENT = os.path.join(REPO_ROOT, "platform", "base", "backstage", "deployment.yaml")
 VERSIONS_DOC = os.path.join(REPO_ROOT, "docs", "guides", "platform-versions.md")
 
-# Resolved 2026-07-23 via the live GHCR API,
-# and independently cross-checked against core-portal's commit history/Actions
-# run for that exact commit.
+# Independently resolved from the anonymous GHCR OCI header and raw manifest
+# on 2026-07-30, and cross-checked against core-portal PR #10's exact reviewed
+# commit, PR CI run 30529314569, and publish run 30529864513.
 EXPECTED_IMAGE = (
-    "ghcr.io/digiorg/core-portal:e87210b"
-    "@sha256:a255cf284f333741429ca84d17382d890a2536dc921a8d8ef189e14e2e6fb767"
+    "ghcr.io/digiorg/core-portal:9e58bae"
+    "@sha256:d5d55426bbb4bc6ca9e9f14fe2ec38656801a31d017810b6ab0bcdbfb53b58cb"
 )
 INITIAL_SCAFFOLD_COMMIT = "48d262e"
+REVIEWED_COMMIT = "9e58baed46482361cfc5038f96611ea8c09097d2"
 
 
 def _backstage_container():
@@ -65,7 +67,16 @@ class BackstageImageProvenanceTest(unittest.TestCase):
             doc = fh.read()
         self.assertIn("core-portal", doc)
         self.assertNotIn("core-portal` | 48d262e", doc)
-        self.assertIn("e87210b", doc)
+        for provenance in (
+            EXPECTED_IMAGE,
+            "Issue #290",
+            "PR #10",
+            REVIEWED_COMMIT,
+            "30529314569",
+            "30529864513",
+            "2026-07-30",
+        ):
+            self.assertIn(provenance, doc)
 
 
 if __name__ == "__main__":
