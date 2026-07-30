@@ -83,7 +83,7 @@ Third-party images record a human-readable tag **plus** an immutable digest:
 | `docker.gitea.com/gitea` | 1.26.1 | Gitea chart primary/init image |
 | `sonarqube` | 26.5.0.122743-community | SonarQube Community Build |
 | `ghcr.io/kyverno/readiness-checker` | v1.18.1 | Kyverno chart test/cleanup hooks |
-| `ghcr.io/digiorg/core-portal` | e87210b | Backstage — reviewed core-portal PR #9 commit for Issue #285 (was `b77e94a`) |
+| `ghcr.io/digiorg/core-portal` | `ghcr.io/digiorg/core-portal:9e58bae@sha256:d5d55426bbb4bc6ca9e9f14fe2ec38656801a31d017810b6ab0bcdbfb53b58cb` | Backstage — Issue #290, reviewed core-portal PR #10 commit `9e58baed46482361cfc5038f96611ea8c09097d2`; PR CI run 30529314569 and workflow_dispatch publish run 30529864513 succeeded for the exact SHA; anonymous GHCR OCI header digest and raw manifest sha256 independently verified 2026-07-30 |
 | `ghcr.io/digiorg/core-landingpage` | 32a6777 | Landing page (release tag + digest, was `main`) |
 
 ### Tier-1 DigiOrg-built images (allow-listed, kind-loaded)

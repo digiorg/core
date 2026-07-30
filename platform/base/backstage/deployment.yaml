@@ -32,7 +32,7 @@ spec:
               echo "PostgreSQL is ready!"
       containers:
         - name: backstage
-          image: ghcr.io/digiorg/core-portal:e87210b@sha256:a255cf284f333741429ca84d17382d890a2536dc921a8d8ef189e14e2e6fb767
+          image: ghcr.io/digiorg/core-portal:9e58bae@sha256:d5d55426bbb4bc6ca9e9f14fe2ec38656801a31d017810b6ab0bcdbfb53b58cb
           imagePullPolicy: Always
           ports:
             - containerPort: 7007

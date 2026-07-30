@@ -105,7 +105,7 @@ spec:
                       default: false
                     subjects:
                       type: array
-                      uniqueItems: true
+                      x-kubernetes-list-type: set
                       items:
                         type: string
                         maxLength: 255

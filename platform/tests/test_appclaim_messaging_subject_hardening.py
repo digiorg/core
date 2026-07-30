@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
-"""Issue #285 runtime blocker (JetStream subject collision): the Application
-XRD's `spec.messaging.subjects[]` previously accepted any string with no
-`uniqueItems` constraint. This locks the schema-level fix, mirroring
-`test_appclaim_service_field_hardening.py`'s style: both a `pattern`
-rejecting unsafe NATS subjects (e.g. a bare `>` is only valid as the final,
-whole token -- `>>>` is never a valid subject) and `uniqueItems: true` on
-the array (rejecting literal duplicate subjects outright), while still
-accepting subjects that only *collide after sanitization* (case/separator
-variants) -- the render-side fix for those lives in core-catalog's pipeline
-Composition (index-based Stream/Consumer naming).
+"""Kubernetes-aware Application XRD messaging-subject regression.
+
+Issue #290: Kubernetes 1.36 rejects the generated Application and AppClaim
+CRDs when ``spec.messaging.subjects`` uses JSON Schema ``uniqueItems: true``.
+Kubernetes' native ``x-kubernetes-list-type: set`` preserves exact duplicate
+rejection without the quadratic ``uniqueItems`` validation cost. These tests
+exercise that set contract, retain the NATS subject validation from Issue
+#285, and inspect realistic generated CRD schemas for the incompatible keyword.
 
 Run:
     python3 platform/tests/test_appclaim_messaging_subject_hardening.py
@@ -61,6 +59,71 @@ def _is_valid(validator, document):
     return len(list(validator.iter_errors(document))) == 0
 
 
+def _is_admitted_by_kubernetes(validator, subjects_schema, document):
+    """Apply JSON Schema plus Kubernetes scalar-set duplicate semantics."""
+    if not _is_valid(validator, document):
+        return False
+    subjects = document["spec"]["messaging"]["subjects"]
+    if subjects_schema.get("x-kubernetes-list-type") == "set":
+        return len(subjects) == len(set(subjects))
+    return True
+
+
+def _generated_crds(schema):
+    """Model the two CRD envelopes Crossplane generates from this XRD."""
+    with open(XRD, encoding="utf-8") as fh:
+        xrd = yaml.safe_load(fh)
+    version = xrd["spec"]["versions"][0]
+    common = {
+        "apiVersion": "apiextensions.k8s.io/v1",
+        "kind": "CustomResourceDefinition",
+    }
+    crds = []
+    for names, scope in (
+        (xrd["spec"]["names"], "Cluster"),
+        (xrd["spec"]["claimNames"], "Namespaced"),
+    ):
+        crds.append(
+            {
+                **common,
+                "metadata": {
+                    "name": f"{names['plural']}.{xrd['spec']['group']}",
+                },
+                "spec": {
+                    "group": xrd["spec"]["group"],
+                    "scope": scope,
+                    "names": {
+                        "kind": names["kind"],
+                        "plural": names["plural"],
+                    },
+                    "versions": [
+                        {
+                            "name": version["name"],
+                            "served": version["served"],
+                            "storage": True,
+                            "schema": {"openAPIV3Schema": schema},
+                        }
+                    ],
+                },
+            }
+        )
+    return crds
+
+
+def _find_keyword(value, keyword, path="$"):
+    found = []
+    if isinstance(value, dict):
+        for key, child in value.items():
+            child_path = f"{path}.{key}"
+            if key == keyword:
+                found.append(child_path)
+            found.extend(_find_keyword(child, keyword, child_path))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            found.extend(_find_keyword(child, keyword, f"{path}[{index}]"))
+    return found
+
+
 SAFE_SUBJECTS = [
     "myapp.events.>",
     "myapp.commands",
@@ -91,8 +154,14 @@ class MessagingSubjectsSchemaTest(unittest.TestCase):
             "subjects"
         ]
 
-    def test_unique_items_is_declared(self):
-        self.assertTrue(self.subjects_schema.get("uniqueItems"))
+    def test_uses_kubernetes_scalar_set_semantics_not_unique_items(self):
+        self.assertNotIn(
+            "uniqueItems",
+            self.subjects_schema,
+            "uniqueItems is rejected by Kubernetes 1.36 for generated CRDs",
+        )
+        self.assertEqual(self.subjects_schema.get("x-kubernetes-list-type"), "set")
+        self.assertEqual(self.subjects_schema["items"].get("type"), "string")
 
     def test_item_pattern_and_max_length_are_declared(self):
         item_schema = self.subjects_schema["items"]
@@ -116,9 +185,12 @@ class MessagingSubjectsSchemaTest(unittest.TestCase):
                     _is_valid(self.validator, doc), "subject %r must be schema-rejected" % (subject,)
                 )
 
-    def test_duplicate_subjects_are_rejected_by_unique_items(self):
+    def test_exact_duplicate_subjects_are_rejected_by_kubernetes_set(self):
+        self.assertEqual(self.subjects_schema.get("x-kubernetes-list-type"), "set")
         doc = _document_with_subjects(["myapp.events", "myapp.events"])
-        self.assertFalse(_is_valid(self.validator, doc))
+        self.assertFalse(
+            _is_admitted_by_kubernetes(self.validator, self.subjects_schema, doc)
+        )
 
     def test_case_and_separator_variants_are_not_duplicates(self):
         # These are distinct, schema-valid subjects even though a naive
@@ -126,7 +198,31 @@ class MessagingSubjectsSchemaTest(unittest.TestCase):
         # must not reject them (that collision is a render-time naming
         # problem, not a schema-level duplicate).
         doc = _document_with_subjects(["myapp.events", "myapp-events", "myapp.Events"])
-        self.assertTrue(_is_valid(self.validator, doc))
+        self.assertTrue(
+            _is_admitted_by_kubernetes(self.validator, self.subjects_schema, doc)
+        )
+
+    def test_generated_crd_schemas_are_kubernetes_1_36_compatible(self):
+        crds = _generated_crds(_load_schema())
+        self.assertEqual(
+            [crd["metadata"]["name"] for crd in crds],
+            [
+                "applications.platform.digiorg.io",
+                "appclaims.platform.digiorg.io",
+            ],
+        )
+        for crd in crds:
+            with self.subTest(crd=crd["metadata"]["name"]):
+                generated_schema = crd["spec"]["versions"][0]["schema"][
+                    "openAPIV3Schema"
+                ]
+                jsonschema.Draft7Validator.check_schema(generated_schema)
+                self.assertEqual(
+                    _find_keyword(generated_schema, "uniqueItems"),
+                    [],
+                    "generated CRD schema contains Kubernetes 1.36-incompatible "
+                    "uniqueItems",
+                )
 
 
 if __name__ == "__main__":

@@ -140,6 +140,14 @@ def "main up" [] {
     print "────────────────────────────────────"
     wait_for_argocd_apps
 
+    # Argo convergence proves that the XRD Application reconciled, but not that
+    # Crossplane successfully established and offered its generated APIs. Keep
+    # this final, fail-closed API gate after Argo and before the success banner.
+    print ""
+    print $"(ansi cyan_bold)Phase 7: AppClaim API Readiness Gate(ansi reset)"
+    print "────────────────────────────────────"
+    wait_for_appclaim_api_ready
+
     # Issue #283: `main up` deliberately does NOT promote CNPG (optional,
     # future hosted-application database infrastructure) — not even wrapped
     # in a try/catch. Catching a CNPG sync error does not undo the minutes it
@@ -3513,6 +3521,178 @@ def wait_for_argocd_apps [] {
     print ""
     print "ArgoCD Application Status:"
     kubectl get applications -n argocd -o wide
+}
+
+# Return a bounded Kubernetes condition verdict. Only the condition's
+# name/status/reason are retained; message and the rest of the API body are
+# deliberately ignored because controller messages can contain sensitive data.
+def appclaim_readiness_condition [resource, condition_type: string] {
+    let conditions = (try { $resource | get status.conditions } catch { [] })
+    let conditions_shape = ($conditions | describe)
+    if not (
+        ($conditions_shape | str starts-with "list")
+        or ($conditions_shape | str starts-with "table")
+    ) {
+        return {
+            ready: false,
+            status: "Invalid",
+            reason: "ConditionsInvalid",
+        }
+    }
+    let matches = ($conditions | where {|condition|
+        try {
+            (($condition | get type) == $condition_type)
+        } catch {
+            false
+        }
+    })
+    let condition = ($matches | get -o 0 | default {})
+    let raw_status = (try { $condition | get status } catch { "Missing" })
+    let raw_reason = (try { $condition | get reason } catch { "ConditionMissing" })
+    let status = if (($raw_status | describe) == "string") {
+        $raw_status
+    } else {
+        "Invalid"
+    }
+    let reason = if (($raw_reason | describe) == "string") {
+        $raw_reason
+    } else {
+        "ReasonInvalid"
+    }
+    {
+        ready: ($status == "True"),
+        status: $status,
+        reason: (redact_sync_diagnostic $reason),
+    }
+}
+
+# Parse one readiness API response without ever echoing its body. Empty or
+# malformed successful responses are deterministic failures rather than
+# retryable states, because retrying them would conceal a broken kubectl/API
+# contract for the entire poll budget.
+def parse_appclaim_readiness_json [resource_name: string, result: record] {
+    if ($result.stdout | str trim | is-empty) {
+        error make {
+            msg: $"($resource_name): status=Invalid reason=EmptyData"
+        }
+    }
+    let parsed = (try { $result.stdout | from json } catch { null })
+    if not (($parsed | describe) | str starts-with "record") {
+        error make {
+            msg: $"($resource_name): status=Invalid reason=InvalidJSON"
+        }
+    }
+    $parsed
+}
+
+# Crossplane can report its Argo-managed XRD as converged before the generated
+# composite/claim APIs are usable. Poll the raw APIs so discovery-cache lag
+# cannot produce a false negative, and pass the repository kubeconfig on every
+# call so the caller's original KUBECONFIG remains untouched (including on
+# Windows Docker Desktop and when the working path contains spaces).
+def wait_for_appclaim_api_ready [
+    max_attempts: int = 20,
+    poll_interval: duration = 2sec,
+] {
+    if $max_attempts < 1 {
+        error make {msg: "AppClaim API readiness requires a positive attempt budget"}
+    }
+
+    let xrd_name = "applications.platform.digiorg.io"
+    let xrd_path = "/apis/apiextensions.crossplane.io/v1/compositeresourcedefinitions/applications.platform.digiorg.io"
+    let crds = [
+        {
+            name: "applications.platform.digiorg.io",
+            path: "/apis/apiextensions.k8s.io/v1/customresourcedefinitions/applications.platform.digiorg.io",
+        },
+        {
+            name: "appclaims.platform.digiorg.io",
+            path: "/apis/apiextensions.k8s.io/v1/customresourcedefinitions/appclaims.platform.digiorg.io",
+        },
+    ]
+
+    print "Waiting for the AppClaim XRD and generated CRDs to become ready..."
+    mut last_diagnostics = []
+    for attempt in 1..$max_attempts {
+        mut diagnostics = []
+
+        let xrd_result = (do {
+            kubectl --kubeconfig $KUBECONFIG_PATH --request-timeout=2s get --raw $xrd_path
+        } | complete)
+        if $xrd_result.exit_code != 0 {
+            $diagnostics = ($diagnostics | append $"XRD/($xrd_name): status=Unavailable reason=RequestFailed")
+        } else {
+            let xrd = (parse_appclaim_readiness_json $"XRD/($xrd_name)" $xrd_result)
+            for condition_type in ["Established", "Offered"] {
+                let verdict = (appclaim_readiness_condition $xrd $condition_type)
+                if not $verdict.ready {
+                    $diagnostics = ($diagnostics | append $"XRD/($xrd_name) ($condition_type): status=($verdict.status) reason=($verdict.reason)")
+                }
+            }
+
+            let controller_fields = [
+                {
+                    name: "compositeResourceType.kind",
+                    value: (try { $xrd | get status.controllers.compositeResourceType.kind } catch { "" }),
+                    expected: "Application",
+                },
+                {
+                    name: "compositeResourceType.apiVersion",
+                    value: (try { $xrd | get status.controllers.compositeResourceType.apiVersion } catch { "" }),
+                    expected: "platform.digiorg.io/v1alpha1",
+                },
+                {
+                    name: "compositeResourceClaimType.kind",
+                    value: (try { $xrd | get status.controllers.compositeResourceClaimType.kind } catch { "" }),
+                    expected: "AppClaim",
+                },
+                {
+                    name: "compositeResourceClaimType.apiVersion",
+                    value: (try { $xrd | get status.controllers.compositeResourceClaimType.apiVersion } catch { "" }),
+                    expected: "platform.digiorg.io/v1alpha1",
+                },
+            ]
+            for field in $controller_fields {
+                let value = $field.value
+                let is_string = (($value | describe) == "string")
+                let matches = $is_string and ($value == $field.expected)
+                if not $matches {
+                    let missing = (not $is_string) or ($value | is-empty)
+                    let status = if $missing { "Empty" } else { "Unexpected" }
+                    let reason = if $missing { "ControllerIdentityMissing" } else { "ControllerIdentityMismatch" }
+                    $diagnostics = ($diagnostics | append $"XRD/($xrd_name) ($field.name): status=($status) reason=($reason)")
+                }
+            }
+        }
+
+        for crd in $crds {
+            let crd_result = (do {
+                kubectl --kubeconfig $KUBECONFIG_PATH --request-timeout=2s get --raw $crd.path
+            } | complete)
+            if $crd_result.exit_code != 0 {
+                $diagnostics = ($diagnostics | append $"CRD/($crd.name) Established: status=Unavailable reason=RequestFailed")
+                continue
+            }
+            let resource = (parse_appclaim_readiness_json $"CRD/($crd.name)" $crd_result)
+            let verdict = (appclaim_readiness_condition $resource "Established")
+            if not $verdict.ready {
+                $diagnostics = ($diagnostics | append $"CRD/($crd.name) Established: status=($verdict.status) reason=($verdict.reason)")
+            }
+        }
+
+        if ($diagnostics | is-empty) {
+            print $"(ansi green)✓ AppClaim API is ready: XRD Established+Offered, controller identities published, generated CRDs Established(ansi reset)"
+            return
+        }
+        $last_diagnostics = $diagnostics
+        if $attempt == $max_attempts {
+            let bounded = ($last_diagnostics | first 20 | str join ", ")
+            error make {
+                msg: $"AppClaim API readiness timed out [attempt ($attempt)/($max_attempts)]: ($bounded)"
+            }
+        }
+        sleep $poll_interval
+    }
 }
 
 # -----------------------------------------------------------------------------
