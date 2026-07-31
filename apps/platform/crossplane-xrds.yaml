@@ -14,7 +14,7 @@ spec:
 
   source:
     repoURL: https://github.com/digiorg/core.git
-    targetRevision: main
+    targetRevision: issue289-runtime-v15-20260731T221416Z
     path: crossplane/xrds
 
   destination:
