@@ -15,6 +15,7 @@ externalURL: https://digiorg.local
 existingSecretAdminPassword: harbor-admin-secret
 existingSecretAdminPasswordKey: HARBOR_ADMIN_PASSWORD
 existingSecretSecretKey: harbor-secret-key
+caBundleSecretName: digiorg-local-ca
 
 # Chart 1.19.1 omits `quay` from Harbor's proxy-cache provider allowlist even
 # though Harbor 2.15 supports it. An explicit container env value overrides the
