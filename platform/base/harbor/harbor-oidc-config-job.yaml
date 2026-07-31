@@ -22,71 +22,264 @@ metadata:
     argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
 spec:
   ttlSecondsAfterFinished: 300
+  activeDeadlineSeconds: 300
+  backoffLimit: 1
   template:
     spec:
-      restartPolicy: OnFailure
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: configure-oidc
-          image: curlimages/curl:8.16.0@sha256:463eaf6072688fe96ac64fa623fe73e1dbe25d8ad6c34404a669ad3ce1f104b6
-          env:
-            - name: HARBOR_ADMIN_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: harbor-admin-secret
-                  key: HARBOR_ADMIN_PASSWORD
-            - name: OIDC_CLIENT_SECRET
-              valueFrom:
-                secretKeyRef:
-                  name: harbor-oidc-secret
-                  key: OIDC_CLIENT_SECRET
+          # This existing digest-pinned repository tool image contains both
+          # curl and jq; see scripts/local-setup.nu provenance notes.
+          image: natsio/nats-box:0.19.2@sha256:8031d190c7ee24081f3f27cc939fb647a1eeb29ebb5c60fef9b5b6c7a846d6a2
+          workingDir: /workspace
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
           command:
             - /bin/sh
             - -c
             - |
-              set -e
+              set -eu
+              umask 077
+
               HARBOR_API="https://digiorg.local/api/v2.0"
+              KEYCLOAK_BASE="https://digiorg.local/keycloak"
+              KEYCLOAK_REALM="digiorg-core-platform"
               CA_CERT="/etc/digiorg-ca/ca.crt"
+              WORKSPACE="${WORKSPACE:-/workspace}"
+              OIDC_SECRET_FILE="${OIDC_SECRET_FILE:-/run/secrets/harbor-oidc/OIDC_CLIENT_SECRET}"
+              HARBOR_ADMIN_FILE="${HARBOR_ADMIN_FILE:-/run/secrets/harbor-admin/HARBOR_ADMIN_PASSWORD}"
+              RETRY_DELAY_SECONDS="${RETRY_DELAY_SECONDS:-5}"
+              HTTP_MAX_ATTEMPTS=5
+
+              cleanup() {
+                status="$1"
+                trap - EXIT
+                for file in "${WORKSPACE}"/*; do
+                  [ -f "${file}" ] || continue
+                  chmod 600 "${file}" 2>/dev/null || true
+                  : > "${file}" 2>/dev/null || true
+                  rm -f "${file}"
+                done
+                exit "${status}"
+              }
+              trap 'cleanup "$?"' EXIT
+
+              fail() {
+                echo "ERROR: $1" >&2
+                exit 1
+              }
+
+              request() {
+                label="$1"
+                expected="$2"
+                config="$3"
+                method="$4"
+                url="$5"
+                output="$6"
+                data_file="${7:-}"
+                attempt=1
+                while [ "${attempt}" -le "${HTTP_MAX_ATTEMPTS}" ]; do
+                  : > "${output}"
+                  if [ -n "${data_file}" ]; then
+                    if status="$(curl --disable --config "${config}" --cacert "${CA_CERT}" --request "${method}" \
+                      --output "${output}" --write-out "%{http_code}" \
+                      --data-binary "@${data_file}" "${url}")"; then
+                      :
+                    else
+                      status="transport-error"
+                    fi
+                  else
+                    if status="$(curl --disable --config "${config}" --cacert "${CA_CERT}" --request "${method}" \
+                      --output "${output}" --write-out "%{http_code}" "${url}")"; then
+                      :
+                    else
+                      status="transport-error"
+                    fi
+                  fi
+                  if [ "${status}" = "${expected}" ]; then
+                    return 0
+                  fi
+                  if [ "${attempt}" -lt "${HTTP_MAX_ATTEMPTS}" ]; then
+                    sleep "${RETRY_DELAY_SECONDS}"
+                  fi
+                  attempt=$((attempt + 1))
+                done
+                echo "ERROR: ${label} failed after ${HTTP_MAX_ATTEMPTS} attempts" >&2
+                return 1
+              }
+
+              [ -d "${WORKSPACE}" ] || fail "memory workspace is unavailable"
+              [ -s "${OIDC_SECRET_FILE}" ] || fail "Harbor OIDC client secret is empty or unavailable"
+              [ -s "${HARBOR_ADMIN_FILE}" ] || fail "Harbor admin password is empty or unavailable"
+
+              BASE_CONFIG="${WORKSPACE}/curl-base.conf"
+              TOKEN_CONFIG="${WORKSPACE}/curl-token.conf"
+              KEYCLOAK_CONFIG="${WORKSPACE}/curl-keycloak.conf"
+              HARBOR_CONFIG="${WORKSPACE}/curl-harbor.conf"
+              TOKEN_FORM="${WORKSPACE}/token-form"
+              TOKEN_RESPONSE="${WORKSPACE}/token-response.json"
+              TOKEN_FILE="${WORKSPACE}/access-token"
+              CLIENT_LIST="${WORKSPACE}/clients.json"
+              CLIENT_ID_FILE="${WORKSPACE}/client-id"
+              CLIENT_SECRET_RESPONSE="${WORKSPACE}/client-secret.json"
+              CURRENT_SECRET_FILE="${WORKSPACE}/current-client-secret"
+              CLIENT_RESPONSE="${WORKSPACE}/client.json"
+              CLIENT_UPDATE="${WORKSPACE}/client-update.json"
+              READBACK_RESPONSE="${WORKSPACE}/client-secret-readback.json"
+              READBACK_SECRET_FILE="${WORKSPACE}/readback-client-secret"
+              HARBOR_BODY="${WORKSPACE}/harbor-oidc.json"
+              HTTP_RESPONSE="${WORKSPACE}/http-response"
 
               echo "Waiting for the digiorg.local public CA..."
-              until [ -s "${CA_CERT}" ]; do sleep 2; done
+              attempt=1
+              until [ -s "${CA_CERT}" ]; do
+                if [ "${attempt}" -ge "${HTTP_MAX_ATTEMPTS}" ]; then
+                  fail "digiorg.local public CA is unavailable"
+                fi
+                sleep "${RETRY_DELAY_SECONDS}"
+                attempt=$((attempt + 1))
+              done
+
+              jq -nr --arg ca "${CA_CERT}" '
+                "silent\nshow-error\nconnect-timeout = 5\nmax-time = 15\ncacert = \"\($ca)\"\n"
+              ' > "${BASE_CONFIG}"
+              jq -nr --arg ca "${CA_CERT}" '
+                "silent\nshow-error\nconnect-timeout = 5\nmax-time = 15\ncacert = \"\($ca)\"\nheader = \"Content-Type: application/x-www-form-urlencoded\"\n"
+              ' > "${TOKEN_CONFIG}"
 
               echo "Waiting for Harbor API to be ready..."
-              until curl --cacert "${CA_CERT}" -sf "${HARBOR_API}/ping" > /dev/null 2>&1; do
-                echo "  Harbor not ready yet, retrying in 5s..."
-                sleep 5
-              done
+              request "Harbor readiness" "200" "${BASE_CONFIG}" GET \
+                "${HARBOR_API}/ping" "${HTTP_RESPONSE}" || exit 1
               echo "Harbor API is ready."
 
-              echo "Configuring OIDC authentication..."
-              HTTP_STATUS=$(curl --cacert "${CA_CERT}" -s -o /dev/null -w "%{http_code}" -X PUT \
-                -u "admin:${HARBOR_ADMIN_PASSWORD}" \
-                -H "Content-Type: application/json" \
-                -d "{
-                  \"auth_mode\": \"oidc_auth\",
-                  \"oidc_name\": \"Keycloak\",
-                  \"oidc_endpoint\": \"https://digiorg.local/keycloak/realms/digiorg-core-platform\",
-                  \"oidc_client_id\": \"harbor\",
-                  \"oidc_client_secret\": \"${OIDC_CLIENT_SECRET}\",
-                  \"oidc_scope\": \"openid,profile,email\",
-                  \"oidc_verify_cert\": true,
-                  \"oidc_auto_onboard\": true,
-                  \"oidc_user_claim\": \"preferred_username\",
-                  \"oidc_groups_claim\": \"groups\"
-                }" \
-                "${HARBOR_API}/configurations")
-
-              if [ "$HTTP_STATUS" = "200" ]; then
-                echo "OIDC configuration applied successfully (HTTP 200)."
-              else
-                echo "ERROR: Harbor API returned HTTP ${HTTP_STATUS}. OIDC configuration failed."
-                exit 1
+              echo "Reconciling the Keycloak harbor client secret..."
+              cat > "${TOKEN_FORM}" <<'TOKEN_FORM_EOF'
+              grant_type=password&client_id=admin-cli&username=admin&password=admin
+              TOKEN_FORM_EOF
+              request "Keycloak authentication" "200" "${TOKEN_CONFIG}" POST \
+                "${KEYCLOAK_BASE}/realms/master/protocol/openid-connect/token" \
+                "${TOKEN_RESPONSE}" "${TOKEN_FORM}" || exit 1
+              if ! jq -jer '.access_token | select(type == "string" and length > 0)' \
+                "${TOKEN_RESPONSE}" > "${TOKEN_FILE}" 2>/dev/null; then
+                fail "Keycloak authentication response had no usable access token"
               fi
+
+              jq -nr --rawfile token "${TOKEN_FILE}" --arg ca "${CA_CERT}" '
+                "silent\nshow-error\nconnect-timeout = 5\nmax-time = 15\ncacert = \"\($ca)\"\nheader = \"Authorization: Bearer \($token)\"\nheader = \"Content-Type: application/json\"\n"
+              ' > "${KEYCLOAK_CONFIG}"
+
+              KEYCLOAK_CLIENTS="${KEYCLOAK_BASE}/admin/realms/${KEYCLOAK_REALM}/clients"
+              request "Keycloak harbor client lookup" "200" "${KEYCLOAK_CONFIG}" GET \
+                "${KEYCLOAK_CLIENTS}?clientId=harbor" "${CLIENT_LIST}" || exit 1
+              if ! jq -jer '
+                if type == "array" and length == 1 and
+                   .[0].clientId == "harbor" and
+                   (.[0].id | type == "string" and length > 0)
+                then .[0].id
+                else error("harbor client selection failed")
+                end
+              ' "${CLIENT_LIST}" > "${CLIENT_ID_FILE}" 2>/dev/null; then
+                fail "Keycloak harbor client is missing or ambiguous"
+              fi
+              CLIENT_UUID="$(cat "${CLIENT_ID_FILE}")"
+              CLIENT_URL="${KEYCLOAK_CLIENTS}/${CLIENT_UUID}"
+              CLIENT_SECRET_URL="${CLIENT_URL}/client-secret"
+
+              request "Keycloak harbor client secret read" "200" "${KEYCLOAK_CONFIG}" GET \
+                "${CLIENT_SECRET_URL}" "${CLIENT_SECRET_RESPONSE}" || exit 1
+              if ! jq -jer '.value | select(type == "string" and length > 0)' \
+                "${CLIENT_SECRET_RESPONSE}" > "${CURRENT_SECRET_FILE}" 2>/dev/null; then
+                fail "Keycloak harbor client secret read returned no usable value"
+              fi
+
+              if cmp -s "${OIDC_SECRET_FILE}" "${CURRENT_SECRET_FILE}"; then
+                echo "Keycloak harbor client secret is already reconciled."
+              else
+                request "Keycloak harbor client representation read" "200" \
+                  "${KEYCLOAK_CONFIG}" GET "${CLIENT_URL}" "${CLIENT_RESPONSE}" || exit 1
+                if ! jq --rawfile secret "${OIDC_SECRET_FILE}" \
+                  'if type == "object" then .secret = $secret else error("invalid client") end' \
+                  "${CLIENT_RESPONSE}" > "${CLIENT_UPDATE}" 2>/dev/null; then
+                  fail "Keycloak harbor client representation was invalid"
+                fi
+                request "Keycloak harbor client secret update" "204" \
+                  "${KEYCLOAK_CONFIG}" PUT "${CLIENT_URL}" "${HTTP_RESPONSE}" \
+                  "${CLIENT_UPDATE}" || exit 1
+                request "Keycloak harbor client secret readback" "200" \
+                  "${KEYCLOAK_CONFIG}" GET "${CLIENT_SECRET_URL}" \
+                  "${READBACK_RESPONSE}" || exit 1
+                if ! jq -jer '.value | select(type == "string" and length > 0)' \
+                  "${READBACK_RESPONSE}" > "${READBACK_SECRET_FILE}" 2>/dev/null; then
+                  fail "Keycloak harbor client secret readback returned no usable value"
+                fi
+                if ! cmp -s "${OIDC_SECRET_FILE}" "${READBACK_SECRET_FILE}"; then
+                  fail "Keycloak harbor client secret did not match after update"
+                fi
+                echo "Keycloak harbor client secret reconciled."
+              fi
+
+              echo "Configuring OIDC authentication..."
+              jq -nr --rawfile password "${HARBOR_ADMIN_FILE}" --arg ca "${CA_CERT}" '
+                ("admin:" + $password | @base64) as $basic |
+                "silent\nshow-error\nconnect-timeout = 5\nmax-time = 15\ncacert = \"\($ca)\"\nheader = \"Authorization: Basic \($basic)\"\nheader = \"Content-Type: application/json\"\n"
+              ' > "${HARBOR_CONFIG}"
+              jq -n --rawfile secret "${OIDC_SECRET_FILE}" '{
+                auth_mode: "oidc_auth",
+                oidc_name: "Keycloak",
+                oidc_endpoint: "https://digiorg.local/keycloak/realms/digiorg-core-platform",
+                oidc_client_id: "harbor",
+                oidc_client_secret: $secret,
+                oidc_scope: "openid,profile,email",
+                oidc_verify_cert: true,
+                oidc_auto_onboard: true,
+                oidc_user_claim: "preferred_username",
+                oidc_groups_claim: "groups"
+              }' > "${HARBOR_BODY}"
+              request "Harbor OIDC configuration" "200" "${HARBOR_CONFIG}" PUT \
+                "${HARBOR_API}/configurations" "${HTTP_RESPONSE}" "${HARBOR_BODY}" || exit 1
+              echo "OIDC configuration applied successfully (HTTP 200)."
           volumeMounts:
             - name: digiorg-local-ca
               mountPath: /etc/digiorg-ca
               readOnly: true
+            - name: harbor-oidc-secret
+              mountPath: /run/secrets/harbor-oidc
+              readOnly: true
+            - name: harbor-admin-secret
+              mountPath: /run/secrets/harbor-admin
+              readOnly: true
+            - name: workspace
+              mountPath: /workspace
       volumes:
         - name: digiorg-local-ca
           secret:
             secretName: digiorg-local-ca
             optional: true
+        - name: harbor-oidc-secret
+          secret:
+            secretName: harbor-oidc-secret
+            items:
+              - key: OIDC_CLIENT_SECRET
+                path: OIDC_CLIENT_SECRET
+        - name: harbor-admin-secret
+          secret:
+            secretName: harbor-admin-secret
+            items:
+              - key: HARBOR_ADMIN_PASSWORD
+                path: HARBOR_ADMIN_PASSWORD
+        - name: workspace
+          emptyDir:
+            medium: Memory
+            sizeLimit: 4Mi

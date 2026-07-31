@@ -50,9 +50,6 @@ jobs:
           mkdir -p /tmp/nu && tar xzf /tmp/nu.tgz -C /tmp/nu --strip-components=1
           sudo install -m 0755 /tmp/nu/nu /usr/local/bin/nu
 
-      - name: Platform regression tests
-        run: python3 -m unittest discover -s platform/tests -p 'test_*.py' -v
-
       - name: Install Helm
         run: |
           set -euo pipefail
@@ -60,6 +57,9 @@ jobs:
           echo 'e9b88b4ee95b18c706839c28d3a0220e5bc470e9cd9262410c90793c45ff8b7c  /tmp/helm.tgz' | sha256sum -c -
           tar -xzf /tmp/helm.tgz -C /tmp
           sudo install -m 0755 /tmp/linux-amd64/helm /usr/local/bin/helm
+
+      - name: Platform regression tests
+        run: python3 -m unittest discover -s platform/tests -p 'test_*.py' -v
 
       - name: Render every Helm source and reject floating chart images
         run: python3 scripts/render_platform_charts.py
