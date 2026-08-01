@@ -165,9 +165,9 @@ spec:
               echo "Harbor API is ready."
 
               echo "Reconciling the Keycloak harbor client secret..."
-              cat > "${TOKEN_FORM}" <<'TOKEN_FORM_EOF'
-              grant_type=password&client_id=admin-cli&username=admin&password=admin
-              TOKEN_FORM_EOF
+              printf '%s' \
+                'grant_type=password&client_id=admin-cli&username=admin&password=admin' \
+                > "${TOKEN_FORM}"
               request "Keycloak authentication" "200" "${TOKEN_CONFIG}" POST \
                 "${KEYCLOAK_BASE}/realms/master/protocol/openid-connect/token" \
                 "${TOKEN_RESPONSE}" "${TOKEN_FORM}" || exit 1
