@@ -80,6 +80,13 @@ configs:
     server.basehref: "/argocd"
     server.rootpath: "/argocd"
 
+    # Issue #293: preserved OOM evidence identified an Application Controller
+    # process above the former 1 GiB limit during the clean-bootstrap window.
+    # Reduce the default 20 status / 10 operation worker fan-out to bound local
+    # reconciliation concurrency; runtime sufficiency still requires replay.
+    controller.status.processors: "10"
+    controller.operation.processors: "5"
+
     # ApplicationSet controller log level
     applicationsetcontroller.log.level: info
 
@@ -146,14 +153,19 @@ server:
       memory: 256Mi
 
 # -- Application controller
+# Issue #293: a preserved kernel OOM sample reports approximately 1,105 MiB of
+# summed anonymous and file-backed resident memory for an Argo controller
+# process. Select a bounded 1,280 MiB candidate ceiling (about 175 MiB above
+# that sample) together with reduced fan-out. Runtime validation is required;
+# do not expand unrelated components or shift to a broad 2 GiB allocation.
 controller:
   resources:
     requests:
       cpu: 250m
-      memory: 256Mi
+      memory: 384Mi
     limits:
       cpu: 1000m
-      memory: 1Gi
+      memory: 1280Mi
 
 # -- ApplicationSet controller
 applicationSet:
