@@ -53,6 +53,73 @@ configs:
       hs.message = "Waiting for Healthy condition"
       return hs
 
+    # Prometheus Operator creates the StatefulSet asynchronously after the CR.
+    # During the proven clean-bootstrap race, only this exact initial condition
+    # is Progressing. Every other negative, mixed, or stale condition remains
+    # fail-closed so real reconciliation failures cannot be hidden.
+    resource.customizations.health.monitoring.coreos.com_Prometheus: |
+      hs = {}
+      if obj.status == nil or obj.status.conditions == nil or #obj.status.conditions == 0 then
+        hs.status = "Progressing"
+        hs.message = "Waiting for Prometheus Operator status"
+        return hs
+      end
+
+      local generation = obj.metadata and obj.metadata.generation
+      local exactStatefulSetStartup = false
+      local available = false
+
+      for i, condition in ipairs(obj.status.conditions) do
+        if generation == nil or condition.observedGeneration == nil or condition.observedGeneration ~= generation then
+          hs.status = "Degraded"
+          hs.message = "Prometheus condition generation is stale or missing"
+          return hs
+        end
+
+        if condition.status == "True" then
+          if condition.type == "Available" then
+            available = true
+          end
+        else
+          local isExactStatefulSetStartup =
+            obj.metadata.name == "prometheus-kube-prometheus-prometheus" and
+            obj.metadata.namespace == "monitoring" and
+            condition.type == "Available" and
+            condition.status == "False" and
+            condition.reason == "StatefulSetNotFound" and
+            condition.message == "shard 0: statefulset monitoring/prometheus-prometheus-kube-prometheus-prometheus not found"
+
+          if isExactStatefulSetStartup and not exactStatefulSetStartup then
+            exactStatefulSetStartup = true
+          else
+            hs.status = "Degraded"
+            hs.message = condition.message or "Prometheus reports a negative condition"
+            return hs
+          end
+        end
+      end
+
+      if exactStatefulSetStartup then
+        if available then
+          hs.status = "Degraded"
+          hs.message = "Prometheus reports contradictory Available conditions"
+          return hs
+        end
+        hs.status = "Progressing"
+        hs.message = "Waiting for the operator-generated StatefulSet"
+        return hs
+      end
+
+      if available then
+        hs.status = "Healthy"
+        hs.message = "Prometheus is available for the current generation"
+        return hs
+      end
+
+      hs.status = "Degraded"
+      hs.message = "Prometheus has no current Available=True condition"
+      return hs
+
     # SSO/OIDC via Keycloak (digiorg-core-platform realm)
     # Using digiorg.local with path-based routing (standard port 80)
     # Requires /etc/hosts: 127.0.0.1 digiorg.local

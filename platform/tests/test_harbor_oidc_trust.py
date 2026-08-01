@@ -160,6 +160,7 @@ output = None
 write_out = None
 method = "GET"
 data = None
+data_bytes = None
 url = None
 i = 0
 while i < len(args):
@@ -185,7 +186,8 @@ while i < len(args):
         continue
     if arg in ("--data-binary", "-d", "--data"):
         value = args[i + 1]
-        data = Path(value[1:]).read_text(encoding="utf-8") if value.startswith("@") else value
+        data_bytes = Path(value[1:]).read_bytes() if value.startswith("@") else value.encode("utf-8")
+        data = data_bytes.decode("utf-8")
         if method == "GET":
             method = "POST"
         i += 2
@@ -222,7 +224,22 @@ elif url and url.endswith("/api/v2.0/ping"):
     body = "Pong"
 elif url and url.endswith("/protocol/openid-connect/token"):
     state["token_calls"] = state.get("token_calls", 0) + 1
-    if scenario == "auth_transport_failure":
+    expected_form = (
+        b"grant_type=password&client_id=admin-cli&username=admin&password=admin"
+    )
+    state["token_form_exact"] = data_bytes == expected_form
+    state["token_form_has_terminal_control"] = bool(
+        data_bytes and data_bytes.endswith((b"\n", b"\r", b"\x00"))
+    )
+    state["token_content_type_exact"] = bool(re.search(
+        r'^header\s*=\s*"Content-Type: application/x-www-form-urlencoded"$',
+        config_text,
+        re.MULTILINE,
+    ))
+    if not state["token_form_exact"] or not state["token_content_type_exact"]:
+        status = 401
+        body = json.dumps({"error": "invalid_grant"})
+    elif scenario == "auth_transport_failure":
         transport_failure = True
     elif scenario in ("auth_http_failure", "retry_exhaustion"):
         status = 503
@@ -401,6 +418,14 @@ class HarborOidcHookBehaviourTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIs(state.get("bearer_auth_validated"), True)
         self.assertIs(state.get("basic_auth_validated"), True)
+
+    def test_keycloak_token_form_is_byte_exact_without_terminal_control_bytes(self):
+        result, state = self.run_hook("equal", self.DESIRED)
+        self.assertGreater(state["token_calls"], 0)
+        self.assertIs(state.get("token_content_type_exact"), True)
+        self.assertIs(state.get("token_form_has_terminal_control"), False)
+        self.assertIs(state.get("token_form_exact"), True)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def assert_success(self, scenario, current_secret):
         result, state = self.run_hook(scenario, current_secret)
