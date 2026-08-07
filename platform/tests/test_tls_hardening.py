@@ -160,23 +160,100 @@ class CaCopyToNamespacesTest(SetupTextFixture):
         self.assertNotIn("tls.key", body)
         self.assertIn("ca.crt", body)
 
-    def test_main_up_copies_the_ca_into_every_consumer_namespace(self):
-        body = _func_body(self.text, '"main up"')
-        for namespace in ("crossplane-system", "backstage", "gitea"):
+    def test_ca_copies_follow_the_bootstrap_call_graph(self):
+        main_up = _func_body(self.text, '"main up"')
+        for namespace in ("crossplane-system", "backstage"):
             self.assertIn(
                 f'copy_digiorg_local_ca_to_namespace "{namespace}"',
-                body,
+                main_up,
                 f"main up must copy the CA into the {namespace} namespace",
             )
-
-    def test_ca_copy_runs_before_gitea_actions_runner_restart_is_needed(self):
-        body = _func_body(self.text, '"main up"')
-        copy_gitea_idx = body.index('copy_digiorg_local_ca_to_namespace "gitea"')
-        configure_gitea_idx = body.index("configure_gitea")
-        self.assertLess(
-            copy_gitea_idx, configure_gitea_idx,
-            "the gitea namespace CA copy must happen before configure_gitea/the runner needs it",
+        self.assertNotIn(
+            'copy_digiorg_local_ca_to_namespace "gitea"',
+            main_up,
+            "the Gitea CA copy belongs in the gated-sync preamble, not main up",
         )
+
+        gated_sync = _func_body(self.text, "sync_gated_apps_for_local_dev")
+        copy_gitea_idx = gated_sync.index(
+            'copy_digiorg_local_ca_to_namespace "gitea"'
+        )
+        gated_loop_idx = gated_sync.index("for app in $gated_apps {")
+        self.assertLess(
+            copy_gitea_idx,
+            gated_loop_idx,
+            "the Gitea namespace CA copy must run before the gated Application loop",
+        )
+
+        deploy_root_app = _func_body(self.text, "deploy_root_app")
+        self.assertIn(
+            "sync_gated_apps_for_local_dev",
+            deploy_root_app,
+            "deploy_root_app must invoke the gated sync that stages Gitea's CA",
+        )
+        self.assertLess(
+            main_up.index("deploy_root_app"),
+            main_up.index("configure_gitea"),
+            "main up must finish deploy_root_app's gated sync before configuring Gitea",
+        )
+
+    def test_gitea_ca_copy_precedes_conditional_gitea_and_runner_restarts(self):
+        def indented_block(source, header):
+            lines = source.splitlines(keepends=True)
+            for start_line, line in enumerate(lines):
+                if line.strip() == header:
+                    break
+            else:
+                self.fail(f"missing control-flow header: {header}")
+
+            indent = len(lines[start_line]) - len(lines[start_line].lstrip())
+            for end_line in range(start_line + 1, len(lines)):
+                line = lines[end_line]
+                if line.strip() == "}" and len(line) - len(line.lstrip()) == indent:
+                    start = sum(len(item) for item in lines[:start_line])
+                    end = sum(len(item) for item in lines[: end_line + 1])
+                    return source[start:end], start, end
+            self.fail(f"unterminated control-flow block: {header}")
+
+        gated_sync = _func_body(self.text, "sync_gated_apps_for_local_dev")
+        copy_gitea_idx = gated_sync.index(
+            'let gitea_ca_changed = (copy_digiorg_local_ca_to_namespace "gitea")'
+        )
+        _, gated_loop_start, gated_loop_end = indented_block(
+            gated_sync, "for app in $gated_apps {"
+        )
+        convergence_idx = gated_sync.index("wait_for_ingress_local_ca_convergence")
+        changed_gate, changed_gate_start, _ = indented_block(
+            gated_sync, "if $gitea_ca_changed {"
+        )
+        self.assertLess(copy_gitea_idx, gated_loop_start)
+        self.assertLessEqual(
+            gated_loop_end,
+            convergence_idx,
+            "ingress CA convergence must wait for the full gated Application loop",
+        )
+        self.assertLess(
+            convergence_idx,
+            changed_gate_start,
+            "restart decisions must wait for ingress to publish the copied CA",
+        )
+
+        gitea_existed_gate, _, _ = indented_block(
+            changed_gate, "if $gitea_existed_before_ca_copy {"
+        )
+        runner_token_gate, _, _ = indented_block(
+            changed_gate, "if $runner_token_exists {"
+        )
+        gitea_restart_call = 'restart_oidc_deployment "gitea" "gitea" "120s"'
+        runner_restart_call = (
+            'restart_oidc_deployment_if_present "gitea" "gitea-actions-runner" "120s"'
+        )
+        self.assertEqual(gated_sync.count(gitea_restart_call), 1)
+        self.assertEqual(gated_sync.count(runner_restart_call), 1)
+        self.assertIn(gitea_restart_call, gitea_existed_gate)
+        self.assertIn(runner_restart_call, runner_token_gate)
+        self.assertIn(gitea_restart_call, changed_gate)
+        self.assertIn(runner_restart_call, changed_gate)
 
 
 class NoInsecureCurlTest(SetupTextFixture):

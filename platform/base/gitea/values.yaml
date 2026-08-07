@@ -141,6 +141,31 @@ gitea:
 # NOT via extraEnvVars. extraEnvVars only applies to the main container,
 # but the configure-gitea init container needs the password for migrations.
 
+# Trust the local ingress CA declaratively in both the main Gitea container and
+# the chart's init containers. Project only the public certificate.
+extraVolumes:
+  - name: digiorg-local-ca
+    secret:
+      secretName: digiorg-local-ca
+      items:
+        - key: ca.crt
+          path: digiorg-local-ca.crt
+
+extraContainerVolumeMounts:
+  - name: digiorg-local-ca
+    mountPath: /etc/gitea/trusted-cas
+    readOnly: true
+
+extraInitVolumeMounts:
+  - name: digiorg-local-ca
+    mountPath: /etc/gitea/trusted-cas
+    readOnly: true
+
+deployment:
+  env:
+    - name: SSL_CERT_FILE
+      value: /etc/gitea/trusted-cas/digiorg-local-ca.crt
+
 # Optional Helm test hook defaults to busybox:latest in chart 12.x. Disable it;
 # platform smoke tests are run by the dedicated validation workflow instead.
 test:

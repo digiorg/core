@@ -10,20 +10,52 @@ SOURCE = (Path(__file__).resolve().parents[2] / "scripts/local-setup.nu").read_t
 
 class RunnerCaRestartBootstrapSafetyTest(unittest.TestCase):
     def test_phase_3_checks_token_before_optional_restart_and_gitea_configuration(self):
-        token_lookup = SOURCE.index("get secret gitea-actions-runner-token")
-        restart = SOURCE.index('restart_oidc_deployment_if_present "gitea" "gitea-actions-runner"')
-        configure = SOURCE.index("    configure_gitea\n", restart)
+        gated_sync = re.search(
+            r"def sync_gated_apps_for_local_dev \[\] \{.*?\n}\n",
+            SOURCE,
+            flags=re.DOTALL,
+        )
+        deploy_root_app = re.search(
+            r"def deploy_root_app \[\] \{.*?\n}\n", SOURCE, flags=re.DOTALL
+        )
+        main_up = re.search(r'def "main up" \[\] \{.*?\n}\n', SOURCE, flags=re.DOTALL)
+        self.assertIsNotNone(gated_sync)
+        self.assertIsNotNone(deploy_root_app)
+        self.assertIsNotNone(main_up)
+        gated_body = gated_sync.group(0) if gated_sync is not None else ""
+        deploy_body = deploy_root_app.group(0) if deploy_root_app is not None else ""
+        main_body = main_up.group(0) if main_up is not None else ""
+        token_lookup = gated_body.index("get secret gitea-actions-runner-token")
+        restart = gated_body.index(
+            'restart_oidc_deployment_if_present "gitea" "gitea-actions-runner"'
+        )
         self.assertLess(token_lookup, restart)
-        self.assertLess(restart, configure)
+        self.assertIn("\n    sync_gated_apps_for_local_dev\n", deploy_body)
+        self.assertLess(
+            main_body.index("\n    deploy_root_app\n"),
+            main_body.index("\n    configure_gitea\n"),
+        )
 
     def test_fresh_bootstrap_restart_requires_existing_runner_token(self):
-        main_up = re.search(r'def "main up" \[\] \{.*?\n}\n', SOURCE, flags=re.DOTALL)
-        self.assertIsNotNone(main_up)
-        body = main_up.group(0) if main_up is not None else ""
+        gated_sync = re.search(
+            r"def sync_gated_apps_for_local_dev \[\] \{.*?\n}\n",
+            SOURCE,
+            flags=re.DOTALL,
+        )
+        self.assertIsNotNone(gated_sync)
+        body = gated_sync.group(0) if gated_sync is not None else ""
         self.assertIn("get secret gitea-actions-runner-token", body)
         self.assertIn("--ignore-not-found", body)
         self.assertRegex(body, r"runner_token_lookup\.exit_code\s*!=\s*0")
-        self.assertIn("if $gitea_ca_changed and $runner_token_exists {", body)
+        self.assertRegex(
+            body,
+            r"if \$runner_token_lookup\.exit_code != 0 \{\s*error make",
+        )
+        self.assertRegex(
+            body,
+            r"if \$runner_token_exists \{\s*"
+            r'restart_oidc_deployment_if_present "gitea" "gitea-actions-runner"',
+        )
 
     def test_optional_restart_distinguishes_missing_from_lookup_failure(self):
         match = re.search(
