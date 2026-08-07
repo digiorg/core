@@ -464,41 +464,81 @@ class ConfigureGiteaActionsRunnerSetupTest(SetupTextFixture):
 
 class CaRotationRunnerRestartOrderingTest(SetupTextFixture):
     """Issue #285 core review: on a resumed `up` run where the digiorg.local
-    CA content changed, the previous ordering called configure_gitea (which
-    calls configure_gitea_actions_runner -> wait_for_gitea_actions_runner_online)
-    BEFORE restarting the runner Deployment. An already-running runner pod's
-    cached TLS trust does not pick up a rotated CA without a restart, so
-    wait_for_gitea_actions_runner_online would poll a runner that can never
-    reconnect to Gitea's now-differently-trusted endpoint -- a deadlock that
-    only resolves after wait_for_gitea_actions_runner_online times out and
-    the (too-late) restart finally runs. The fix restarts the runner
-    immediately once a CA change is detected, before configure_gitea runs."""
+    CA content changed, configure_gitea must not wait for an Actions runner
+    that still has stale TLS trust. The restart now lives in the gated sync
+    invoked by deploy_root_app, so these assertions follow that call graph
+    before main up reaches its standalone configure_gitea call."""
 
     def test_gitea_ca_changed_restart_happens_before_configure_gitea(self):
-        body = _func_body(self.text, '"main up"')
+        main_up = _func_body(self.text, '"main up"')
+        deploy_root_app = _func_body(self.text, "deploy_root_app")
+        gated_sync = _func_body(self.text, "sync_gated_apps_for_local_dev")
         restart_call = 'restart_oidc_deployment_if_present "gitea" "gitea-actions-runner"'
-        self.assertIn(restart_call, body)
-        self.assertIn("configure_gitea", body)
-        restart_idx = body.index(restart_call)
-        # Find configure_gitea called as its own statement (not the longer
-        # configure_gitea_actions_runner identifier, which only appears
-        # inside configure_gitea's own definition elsewhere in the file).
-        configure_gitea_idx = body.index("\n    configure_gitea\n")
+        self.assertIn(restart_call, gated_sync)
+        self.assertIn("\n    sync_gated_apps_for_local_dev\n", deploy_root_app)
         self.assertLess(
-            restart_idx,
-            configure_gitea_idx,
+            main_up.index("\n    deploy_root_app\n"),
+            main_up.index("\n    configure_gitea\n"),
             "the gitea-actions-runner restart on CA change must run before configure_gitea, "
             "otherwise wait_for_gitea_actions_runner_online deadlocks against the stale CA",
         )
 
     def test_restart_is_still_gated_on_the_ca_actually_changing(self):
-        body = _func_body(self.text, '"main up"')
-        restart_call = 'restart_oidc_deployment_if_present "gitea" "gitea-actions-runner"'
-        gate_idx = body.index("if $gitea_ca_changed and $runner_token_exists {")
-        restart_idx = body.index(restart_call)
+        def indented_block(source, header):
+            lines = source.splitlines(keepends=True)
+            for start_line, line in enumerate(lines):
+                if line.strip() == header:
+                    break
+            else:
+                self.fail(f"missing control-flow header: {header}")
+
+            indent = len(lines[start_line]) - len(lines[start_line].lstrip())
+            for end_line in range(start_line + 1, len(lines)):
+                line = lines[end_line]
+                if line.strip() == "}" and len(line) - len(line.lstrip()) == indent:
+                    start = sum(len(item) for item in lines[:start_line])
+                    end = sum(len(item) for item in lines[: end_line + 1])
+                    return source[start:end], start, end
+            self.fail(f"unterminated control-flow block: {header}")
+
+        body = _func_body(self.text, "sync_gated_apps_for_local_dev")
+        gitea_restart_call = 'restart_oidc_deployment "gitea" "gitea" "120s"'
+        runner_restart_call = (
+            'restart_oidc_deployment_if_present "gitea" "gitea-actions-runner" "120s"'
+        )
+        capture_idx = body.index(
+            'let gitea_ca_changed = (copy_digiorg_local_ca_to_namespace "gitea")'
+        )
+        _, gated_loop_start, gated_loop_end = indented_block(
+            body, "for app in $gated_apps {"
+        )
+        convergence_idx = body.index("wait_for_ingress_local_ca_convergence")
+        changed_gate, changed_gate_start, _ = indented_block(
+            body, "if $gitea_ca_changed {"
+        )
         self.assertLess(
-            gate_idx, restart_idx,
-            "the restart must remain conditional on gitea_ca_changed, not unconditional",
+            capture_idx,
+            gated_loop_start,
+            "the Gitea CA must be copied before the full gated Application loop",
+        )
+        self.assertLessEqual(gated_loop_end, convergence_idx)
+        self.assertLess(convergence_idx, changed_gate_start)
+
+        gitea_existed_gate, _, _ = indented_block(
+            changed_gate, "if $gitea_existed_before_ca_copy {"
+        )
+        runner_token_gate, _, _ = indented_block(
+            changed_gate, "if $runner_token_exists {"
+        )
+        self.assertEqual(body.count(gitea_restart_call), 1)
+        self.assertEqual(body.count(runner_restart_call), 1)
+        self.assertIn(gitea_restart_call, gitea_existed_gate)
+        self.assertIn(runner_restart_call, runner_token_gate)
+        self.assertIn(gitea_restart_call, changed_gate)
+        self.assertIn(
+            runner_restart_call,
+            changed_gate,
+            "the runner restart must remain conditional on both a changed CA and token existence",
         )
 
 

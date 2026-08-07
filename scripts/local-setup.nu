@@ -77,8 +77,7 @@ def "main up" [] {
     # certificate (never cert-manager's private key) into every namespace
     # running a client that must verify the digiorg.local ingress's
     # certificate -- crossplane-system (provider-http's shared
-    # ProviderConfig), backstage (NODE_EXTRA_CA_CERTS) and gitea (the
-    # Actions runner's own trust + its embedded dockerd's registry trust).
+    # ProviderConfig) and backstage (NODE_EXTRA_CA_CERTS).
     # Idempotent, so safe on both a first bootstrap and a resumed run.
     print "Copying the digiorg.local CA into consumer namespaces..."
     copy_digiorg_local_ca_to_namespace "crossplane-system"
@@ -86,30 +85,6 @@ def "main up" [] {
     # Harbor PostSync hooks mount this Secret optionally and wait for ca.crt,
     # avoiding a sync deadlock while keeping admin credentials off plaintext HTTP.
     copy_digiorg_local_ca_to_namespace "harbor"
-    let gitea_ca_changed = (copy_digiorg_local_ca_to_namespace "gitea")
-
-    # A resumed run may be updating an already-registered CA on an
-    # already-running runner: restart it *before* configure_gitea runs, not
-    # after. configure_gitea calls configure_gitea_actions_runner, which
-    # unconditionally calls wait_for_gitea_actions_runner_online -- an
-    # already-running runner pod's cached TLS trust does not pick up a rotated
-    # CA without a restart. On a fresh bootstrap, however, Argo may already have
-    # created the Deployment while it is still waiting for the registration-token
-    # Secret that configure_gitea creates below; waiting for that rollout here
-    # would deadlock. Distinguish an absent Secret from API/RBAC failure and only
-    # restart a previously initialized runner.
-    let runner_token_lookup = (do {
-        kubectl --kubeconfig $KUBECONFIG_PATH get secret gitea-actions-runner-token -n gitea --ignore-not-found -o name
-    } | complete)
-    if $runner_token_lookup.exit_code != 0 {
-        error make {msg: "Failed to determine whether the Gitea Actions runner token exists"}
-    }
-    let runner_token_exists = not ($runner_token_lookup.stdout | str trim | is-empty)
-    if $gitea_ca_changed and $runner_token_exists {
-        restart_oidc_deployment_if_present "gitea" "gitea-actions-runner" "120s"
-    } else if $gitea_ca_changed {
-        print $"(ansi yellow)○ gitea/gitea-actions-runner is awaiting first-time registration; it will mount the current CA on first start(ansi reset)"
-    }
 
     configure_gitea
 
@@ -2914,7 +2889,9 @@ def sync_gated_apps_for_local_dev [] {
     # namespace too (proven live: Harbor's Application reaches Synced/Healthy
     # with every pod Ready while its Running operation still waits on that
     # hook, because Phase 3's copy into harbor runs AFTER this entire gated
-    # loop). Copy the CA into both namespaces once, before the very first
+    # loop). Gitea and its Actions runner also consume the CA from a mounted
+    # Secret, which must exist before Gitea's gated sync. Copy the CA into the
+    # consumer namespaces once, before the very first
     # gated Application sync -- root-app has already created every
     # Application by this point -- waiting only for cert-manager itself and
     # its Certificate, never for Harbor (which is not yet synced and would
@@ -2924,6 +2901,14 @@ def sync_gated_apps_for_local_dev [] {
     ]
     copy_digiorg_local_ca_to_namespace "harbor"
     copy_digiorg_local_ca_to_namespace "crossplane-system"
+    let gitea_deployment_lookup = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH get deployment gitea -n gitea --ignore-not-found -o name
+    } | complete)
+    if $gitea_deployment_lookup.exit_code != 0 {
+        error make {msg: "Failed to determine whether deployment gitea/gitea exists"}
+    }
+    let gitea_existed_before_ca_copy = ($gitea_deployment_lookup.stdout | str trim | is-not-empty)
+    let gitea_ca_changed = (copy_digiorg_local_ca_to_namespace "gitea")
 
     for app in $gated_apps {
         if $app == "crossplane-harbor-bootstrap" {
@@ -3045,6 +3030,32 @@ def sync_gated_apps_for_local_dev [] {
         # core-catalog) is allowed to sync.
         if $app == "crossplane-harbor-bootstrap" {
             ensure_crossplane_harbor_credentials
+        }
+    }
+
+    wait_for_ingress_local_ca_convergence
+
+    # Existing processes cache Go roots. Reload only processes which could
+    # have started with the previous CA, after ingress has published the new
+    # CA and every gated Application has converged.
+    if $gitea_ca_changed {
+        if $gitea_existed_before_ca_copy {
+            restart_oidc_deployment "gitea" "gitea" "120s"
+        } else {
+            print $"(ansi yellow)○ gitea/gitea was created with the current CA; restart not required(ansi reset)"
+        }
+
+        let runner_token_lookup = (do {
+            kubectl --kubeconfig $KUBECONFIG_PATH get secret gitea-actions-runner-token -n gitea --ignore-not-found -o name
+        } | complete)
+        if $runner_token_lookup.exit_code != 0 {
+            error make {msg: "Failed to determine whether the Gitea Actions runner token exists"}
+        }
+        let runner_token_exists = ($runner_token_lookup.stdout | str trim | is-not-empty)
+        if $runner_token_exists {
+            restart_oidc_deployment_if_present "gitea" "gitea-actions-runner" "120s"
+        } else {
+            print $"(ansi yellow)○ gitea/gitea-actions-runner is awaiting first-time registration; it will mount the current CA on first start(ansi reset)"
         }
     }
 }
@@ -4010,12 +4021,9 @@ def gitea_unset_service_user_must_change_password [gitea_pod: string, username: 
     }
 }
 
-# Configure Gitea (register self-signed CA cert + add Keycloak OIDC provider + create initial users/org)
+# Configure Gitea (add Keycloak OIDC provider + create initial users/org)
 def configure_gitea [] {
     $env.KUBECONFIG = $KUBECONFIG_PATH
-
-    # --- Step 1: Register self-signed CA cert in Gitea container ---
-    print "1. Registering self-signed CA cert in Gitea..."
 
     # Wait for Gitea pod to be ready
     mut gitea_ready = false
@@ -4036,24 +4044,8 @@ def configure_gitea [] {
     }
     let gitea_pod = (kubectl --kubeconfig $KUBECONFIG_PATH get pods -n gitea -l app.kubernetes.io/name=gitea -o jsonpath='{.items[0].metadata.name}' | str trim)
 
-    # Extract CA cert from cert-manager secret
-    # Copy CA cert into Gitea container and update trust store.
-    let ca_copy = (do {
-        kubectl --kubeconfig $KUBECONFIG_PATH cp digiorg-local-ca.crt -c gitea gitea/($gitea_pod):/usr/local/share/ca-certificates/digiorg-local-ca.crt
-    } | complete)
-    if $ca_copy.exit_code != 0 {
-        error make {msg: "Failed to copy the local CA certificate into Gitea"}
-    }
-    let ca_update = (do {
-        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- update-ca-certificates
-    } | complete)
-    if $ca_update.exit_code != 0 {
-        error make {msg: "Failed to update the Gitea trust store"}
-    }
-    print $"(ansi green)✓ CA cert registered in Gitea trust store(ansi reset)"
-
-    # --- Step 2: Add Keycloak as OIDC authentication source ---
-    print "2. Configuring Keycloak OIDC provider in Gitea..."
+    # --- Step 1: Add Keycloak as OIDC authentication source ---
+    print "1. Configuring Keycloak OIDC provider in Gitea..."
     
     # Check if Keycloak OIDC source already exists (idempotency)
     let existing_oauth = (do {
@@ -4081,8 +4073,8 @@ def configure_gitea [] {
         print $"(ansi yellow)✓ Keycloak OIDC provider already exists in Gitea(ansi reset)"
     }
 
-    # --- Step 3: Create initial users in Gitea (resume-safe) ---
-    print "3. Ensuring initial users exist in Gitea..."
+    # --- Step 2: Create initial users in Gitea (resume-safe) ---
+    print "2. Ensuring initial users exist in Gitea..."
 
     let users_result = (do {
         kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- su git -c 'gitea admin user list'
@@ -4110,8 +4102,8 @@ def configure_gitea [] {
     }
     print $"(ansi green)✓ Initial users are present(ansi reset)"
 
-    # --- Step 4: Create DigiOrg organisation via the Gitea API ---
-    print "4. Ensuring DigiOrg organisation exists in Gitea..."
+    # --- Step 3: Create DigiOrg organisation via the Gitea API ---
+    print "3. Ensuring DigiOrg organisation exists in Gitea..."
 
     # Persist the bootstrap token in Kubernetes rather than a CLI config file.
     # The value travels only over stdin and is never placed in a process argument.
@@ -4147,7 +4139,7 @@ def configure_gitea [] {
     # Create the organisation through the API so no CLI configuration needs the
     # administrative token in argv. Exact HTTP status handling is fail-closed.
     let org_check = (do {
-        $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /usr/local/share/ca-certificates/digiorg-local-ca.crt -sS -o /dev/null -w "%{http_code}" https://digiorg.local/gitea/api/v1/orgs/DigiOrg'
+        $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /etc/gitea/trusted-cas/digiorg-local-ca.crt -sS -o /dev/null -w "%{http_code}" https://digiorg.local/gitea/api/v1/orgs/DigiOrg'
     } | complete)
     if $org_check.exit_code != 0 {
         error make {msg: "Failed to query the DigiOrg organisation in Gitea"}
@@ -4157,7 +4149,7 @@ def configure_gitea [] {
         print $"(ansi yellow)✓ Organisation 'DigiOrg' already exists(ansi reset)"
     } else if $org_status == "404" {
         let org_create = (do {
-            $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /usr/local/share/ca-certificates/digiorg-local-ca.crt -sS -o /dev/null -w "%{http_code}" -X POST -H "Content-Type: application/json" --data "{\"username\":\"DigiOrg\",\"full_name\":\"DigiOrg Organization\",\"visibility\":\"public\",\"repo_admin_change_team_access\":true}" https://digiorg.local/gitea/api/v1/orgs'
+            $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /etc/gitea/trusted-cas/digiorg-local-ca.crt -sS -o /dev/null -w "%{http_code}" -X POST -H "Content-Type: application/json" --data "{\"username\":\"DigiOrg\",\"full_name\":\"DigiOrg Organization\",\"visibility\":\"public\",\"repo_admin_change_team_access\":true}" https://digiorg.local/gitea/api/v1/orgs'
         } | complete)
         if $org_create.exit_code != 0 or (($org_create.stdout | str trim) != "201") {
             error make {msg: "Failed to create the DigiOrg organisation in Gitea"}
@@ -4171,7 +4163,7 @@ def configure_gitea [] {
     # never embedded in a process argument or printed command; --fail turns
     # every HTTP 4xx/5xx response into a fail-closed command result.
     let teams_result = (do {
-        $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /usr/local/share/ca-certificates/digiorg-local-ca.crt -fsS https://digiorg.local/gitea/api/v1/orgs/DigiOrg/teams'
+        $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /etc/gitea/trusted-cas/digiorg-local-ca.crt -fsS https://digiorg.local/gitea/api/v1/orgs/DigiOrg/teams'
     } | complete)
 
     if $teams_result.exit_code != 0 {
@@ -4186,14 +4178,14 @@ def configure_gitea [] {
 
     # 4g: Add digiorgadmin to Owners team (idempotent)
     let admin_check = (do {
-        $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c $'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /usr/local/share/ca-certificates/digiorg-local-ca.crt -sS -o /dev/null -w "%{http_code}" https://digiorg.local/gitea/api/v1/teams/($owners_team_id)/members/digiorgadmin'
+        $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c $'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /etc/gitea/trusted-cas/digiorg-local-ca.crt -sS -o /dev/null -w "%{http_code}" https://digiorg.local/gitea/api/v1/teams/($owners_team_id)/members/digiorgadmin'
     } | complete)
 
     if ($admin_check.exit_code == 0) and (($admin_check.stdout | str trim) == "200") {
         print $"(ansi yellow)✓ 'digiorgadmin' already member of Owners team(ansi reset)"
     } else {
         let admin_add = (do {
-            $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c $'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /usr/local/share/ca-certificates/digiorg-local-ca.crt -fsS -X PUT https://digiorg.local/gitea/api/v1/teams/($owners_team_id)/members/digiorgadmin'
+            $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c $'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /etc/gitea/trusted-cas/digiorg-local-ca.crt -fsS -X PUT https://digiorg.local/gitea/api/v1/teams/($owners_team_id)/members/digiorgadmin'
         } | complete)
         if $admin_add.exit_code == 0 {
             print $"(ansi green)✓ 'digiorgadmin' added to Owners team(ansi reset)"
@@ -4204,14 +4196,14 @@ def configure_gitea [] {
 
     # 4h: Add digiorgdeveloper to Owners team (idempotent)
     let dev_check = (do {
-        $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c $'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /usr/local/share/ca-certificates/digiorg-local-ca.crt -sS -o /dev/null -w "%{http_code}" https://digiorg.local/gitea/api/v1/teams/($owners_team_id)/members/digiorgdeveloper'
+        $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c $'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /etc/gitea/trusted-cas/digiorg-local-ca.crt -sS -o /dev/null -w "%{http_code}" https://digiorg.local/gitea/api/v1/teams/($owners_team_id)/members/digiorgdeveloper'
     } | complete)
 
     if ($dev_check.exit_code == 0) and (($dev_check.stdout | str trim) == "200") {
         print $"(ansi yellow)✓ 'digiorgdeveloper' already member of Owners team(ansi reset)"
     } else {
         let dev_add = (do {
-            $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c $'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /usr/local/share/ca-certificates/digiorg-local-ca.crt -fsS -X PUT https://digiorg.local/gitea/api/v1/teams/($owners_team_id)/members/digiorgdeveloper'
+            $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c $'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /etc/gitea/trusted-cas/digiorg-local-ca.crt -fsS -X PUT https://digiorg.local/gitea/api/v1/teams/($owners_team_id)/members/digiorgdeveloper'
         } | complete)
         if $dev_add.exit_code == 0 {
             print $"(ansi green)✓ 'digiorgdeveloper' added to Owners team(ansi reset)"
@@ -4222,7 +4214,7 @@ def configure_gitea [] {
 
     # 4i: Verification — list Owners team members
     let verify = (do {
-        $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c $'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /usr/local/share/ca-certificates/digiorg-local-ca.crt -fsS https://digiorg.local/gitea/api/v1/teams/($owners_team_id)/members'
+        $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c $'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /etc/gitea/trusted-cas/digiorg-local-ca.crt -fsS https://digiorg.local/gitea/api/v1/teams/($owners_team_id)/members'
     } | complete)
     if $verify.exit_code == 0 {
         let members = ($verify.stdout | from json | get login)
@@ -4270,7 +4262,7 @@ def configure_gitea [] {
 # configure_crossplane_gitea_credentials for that separate, narrower identity).
 def configure_app_config_repo [gitea_pod: string, gitea_token: string] {
     let repo_check = (do {
-        $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /usr/local/share/ca-certificates/digiorg-local-ca.crt -sS -o /dev/null -w "%{http_code}" https://digiorg.local/gitea/api/v1/repos/DigiOrg/app-config'
+        $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /etc/gitea/trusted-cas/digiorg-local-ca.crt -sS -o /dev/null -w "%{http_code}" https://digiorg.local/gitea/api/v1/repos/DigiOrg/app-config'
     } | complete)
     if $repo_check.exit_code != 0 {
         error make {msg: "Failed to query the DigiOrg/app-config repository in Gitea"}
@@ -4280,7 +4272,7 @@ def configure_app_config_repo [gitea_pod: string, gitea_token: string] {
         print $"(ansi yellow)✓ Repository 'DigiOrg/app-config' already exists(ansi reset)"
     } else if $repo_status == "404" {
         let repo_create = (do {
-            $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /usr/local/share/ca-certificates/digiorg-local-ca.crt -sS -o /dev/null -w "%{http_code}" -X POST -H "Content-Type: application/json" --data "{\"name\":\"app-config\",\"description\":\"GitOps sink for generated AppClaim manifests (Issue #285). ArgoCD watches claims/ automatically.\",\"private\":true,\"auto_init\":true,\"default_branch\":\"main\"}" https://digiorg.local/gitea/api/v1/orgs/DigiOrg/repos'
+            $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /etc/gitea/trusted-cas/digiorg-local-ca.crt -sS -o /dev/null -w "%{http_code}" -X POST -H "Content-Type: application/json" --data "{\"name\":\"app-config\",\"description\":\"GitOps sink for generated AppClaim manifests (Issue #285). ArgoCD watches claims/ automatically.\",\"private\":true,\"auto_init\":true,\"default_branch\":\"main\"}" https://digiorg.local/gitea/api/v1/orgs/DigiOrg/repos'
         } | complete)
         if $repo_create.exit_code != 0 or (($repo_create.stdout | str trim) != "201") {
             error make {msg: "Failed to create the DigiOrg/app-config repository in Gitea"}
@@ -4293,7 +4285,7 @@ def configure_app_config_repo [gitea_pod: string, gitea_token: string] {
     # Seed claims/.gitkeep so the directory the app-config Application
     # watches exists from the first sync, even before any AppClaim PR merges.
     let seed_check = (do {
-        $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /usr/local/share/ca-certificates/digiorg-local-ca.crt -sS -o /dev/null -w "%{http_code}" https://digiorg.local/gitea/api/v1/repos/DigiOrg/app-config/contents/claims/.gitkeep'
+        $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /etc/gitea/trusted-cas/digiorg-local-ca.crt -sS -o /dev/null -w "%{http_code}" https://digiorg.local/gitea/api/v1/repos/DigiOrg/app-config/contents/claims/.gitkeep'
     } | complete)
     if $seed_check.exit_code != 0 {
         error make {msg: "Failed to query the app-config claims/.gitkeep seed file"}
@@ -4304,7 +4296,7 @@ def configure_app_config_repo [gitea_pod: string, gitea_token: string] {
     } else if $seed_status == "404" {
         let seed_content = ("" | encode base64)
         let seed_create = (do {
-            $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c $'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /usr/local/share/ca-certificates/digiorg-local-ca.crt -sS -o /dev/null -w "%{http_code}" -X POST -H "Content-Type: application/json" --data "{\"content\":\"($seed_content)\",\"message\":\"chore: seed claims directory, issue 285\",\"branch\":\"main\"}" https://digiorg.local/gitea/api/v1/repos/DigiOrg/app-config/contents/claims/.gitkeep'
+            $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c $'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /etc/gitea/trusted-cas/digiorg-local-ca.crt -sS -o /dev/null -w "%{http_code}" -X POST -H "Content-Type: application/json" --data "{\"content\":\"($seed_content)\",\"message\":\"chore: seed claims directory, issue 285\",\"branch\":\"main\"}" https://digiorg.local/gitea/api/v1/repos/DigiOrg/app-config/contents/claims/.gitkeep'
         } | complete)
         if $seed_create.exit_code != 0 or (($seed_create.stdout | str trim) != "201") {
             error make {msg: "Failed to seed the app-config claims/ directory"}
@@ -4340,7 +4332,7 @@ def configure_crossplane_gitea_credentials [gitea_pod: string, gitea_token: stri
     # no member/webhook management (can_create_org_repo is the specific Gitea
     # team permission that lets a non-Owner member create repos in the org).
     let teams_result = (do {
-        $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /usr/local/share/ca-certificates/digiorg-local-ca.crt -fsS https://digiorg.local/gitea/api/v1/orgs/DigiOrg/teams'
+        $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /etc/gitea/trusted-cas/digiorg-local-ca.crt -fsS https://digiorg.local/gitea/api/v1/orgs/DigiOrg/teams'
     } | complete)
     if $teams_result.exit_code != 0 {
         error make {msg: "Failed to retrieve the DigiOrg teams from Gitea"}
@@ -4348,7 +4340,7 @@ def configure_crossplane_gitea_credentials [gitea_pod: string, gitea_token: stri
     let provisioners_team = ($teams_result.stdout | from json | where name == "platform-provisioners")
     let provisioners_team_id = if ($provisioners_team | is-empty) {
         let team_create = (do {
-            $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /usr/local/share/ca-certificates/digiorg-local-ca.crt -fsS -X POST -H "Content-Type: application/json" --data "{\"name\":\"platform-provisioners\",\"description\":\"Least-privilege team: create+push app source repositories only (Issue #285)\",\"permission\":\"write\",\"can_create_org_repo\":true,\"units\":[\"repo.code\"]}" https://digiorg.local/gitea/api/v1/orgs/DigiOrg/teams'
+            $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /etc/gitea/trusted-cas/digiorg-local-ca.crt -fsS -X POST -H "Content-Type: application/json" --data "{\"name\":\"platform-provisioners\",\"description\":\"Least-privilege team: create+push app source repositories only (Issue #285)\",\"permission\":\"write\",\"can_create_org_repo\":true,\"units\":[\"repo.code\"]}" https://digiorg.local/gitea/api/v1/orgs/DigiOrg/teams'
         } | complete)
         if $team_create.exit_code != 0 {
             error make {msg: "Failed to create the platform-provisioners Gitea team"}
@@ -4360,11 +4352,11 @@ def configure_crossplane_gitea_credentials [gitea_pod: string, gitea_token: stri
     print $"(ansi green)✓ DigiOrg 'platform-provisioners' team ID: ($provisioners_team_id)(ansi reset)"
 
     let member_check = (do {
-        $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c $'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /usr/local/share/ca-certificates/digiorg-local-ca.crt -sS -o /dev/null -w "%{http_code}" https://digiorg.local/gitea/api/v1/teams/($provisioners_team_id)/members/crossplane-provisioner'
+        $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c $'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /etc/gitea/trusted-cas/digiorg-local-ca.crt -sS -o /dev/null -w "%{http_code}" https://digiorg.local/gitea/api/v1/teams/($provisioners_team_id)/members/crossplane-provisioner'
     } | complete)
     if not (($member_check.exit_code == 0) and (($member_check.stdout | str trim) == "200")) {
         let member_add = (do {
-            $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c $'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /usr/local/share/ca-certificates/digiorg-local-ca.crt -fsS -X PUT https://digiorg.local/gitea/api/v1/teams/($provisioners_team_id)/members/crossplane-provisioner'
+            $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c $'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /etc/gitea/trusted-cas/digiorg-local-ca.crt -fsS -X PUT https://digiorg.local/gitea/api/v1/teams/($provisioners_team_id)/members/crossplane-provisioner'
         } | complete)
         if $member_add.exit_code != 0 {
             error make {msg: "Failed to add crossplane-provisioner to the platform-provisioners team"}
@@ -4422,7 +4414,7 @@ def configure_argocd_gitea_access [gitea_pod: string, gitea_token: string] {
     # run repairs drift even when the token Secret already exists (Issue #285
     # blocker #9).
     let collab_add = (do {
-        $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /usr/local/share/ca-certificates/digiorg-local-ca.crt -fsS -X PUT -H "Content-Type: application/json" --data "{\"permission\":\"read\"}" https://digiorg.local/gitea/api/v1/repos/DigiOrg/app-config/collaborators/argocd-reader'
+        $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /etc/gitea/trusted-cas/digiorg-local-ca.crt -fsS -X PUT -H "Content-Type: application/json" --data "{\"permission\":\"read\"}" https://digiorg.local/gitea/api/v1/repos/DigiOrg/app-config/collaborators/argocd-reader'
     } | complete)
     if $collab_add.exit_code != 0 {
         error make {msg: "Failed to grant argocd-reader read-only access to DigiOrg/app-config"}
@@ -4485,7 +4477,7 @@ def configure_backstage_gitea_publisher [gitea_pod: string, gitea_token: string]
     # run repairs drift even when the token Secret already exists (Issue #285
     # blocker #9).
     let collab_add = (do {
-        $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /usr/local/share/ca-certificates/digiorg-local-ca.crt -fsS -X PUT -H "Content-Type: application/json" --data "{\"permission\":\"write\"}" https://digiorg.local/gitea/api/v1/repos/DigiOrg/app-config/collaborators/backstage-appclaim-publisher'
+        $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /etc/gitea/trusted-cas/digiorg-local-ca.crt -fsS -X PUT -H "Content-Type: application/json" --data "{\"permission\":\"write\"}" https://digiorg.local/gitea/api/v1/repos/DigiOrg/app-config/collaborators/backstage-appclaim-publisher'
     } | complete)
     if $collab_add.exit_code != 0 {
         error make {msg: "Failed to grant backstage-appclaim-publisher write access to DigiOrg/app-config"}
@@ -4541,7 +4533,7 @@ def configure_gitea_actions_runner [gitea_pod: string, gitea_token: string] {
 
     if not $secret_exists {
         let token_result = (do {
-            $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /usr/local/share/ca-certificates/digiorg-local-ca.crt -fsS -X POST https://digiorg.local/gitea/api/v1/admin/actions/runners/registration-token'
+            $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /etc/gitea/trusted-cas/digiorg-local-ca.crt -fsS -X POST https://digiorg.local/gitea/api/v1/admin/actions/runners/registration-token'
         } | complete)
         if $token_result.exit_code != 0 {
             error make {msg: "Failed to generate the Gitea Actions runner registration token"}
@@ -4582,7 +4574,7 @@ def wait_for_gitea_actions_runner_online [gitea_pod: string, gitea_token: string
     mut last_diagnostic = "runner status was not observed"
     for attempt in 1..60 {
         let result = (do {
-            $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /usr/local/share/ca-certificates/digiorg-local-ca.crt -fsS https://digiorg.local/gitea/api/v1/admin/actions/runners'
+            $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /etc/gitea/trusted-cas/digiorg-local-ca.crt -fsS https://digiorg.local/gitea/api/v1/admin/actions/runners'
         } | complete)
         if $result.exit_code == 0 {
             let parsed = (try { $result.stdout | from json } catch { null })
@@ -4855,6 +4847,38 @@ def restart_oidc_dependent_pods [] {
 # -----------------------------------------------------------------------------
 # Helper Functions
 # -----------------------------------------------------------------------------
+
+# Wait until ingress-nginx has published the current cert-manager public CA.
+# Compare only the base64-encoded Secret fields: certificate bytes are never
+# decoded or printed. Missing/not-yet-populated ingress data may converge;
+# command failures remain fatal.
+def wait_for_ingress_local_ca_convergence [] {
+    let expected_ca_result = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH get secret digiorg-local-ca-secret -n cert-manager -o jsonpath='{.data.ca\.crt}'
+    } | complete)
+    if $expected_ca_result.exit_code != 0 or ($expected_ca_result.stdout | str trim | is-empty) {
+        error make {msg: "Failed to read the current cert-manager public CA"}
+    }
+    let expected_ca = ($expected_ca_result.stdout | str trim)
+
+    for attempt in 1..30 {
+        let ingress_ca_result = (do {
+            kubectl --kubeconfig $KUBECONFIG_PATH get secret digiorg-local-tls -n ingress-nginx --ignore-not-found -o jsonpath='{.data.ca\.crt}'
+        } | complete)
+        if $ingress_ca_result.exit_code != 0 {
+            error make {msg: "Failed to read the ingress TLS public CA"}
+        }
+        let ingress_ca = ($ingress_ca_result.stdout | str trim)
+        if $ingress_ca == $expected_ca {
+            return
+        }
+        if $attempt < 30 {
+            sleep 2sec
+        }
+    }
+
+    error make {msg: "Ingress TLS public CA did not converge to the current cert-manager CA within 60 seconds"}
+}
 
 # Issue #285 (TLS hardening): copy only the public digiorg.local CA
 # certificate -- never cert-manager's private key -- from
