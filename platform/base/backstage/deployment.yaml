@@ -16,6 +16,7 @@ spec:
         app: backstage
     spec:
       serviceAccountName: backstage
+      automountServiceAccountToken: false
       # Wait for PostgreSQL to be ready before starting Backstage
       initContainers:
         - name: wait-for-postgres
@@ -30,6 +31,57 @@ spec:
                 sleep 2
               done
               echo "PostgreSQL is ready!"
+        - name: wait-for-oidc-discovery
+          image: natsio/nats-box:0.19.2@sha256:8031d190c7ee24081f3f27cc939fb647a1eeb29ebb5c60fef9b5b6c7a846d6a2
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              DISCOVERY_URL="https://digiorg.local/keycloak/realms/digiorg-core-platform/.well-known/openid-configuration"
+              EXPECTED_ISSUER="https://digiorg.local/keycloak/realms/digiorg-core-platform"
+              CA_PATH="/etc/digiorg/ca/ca.crt"
+              MAX_ATTEMPTS=60
+              RETRY_DELAY_SECONDS=5
+
+              attempt=1
+              while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
+                echo "Waiting for OIDC discovery (attempt $attempt/$MAX_ATTEMPTS)..."
+                if discovery_document="$(
+                  curl --disable --fail --silent --show-error \
+                    --connect-timeout 3 --max-time 5 \
+                    --cacert "$CA_PATH" "$DISCOVERY_URL" 2>/dev/null
+                )" && printf '%s' "$discovery_document" | jq -e \
+                  --arg expected_issuer "$EXPECTED_ISSUER" \
+                  'type == "object" and .issuer == $expected_issuer' \
+                  >/dev/null 2>&1; then
+                  echo "OIDC discovery is ready."
+                  exit 0
+                fi
+
+                if [ "$attempt" -lt "$MAX_ATTEMPTS" ]; then
+                  sleep "$RETRY_DELAY_SECONDS"
+                fi
+                attempt=$((attempt + 1))
+              done
+
+              echo "ERROR: OIDC discovery did not become ready after 60 attempts." >&2
+              exit 1
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: digiorg-local-ca
+              mountPath: /etc/digiorg/ca
+              readOnly: true
       containers:
         - name: backstage
           image: ghcr.io/digiorg/core-portal:9e58bae@sha256:d5d55426bbb4bc6ca9e9f14fe2ec38656801a31d017810b6ab0bcdbfb53b58cb
@@ -106,13 +158,15 @@ spec:
             # KUBERNETES_API_URL: internal cluster API server (Backstage runs in-cluster)
             - name: KUBERNETES_API_URL
               value: "https://kubernetes.default.svc"
-            # Token from long-lived ServiceAccount secret (created by local-setup.nu)
+            # Token from long-lived ServiceAccount secret (created by local-setup.nu).
+            # Required because automountServiceAccountToken is disabled above:
+            # Backstage must not start without Kubernetes ingestion credentials.
             - name: KUBERNETES_SERVICE_ACCOUNT_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: backstage-k8s-token
                   key: token
-                  optional: true
+                  optional: false
           volumeMounts:
             # Public certificate only (never cert-manager's private key) --
             # kept in sync by scripts/local-setup.nu
@@ -145,3 +199,7 @@ spec:
         - name: digiorg-local-ca
           secret:
             secretName: digiorg-local-ca
+            items:
+              - key: ca.crt
+                path: ca.crt
+                mode: 0444

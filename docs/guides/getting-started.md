@@ -335,6 +335,10 @@ kubectl logs -n keycloak -l app=keycloak
 # Check pod events
 kubectl describe pod -n backstage -l app=backstage
 
-# Check logs
+# Check the ordered startup gates
+kubectl logs -n backstage -l app=backstage -c wait-for-postgres --tail=100
+kubectl logs -n backstage -l app=backstage -c wait-for-oidc-discovery --tail=100
+
+# Check the main container after both init containers have completed
 kubectl logs -n backstage -l app=backstage --tail=100
 ```
