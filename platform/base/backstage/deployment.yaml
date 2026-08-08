@@ -84,7 +84,7 @@ spec:
               readOnly: true
       containers:
         - name: backstage
-          image: ghcr.io/digiorg/core-portal:9e58bae@sha256:d5d55426bbb4bc6ca9e9f14fe2ec38656801a31d017810b6ab0bcdbfb53b58cb
+          image: ghcr.io/digiorg/core-portal:321f549@sha256:9838a2a610946705ecb488018c8188b7f9432b9cdf4f03588b4c34697e9a01f3
           imagePullPolicy: Always
           ports:
             - containerPort: 7007
