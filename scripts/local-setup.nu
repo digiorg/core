@@ -3800,9 +3800,19 @@ def scrub_secret_last_applied_annotation [namespace: string, name: string] {
 # then prune ownership for the whole object. Apply only the target data key with
 # a stable per-key manager; unrelated keys can change concurrently and survive.
 # No credential enters argv, environment variables, logs, or disk.
-def persist_opaque_secret [namespace: string, name: string, key: string, value: string] {
+def persist_opaque_secret [
+    namespace: string,
+    name: string,
+    key: string,
+    value: string,
+    --annotation-key: string = "",
+    --annotation-value: string = "",
+] {
     if ($value | is-empty) {
         error make {msg: $"Refusing to persist an empty value for secret ($namespace)/($name) key ($key)"}
+    }
+    if (($annotation_key | is-empty) != ($annotation_value | is-empty)) {
+        error make {msg: $"Secret ($namespace)/($name) annotation key and value must be provided together"}
     }
     let exists_result = (do {
         kubectl --kubeconfig $KUBECONFIG_PATH get secret $name -n $namespace -o name --ignore-not-found
@@ -3818,10 +3828,19 @@ def persist_opaque_secret [namespace: string, name: string, key: string, value: 
 
     let encoded = ($value | encode base64)
     let field_manager = $"digiorg-bootstrap-secret-($key | str replace --all '.' '-')"
+    let secret_metadata = if ($annotation_key | is-empty) {
+        {name: $name, namespace: $namespace}
+    } else {
+        {
+            name: $name
+            namespace: $namespace
+            annotations: {($annotation_key): $annotation_value}
+        }
+    }
     let manifest = {
         apiVersion: "v1"
         kind: "Secret"
-        metadata: {name: $name, namespace: $namespace}
+        metadata: $secret_metadata
         type: "Opaque"
         data: {($key): $encoded}
     }
@@ -3839,12 +3858,24 @@ def persist_opaque_secret [namespace: string, name: string, key: string, value: 
     if $readback.exit_code != 0 {
         error make {msg: $"Failed to verify the persisted secret ($namespace)/($name)"}
     }
-    let persisted = (try {
+    let verified = (try {
         let secret = ($readback.stdout | from json)
-        $secret.data | get $key | decode base64 | decode utf-8
-    } catch { "" })
-    if ($persisted | is-empty) or ($persisted != $value) {
+        let persisted_value = ($secret.data | get $key | decode base64 | decode utf-8)
+        let persisted_annotation = if ($annotation_key | is-empty) {
+            ""
+        } else {
+            $secret.metadata.annotations | get $annotation_key
+        }
+        {
+            value: $persisted_value
+            annotation: $persisted_annotation
+        }
+    } catch { {value: "", annotation: ""} })
+    if ($verified.value | is-empty) or ($verified.value != $value) {
         error make {msg: $"Persisted secret ($namespace)/($name) did not match its source"}
+    }
+    if (not ($annotation_key | is-empty)) and ($verified.annotation != $annotation_value) {
+        error make {msg: $"Persisted secret ($namespace)/($name) annotation contract did not match its source"}
     }
 }
 
@@ -4307,15 +4338,79 @@ def configure_app_config_repo [gitea_pod: string, gitea_token: string] {
     }
 }
 
+# Parse only the non-secret resume state required for scope-contract decisions.
+# Malformed JSON, missing/invalid base64, and empty token values fail closed;
+# the token itself is never returned or printed.
+def parse_crossplane_gitea_secret_state [raw: string, scope_annotation: string] {
+    let secret = (try {
+        $raw | from json
+    } catch {
+        error make {msg: "crossplane-gitea-credentials is not valid JSON"}
+    })
+    let encoded_token = (try {
+        $secret.data | get token | into string | str trim
+    } catch {
+        error make {msg: "crossplane-gitea-credentials is missing data.token"}
+    })
+    if ($encoded_token | is-empty) {
+        error make {msg: "crossplane-gitea-credentials contains an empty encoded token"}
+    }
+    let decoded_token = (try {
+        $encoded_token | decode base64 | decode utf-8 | str trim
+    } catch {
+        error make {msg: "crossplane-gitea-credentials contains an invalid encoded token"}
+    })
+    if ($decoded_token | is-empty) {
+        error make {msg: "crossplane-gitea-credentials contains an empty token"}
+    }
+    let scope_contract_current = (try {
+        $secret.metadata.annotations | get $scope_annotation | into string | str trim
+    } catch { "" })
+    {scope_contract_current: $scope_contract_current}
+}
+
+# Gitea v1.26.1 PATCH /teams/{id} returns both deprecated units and units_map.
+# Require both representations to prove the team is exactly code-write plus
+# org-repository creation, never all-repository/admin or extra-unit access.
+def crossplane_gitea_team_is_exact [] {
+    let team = $in
+    try {
+        let units = ($team.units | each {|unit| $unit | into string } | sort)
+        let unit_keys = ($team.units_map | columns | sort)
+        [
+            ($team.name == "platform-provisioners")
+            ($team.permission == "write")
+            ($team.includes_all_repositories == false)
+            ($team.can_create_org_repo == true)
+            ($units == ["repo.code"])
+            ($unit_keys == ["repo.code"])
+            (($team.units_map | get "repo.code") == "write")
+        ] | all {|matches| $matches }
+    } catch { false }
+}
+
 # Create a dedicated, least-privilege Gitea identity for Crossplane's per-app
 # repository/CI provisioning (Issue #285 security constraint: "do not reuse a
 # broad platform administrator token"). Distinct from gitea_admin (one-time
 # platform bootstrap only) and from argocd-reader (read-only GitOps sink
 # access, below) -- this identity can only create repositories under DigiOrg
-# and push their contents, nothing else. Resume-safe: an existing Secret's
-# token is preserved; rotation is an explicit operator action.
+# and push their contents, nothing else. Resume-safe: a token is preserved only
+# while its persisted scope contract is current; an unmarked pre-fix Secret is
+# rotated once after user/team authorization has been re-verified.
 def configure_crossplane_gitea_credentials [gitea_pod: string, gitea_token: string] {
-    let secret_exists = ((do -i { kubectl --kubeconfig $KUBECONFIG_PATH get secret crossplane-gitea-credentials -n crossplane-system } | complete).exit_code == 0)
+    let scope_contract = "write:organization,write:repository"
+    let scope_annotation = "platform.digiorg.io/gitea-token-scopes"
+    let secret_result = (do -i {
+        kubectl --kubeconfig $KUBECONFIG_PATH get secret crossplane-gitea-credentials -n crossplane-system -o json
+    } | complete)
+    let secret_exists = ($secret_result.exit_code == 0)
+    if (not $secret_exists) and (not (kubectl_error_is_exact_not_found $secret_result.stderr "secrets" "crossplane-gitea-credentials")) {
+        error make {msg: "Failed to inspect crossplane-gitea-credentials before scope-contract reconciliation"}
+    }
+    let scope_contract_current = if $secret_exists {
+        let secret_state = (parse_crossplane_gitea_secret_state $secret_result.stdout $scope_annotation)
+        $secret_state.scope_contract_current
+    } else { "" }
 
     let users_result = (do {
         kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- su git -c 'gitea admin user list'
@@ -4340,7 +4435,7 @@ def configure_crossplane_gitea_credentials [gitea_pod: string, gitea_token: stri
     let provisioners_team = ($teams_result.stdout | from json | where name == "platform-provisioners")
     let provisioners_team_id = if ($provisioners_team | is-empty) {
         let team_create = (do {
-            $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /etc/gitea/trusted-cas/digiorg-local-ca.crt -fsS -X POST -H "Content-Type: application/json" --data "{\"name\":\"platform-provisioners\",\"description\":\"Least-privilege team: create+push app source repositories only (Issue #285)\",\"permission\":\"write\",\"can_create_org_repo\":true,\"units\":[\"repo.code\"]}" https://digiorg.local/gitea/api/v1/orgs/DigiOrg/teams'
+            $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /etc/gitea/trusted-cas/digiorg-local-ca.crt -fsS -X POST -H "Content-Type: application/json" --data "{\"name\":\"platform-provisioners\",\"description\":\"Least-privilege team: create+push app source repositories only (Issue #285)\",\"permission\":\"write\",\"includes_all_repositories\":false,\"can_create_org_repo\":true,\"units_map\":{\"repo.code\":\"write\"}}" https://digiorg.local/gitea/api/v1/orgs/DigiOrg/teams'
         } | complete)
         if $team_create.exit_code != 0 {
             error make {msg: "Failed to create the platform-provisioners Gitea team"}
@@ -4348,6 +4443,25 @@ def configure_crossplane_gitea_credentials [gitea_pod: string, gitea_token: stri
         (($team_create.stdout | from json).id)
     } else {
         ($provisioners_team | get id | first)
+    }
+
+    # Reconcile existing as well as freshly created teams. Gitea v1.26.1's
+    # EditTeam handler replaces Units from units_map and returns the complete
+    # Team representation, which is checked before membership/token handling.
+    let team_url = $"https://digiorg.local/gitea/api/v1/teams/($provisioners_team_id)"
+    let team_reconcile = (do {
+        $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /etc/gitea/trusted-cas/digiorg-local-ca.crt -fsS -X PATCH -H "Content-Type: application/json" --data "{\"name\":\"platform-provisioners\",\"description\":\"Least-privilege team: create+push app source repositories only (Issue #285)\",\"permission\":\"write\",\"includes_all_repositories\":false,\"can_create_org_repo\":true,\"units_map\":{\"repo.code\":\"write\"}}" "$1"' sh $team_url
+    } | complete)
+    if $team_reconcile.exit_code != 0 {
+        error make {msg: "Failed to reconcile the platform-provisioners Gitea team"}
+    }
+    let reconciled_team = (try {
+        $team_reconcile.stdout | from json
+    } catch {
+        error make {msg: "Gitea returned malformed platform-provisioners team JSON"}
+    })
+    if not ($reconciled_team | crossplane_gitea_team_is_exact) {
+        error make {msg: "platform-provisioners Gitea team did not match the exact least-privilege contract after reconciliation"}
     }
     print $"(ansi green)✓ DigiOrg 'platform-provisioners' team ID: ($provisioners_team_id)(ansi reset)"
 
@@ -4363,20 +4477,23 @@ def configure_crossplane_gitea_credentials [gitea_pod: string, gitea_token: stri
         }
     }
 
-    # Only the token itself is resume-preserved (rotation is an explicit
-    # operator action); user existence and team membership above are always
-    # re-verified/repaired first, even when the Secret already exists (Issue
-    # #285 blocker #9: authorization drift must not be silently trusted).
-    if $secret_exists {
-        print $"(ansi yellow)✓ 'crossplane-gitea-credentials' already present — preserved \(membership re-verified\)(ansi reset)"
+    # User/team authorization is always re-verified above. Preserve the token
+    # only when its persisted scope contract is current; an unmarked pre-fix
+    # Secret rotates once so org-repository creation can succeed on resume.
+    if $secret_exists and ($scope_contract_current == $scope_contract) {
+        print $"(ansi yellow)✓ 'crossplane-gitea-credentials' already satisfies scope contract — preserved \(membership re-verified\)(ansi reset)"
         return
     }
+    if $secret_exists {
+        print $"(ansi yellow)↻ Rotating 'crossplane-gitea-credentials' to current least-privilege scope contract(ansi reset)"
+    }
 
-    # Scoped ONLY to write:repository -- not the broad admin scope list used
-    # for the one-time platform bootstrap token.
+    # Gitea's organization-repository endpoint requires write:organization in
+    # addition to write:repository. The user's team membership still restricts
+    # it to repository creation and code push under DigiOrg.
     let token_name = $"crossplane-((date now | format date '%Y%m%d%H%M%S'))"
     let token_result = (do {
-        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- su git -c $'gitea admin user generate-access-token --username crossplane-provisioner --token-name "($token_name)" --scopes write:repository --raw'
+        kubectl --kubeconfig $KUBECONFIG_PATH exec -n gitea $gitea_pod -c gitea -- su git -c $'gitea admin user generate-access-token --username crossplane-provisioner --token-name "($token_name)" --scopes write:organization,write:repository --raw'
     } | complete)
     if $token_result.exit_code != 0 {
         error make {msg: "Failed to generate the crossplane-provisioner access token"}
@@ -4385,8 +4502,8 @@ def configure_crossplane_gitea_credentials [gitea_pod: string, gitea_token: stri
     if ($provisioner_token | is-empty) {
         error make {msg: "Gitea returned an empty crossplane-provisioner access token"}
     }
-    persist_opaque_secret "crossplane-system" "crossplane-gitea-credentials" "token" $provisioner_token
-    print $"(ansi green)✓ Least-privilege 'crossplane-gitea-credentials' created \(write:repository only\)(ansi reset)"
+    persist_opaque_secret "crossplane-system" "crossplane-gitea-credentials" "token" $provisioner_token --annotation-key $scope_annotation --annotation-value $scope_contract
+    print $"(ansi green)✓ Least-privilege 'crossplane-gitea-credentials' reconciled \(write:organization,write:repository\)(ansi reset)"
 }
 
 # Create a dedicated, read-only Gitea identity so ArgoCD's repo-server can

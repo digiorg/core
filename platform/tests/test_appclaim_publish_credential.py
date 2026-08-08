@@ -25,6 +25,8 @@ Run:
     python3 platform/tests/test_appclaim_publish_credential.py
 """
 
+import base64
+import json
 import os
 import re
 import subprocess
@@ -187,14 +189,17 @@ class GiteaIdentityResumeDriftRepairTest(SetupTextFixture):
     once the Secret is already present -- membership repair must run first,
     unconditionally."""
 
-    def _assert_membership_repaired_before_short_circuit(self, fn_name, secret_marker, membership_marker):
+    def _assert_membership_repaired_before_short_circuit(
+        self, fn_name, secret_marker, membership_marker,
+        return_gate_marker="if $secret_exists {",
+    ):
         body = _func_body(self.text, fn_name)
         secret_exists_check = body.index("secret_exists")
         membership_index = body.index(membership_marker)
         # "secret_exists" must be *read* near the top (to compute the flag) but
-        # the actual short-circuit `if $secret_exists { ... return }` must come
-        # strictly after the membership repair call, not before it.
-        return_gate = body.index("if $secret_exists {")
+        # the actual preserve gate must come strictly after the membership
+        # repair call, not before it.
+        return_gate = body.index(return_gate_marker)
         self.assertLess(secret_exists_check, membership_index)
         self.assertLess(
             membership_index,
@@ -208,6 +213,7 @@ class GiteaIdentityResumeDriftRepairTest(SetupTextFixture):
             "configure_crossplane_gitea_credentials",
             "crossplane-gitea-credentials",
             "platform-provisioners",
+            "if $secret_exists and ($scope_contract_current == $scope_contract)",
         )
 
     def test_argocd_access_repairs_collaborator_before_returning(self):
@@ -222,6 +228,167 @@ class GiteaIdentityResumeDriftRepairTest(SetupTextFixture):
             "configure_backstage_gitea_publisher",
             "backstage-gitea-credentials",
             "collaborators/backstage-appclaim-publisher",
+        )
+
+
+class CrossplaneGiteaSecretStateBehaviourTest(unittest.TestCase):
+    ANNOTATION = "platform.digiorg.io/gitea-token-scopes"
+    CONTRACT = "write:organization,write:repository"
+
+    def _run(self, payload):
+        env = os.environ.copy()
+        env["SECRET_JSON"] = payload
+        return subprocess.run(
+            [
+                "nu",
+                "--no-config-file",
+                "-c",
+                f"source {SETUP}; parse_crossplane_gitea_secret_state "
+                "$env.SECRET_JSON 'platform.digiorg.io/gitea-token-scopes' | to json",
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=15,
+        )
+
+    def _secret(self, token=b"usable-token", annotation=True):
+        annotations = {self.ANNOTATION: self.CONTRACT} if annotation else {}
+        return json.dumps(
+            {
+                "metadata": {"annotations": annotations},
+                "data": {"token": base64.b64encode(token).decode()},
+            }
+        )
+
+    def test_valid_secret_returns_only_the_scope_contract(self):
+        result = self._run(self._secret())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), {"scope_contract_current": self.CONTRACT})
+        self.assertNotIn("usable-token", result.stdout + result.stderr)
+
+    def test_valid_unmarked_secret_is_classified_as_stale(self):
+        result = self._run(self._secret(annotation=False))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), {"scope_contract_current": ""})
+
+    def test_malformed_or_unusable_secret_fails_closed(self):
+        cases = {
+            "malformed-json": "{",
+            "missing-token": json.dumps({"metadata": {"annotations": {}}}),
+            "invalid-base64": json.dumps({"metadata": {"annotations": {}}, "data": {"token": "%%%"}}),
+            "empty-token": self._secret(token=b""),
+            "whitespace-token": self._secret(token=b"  \n"),
+        }
+        for name, payload in cases.items():
+            with self.subTest(name=name):
+                result = self._run(payload)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertNotIn("usable-token", result.stdout + result.stderr)
+
+
+class CrossplaneGiteaTeamContractBehaviourTest(unittest.TestCase):
+    EXACT = {
+        "name": "platform-provisioners",
+        "permission": "write",
+        "includes_all_repositories": False,
+        "can_create_org_repo": True,
+        "units": ["repo.code"],
+        "units_map": {"repo.code": "write"},
+    }
+
+    def _matches(self, team):
+        env = os.environ.copy()
+        env["TEAM_JSON"] = json.dumps(team)
+        result = subprocess.run(
+            [
+                "nu",
+                "--no-config-file",
+                "-c",
+                f"source {SETUP}; $env.TEAM_JSON | from json | "
+                "crossplane_gitea_team_is_exact | to json",
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=15,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_exact_team_is_accepted(self):
+        self.assertTrue(self._matches(self.EXACT))
+
+    def test_each_team_permission_drift_is_rejected(self):
+        drifts = {
+            "name": "other",
+            "permission": "admin",
+            "includes_all_repositories": True,
+            "can_create_org_repo": False,
+            "units": ["repo.code", "repo.issues"],
+            "units_map": {"repo.code": "admin"},
+        }
+        for field, value in drifts.items():
+            with self.subTest(field=field):
+                team = dict(self.EXACT)
+                team[field] = value
+                self.assertFalse(self._matches(team))
+
+    def test_reconciliation_uses_pinned_gitea_patch_contract_and_readback(self):
+        body = _func_body(_read(SETUP), "configure_crossplane_gitea_credentials")
+        self.assertIn("-X PATCH", body)
+        self.assertIn(
+            'let team_url = $"https://digiorg.local/gitea/api/v1/teams/($provisioners_team_id)"',
+            body,
+        )
+        self.assertIn("sh $team_url", body)
+        for fragment in (
+            '\\"permission\\":\\"write\\"',
+            '\\"includes_all_repositories\\":false',
+            '\\"can_create_org_repo\\":true',
+            '\\"units_map\\":{\\"repo.code\\":\\"write\\"}',
+        ):
+            self.assertIn(fragment, body)
+        self.assertIn("crossplane_gitea_team_is_exact", body)
+        self.assertIn("platform-provisioners Gitea team did not match", body)
+
+
+class CrossplaneProvisionerTokenScopeUpgradeTest(SetupTextFixture):
+    """Issue #301: org-repository creation needs both PAT scopes, and an
+    already persisted pre-fix token must rotate once rather than being trusted
+    forever merely because the Secret exists."""
+
+    def setUp(self):
+        self.body = _func_body(
+            self.text, "configure_crossplane_gitea_credentials"
+        )
+
+    def test_scope_contract_is_versioned_on_the_secret(self):
+        self.assertIn(
+            'let scope_contract = "write:organization,write:repository"',
+            self.body,
+        )
+        self.assertIn(
+            'let scope_annotation = "platform.digiorg.io/gitea-token-scopes"',
+            self.body,
+        )
+        self.assertIn("--annotation-key $scope_annotation", self.body)
+        self.assertIn("--annotation-value $scope_contract", self.body)
+
+    def test_resume_preserves_only_a_matching_scope_contract(self):
+        self.assertIn(
+            "if $secret_exists and ($scope_contract_current == $scope_contract)",
+            self.body,
+        )
+        preserve_gate = self.body.index(
+            "if $secret_exists and ($scope_contract_current == $scope_contract)"
+        )
+        self.assertIn("return", self.body[preserve_gate:preserve_gate + 400])
+
+    def test_team_repair_precedes_scope_preserve_or_rotation(self):
+        self.assertLess(
+            self.body.index("platform-provisioners"),
+            self.body.index("$scope_contract_current == $scope_contract"),
         )
 
 

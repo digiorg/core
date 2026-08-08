@@ -138,6 +138,7 @@ class SecretTransportTest(unittest.TestCase):
                 "    if os.path.exists(path):\n"
                 "        obj = json.load(open(path, encoding='utf-8'))\n"
                 "        obj.setdefault('data', {}).update(incoming.get('data', {}))\n"
+                "        obj.setdefault('metadata', {}).setdefault('annotations', {}).update(incoming.get('metadata', {}).get('annotations', {}))\n"
                 "    else:\n"
                 "        obj = incoming\n"
                 "    open(path, 'w', encoding='utf-8').write(json.dumps(obj))\n"
@@ -155,6 +156,7 @@ class SecretTransportTest(unittest.TestCase):
                 "    output = args[args.index('-o') + 1]\n"
                 "    if output == 'json':\n"
                 "        if scenario == 'readback_mismatch': obj['data'] = {k: 'd3Jvbmc=' for k in obj['data']}\n"
+                "        if scenario == 'annotation_mismatch': obj.setdefault('metadata', {}).setdefault('annotations', {})['platform.digiorg.io/gitea-token-scopes'] = 'wrong'\n"
                 "        print(json.dumps(obj), end='')\n"
                 "    elif output.startswith('jsonpath={.'):\n"
                 "        value = obj\n"
@@ -172,7 +174,9 @@ class SecretTransportTest(unittest.TestCase):
         os.chmod(fake, 0o755)
         return fake
 
-    def _run_opaque_secret_transport(self, scenario, initial=None, key="token"):
+    def _run_opaque_secret_transport(
+        self, scenario, initial=None, key="token", annotation=None
+    ):
         sentinel = "sentinel-opaque-secret-value-never-in-argv"
         with tempfile.TemporaryDirectory() as tmp:
             self._fake_kubectl_single_key(tmp, scenario)
@@ -187,9 +191,16 @@ class SecretTransportTest(unittest.TestCase):
             env["MANIFEST_LOG"] = manifest_log
             env["FAKE_SCENARIO"] = scenario
             env["TEST_VALUE"] = sentinel
+            annotation_flags = ""
+            if annotation is not None:
+                annotation_flags = (
+                    " --annotation-key platform.digiorg.io/gitea-token-scopes"
+                    f" --annotation-value {annotation}"
+                )
             result = subprocess.run(
                 ["nu", "-c", f"source {SETUP}; persist_opaque_secret crossplane-system "
-                              f"crossplane-gitea-credentials {key} $env.TEST_VALUE"],
+                              f"crossplane-gitea-credentials {key} $env.TEST_VALUE"
+                              f"{annotation_flags}"],
                 capture_output=True, text=True, env=env, timeout=15,
             )
             argv = _read(argv_log) if os.path.exists(argv_log) else ""
@@ -228,6 +239,29 @@ class SecretTransportTest(unittest.TestCase):
                 for index in range(len(args) - 1)
             )
         )
+
+    def test_opaque_secret_annotation_is_atomic_and_read_back(self):
+        contract = "write:organization,write:repository"
+        result, sentinel, argv, manifest = self._run_opaque_secret_transport(
+            "success", annotation=contract
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn(sentinel, argv)
+        self.assertNotIn(sentinel, result.stdout + result.stderr)
+        assert manifest is not None
+        self.assertEqual(
+            manifest["metadata"]["annotations"][
+                "platform.digiorg.io/gitea-token-scopes"
+            ],
+            contract,
+        )
+
+    def test_opaque_secret_annotation_mismatch_is_fatal(self):
+        result, _, _, _ = self._run_opaque_secret_transport(
+            "annotation_mismatch",
+            annotation="write:organization,write:repository",
+        )
+        self.assertNotEqual(result.returncode, 0)
 
     def test_opaque_secret_per_key_ssa_preserves_unrelated_keys_and_scrubs_annotation(self):
         initial = {
@@ -364,12 +398,15 @@ class LeastPrivilegeGiteaScopeTest(SetupTextFixture):
     """The two new Gitea identities must never carry the broad admin scope
     list used for the one-time platform bootstrap token."""
 
-    def test_crossplane_provisioner_token_is_write_repository_only(self):
+    def test_crossplane_provisioner_token_has_only_required_scopes(self):
         body = _func_body(self.text, "configure_crossplane_gitea_credentials")
-        self.assertIn("--scopes write:repository --raw", body)
+        self.assertIn(
+            "--scopes write:organization,write:repository --raw", body
+        )
         self.assertNotIn("write:admin", body)
         self.assertNotIn("write:user", body)
-        self.assertNotIn("write:organization", body)
+        self.assertNotIn("write:issue", body)
+        self.assertNotIn("write:package", body)
 
     def test_argocd_reader_token_is_read_repository_only(self):
         body = _func_body(self.text, "configure_argocd_gitea_access")
@@ -378,8 +415,11 @@ class LeastPrivilegeGiteaScopeTest(SetupTextFixture):
 
     def test_provisioner_team_is_restricted_to_repo_code_unit(self):
         body = _func_body(self.text, "configure_crossplane_gitea_credentials")
-        self.assertIn('\\"units\\":[\\"repo.code\\"]', body)
-        self.assertIn("can_create_org_repo", body)
+        self.assertIn(
+            '\\"units_map\\":{\\"repo.code\\":\\"write\\"}', body
+        )
+        self.assertIn('\\"includes_all_repositories\\":false', body)
+        self.assertIn('\\"can_create_org_repo\\":true', body)
 
     def test_argocd_reader_is_repo_collaborator_not_org_member(self):
         body = _func_body(self.text, "configure_argocd_gitea_access")
