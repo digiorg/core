@@ -23,6 +23,18 @@ configs:
     # Track resources via annotations instead of labels (avoids label conflicts)
     application.resourceTrackingMethod: annotation
 
+    # Issue #301: Crossplane copies the AppClaim tracking annotation to its
+    # cluster-scoped Application XR. Exclude only that controller-generated XR
+    # kind so it cannot become Argo drift or a prune target. The namespaced
+    # AppClaim remains tracked and pruneable, preserving declarative cleanup.
+    resource.exclusions: |
+      - apiGroups:
+          - platform.digiorg.io
+        kinds:
+          - Application
+        clusters:
+          - "*"
+
     # Reconciliation timeout
     timeout.reconciliation: 60s
 
