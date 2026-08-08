@@ -19,7 +19,9 @@ Backstage is configured with **Keycloak OIDC** for Single Sign-On:
 - **Client ID:** `backstage`
 - **Metadata URL:** `https://digiorg.local/keycloak/realms/digiorg-core-platform/.well-known/openid-configuration`
 
-> **Warning:** `NODE_TLS_REJECT_UNAUTHORIZED=0` is set in the deployment to allow Backstage to reach Keycloak over a self-signed certificate in the local KinD environment. Remove this variable in production.
+TLS verification remains enabled in local KinD. The public `digiorg.local` CA
+is mounted from the required `digiorg-local-ca` Secret and exposed to Node via
+`NODE_EXTRA_CA_CERTS`; no global TLS bypass is used.
 
 ## Access
 
@@ -37,11 +39,20 @@ Backstage requires a running PostgreSQL instance. The deployment connects to:
 - **Port:** `5432`
 - **Database user:** `backstage`
 
-An `initContainer` (`wait-for-postgres`, based on `busybox`) polls `postgresql.platform-db.svc.cluster.local:5432` before the main container starts. The Backstage pod will remain in `Init` state until PostgreSQL is reachable.
+An init container (`wait-for-postgres`, based on a digest-pinned `busybox`)
+polls `postgresql.platform-db.svc.cluster.local:5432` before the OIDC startup
+gate runs. The Backstage Pod remains in `Init` until PostgreSQL is reachable.
 
 ### Keycloak
 
-OIDC login requires Keycloak to be running and the `digiorg-core-platform` realm to exist with the `backstage` client configured.
+OIDC login requires Keycloak to be running and the `digiorg-core-platform`
+realm to exist with the `backstage` client configured. A second init container,
+`wait-for-oidc-discovery`, fetches the exact public discovery URL with the
+mounted CA and validates that the JSON issuer exactly matches the configured
+realm before the Backstage process can start. Requests and retries are bounded;
+if discovery is temporarily unavailable, kubelet retries the failed init
+container with backoff on the same Pod and startup continues automatically once
+the endpoint becomes valid.
 
 ## Secrets
 
@@ -74,10 +85,19 @@ Backstage takes a moment to start — the generous initial delays account for pl
 
 ### Pod stuck in Init state
 
-The `wait-for-postgres` initContainer is blocking. PostgreSQL is not reachable yet.
+First inspect which ordered init container is blocking:
 
-1. Check PostgreSQL is running: `kubectl get pods -n platform-db`
-2. Verify the service resolves: `kubectl run -it --rm debug --image=busybox --restart=Never -- nc -zv postgresql.platform-db.svc.cluster.local 5432`
+```bash
+kubectl get pods -n backstage -l app=backstage
+kubectl logs -n backstage -l app=backstage -c wait-for-postgres --tail=100
+kubectl logs -n backstage -l app=backstage -c wait-for-oidc-discovery --tail=100
+```
+
+- `wait-for-postgres`: check the PostgreSQL Pods in `platform-db` and the
+  `postgresql.platform-db.svc.cluster.local:5432` Service endpoint.
+- `wait-for-oidc-discovery`: check Keycloak readiness, the public ingress route,
+  and that `backstage/digiorg-local-ca` contains a non-empty `ca.crt` key. Do
+  not disable TLS verification.
 
 ### OIDC login fails
 
@@ -88,7 +108,9 @@ The `wait-for-postgres` initContainer is blocking. PostgreSQL is not reachable y
 
 ### Image pull error
 
-The deployment uses `ghcr.io/digiorg/core-portal:latest`. If the image cannot be pulled:
+The deployment uses digest-pinned Backstage and startup-gate images. If an
+image cannot be pulled:
 
-1. Verify the image exists in the registry: `docker pull ghcr.io/digiorg/core-portal:latest`
-2. Check that an image pull secret is configured if the registry is private
+1. Copy the exact image reference from `deployment.yaml` and verify that digest
+   exists in its registry.
+2. Check that an image pull secret is configured if the registry is private.
