@@ -7,10 +7,10 @@
 ``c74fe7c``/``b77e94a``) were added. Pinning it explained why the deployed UI
 looked unstyled/uncustomized.
 
-``341aa6e0852f9ef327bae8a0e1141ac6816dcafe`` is core-portal PR #11's
+``5fc1357107dd888c1fddab0cff31b51291ffcef9`` is core-portal PR #12's
 reviewed Issue #301 product commit. Merge commit
-``321f549ea002360ec82ff70ef4759505be1c0676`` was built and published by
-push run 31259230204 as SHA tag ``321f549``.
+``a21f3e787250c9199e7a4ab7e9495fe1a1f424ac`` was built and published by
+push run 31272571743 as SHA tag ``a21f3e7``.
 On 2026-08-08, the anonymous GHCR OCI header and raw manifest sha256
 independently resolved to the digest below. The OCI index includes linux/amd64
 and linux/arm64 images plus unknown/unknown attestations.
@@ -30,16 +30,16 @@ DEPLOYMENT = os.path.join(REPO_ROOT, "platform", "base", "backstage", "deploymen
 VERSIONS_DOC = os.path.join(REPO_ROOT, "docs", "guides", "platform-versions.md")
 
 # Independently resolved from the anonymous GHCR OCI header and raw manifest
-# on 2026-08-08, and cross-checked against core-portal PR #11's reviewed
+# on 2026-08-08, and cross-checked against core-portal PR #12's reviewed
 # product commit, authoritative merge commit, and exact-head publish run.
 EXPECTED_IMAGE = (
-    "ghcr.io/digiorg/core-portal:321f549"
-    "@sha256:9838a2a610946705ecb488018c8188b7f9432b9cdf4f03588b4c34697e9a01f3"
+    "ghcr.io/digiorg/core-portal:a21f3e7"
+    "@sha256:57312d346e27e87d72d17ebcf478827bb24d1c0a45ce9a49f5aa63fddcbb5593"
 )
 INITIAL_SCAFFOLD_COMMIT = "48d262e"
-PRODUCT_COMMIT = "341aa6e0852f9ef327bae8a0e1141ac6816dcafe"
-MERGE_COMMIT = "321f549ea002360ec82ff70ef4759505be1c0676"
-PUBLISH_RUN = "31259230204"
+PRODUCT_COMMIT = "5fc1357107dd888c1fddab0cff31b51291ffcef9"
+MERGE_COMMIT = "a21f3e787250c9199e7a4ab7e9495fe1a1f424ac"
+PUBLISH_RUN = "31272571743"
 
 
 def _backstage_container():
@@ -72,7 +72,7 @@ class BackstageImageProvenanceTest(unittest.TestCase):
         for provenance in (
             EXPECTED_IMAGE,
             "Issue #301",
-            "PR #11",
+            "PR #12",
             PRODUCT_COMMIT,
             MERGE_COMMIT,
             PUBLISH_RUN,
