@@ -7,11 +7,11 @@
 ``c74fe7c``/``b77e94a``) were added. Pinning it explained why the deployed UI
 looked unstyled/uncustomized.
 
-``9e58baed46482361cfc5038f96611ea8c09097d2`` is core-portal PR #10's
-reviewed Issue #290 commit. PR CI run 30529314569 passed that exact SHA, and
-workflow_dispatch publish run 30529864513 successfully published SHA tag
-``9e58bae``.
-On 2026-07-30, the anonymous GHCR OCI header digest and raw manifest sha256
+``341aa6e0852f9ef327bae8a0e1141ac6816dcafe`` is core-portal PR #11's
+reviewed Issue #301 product commit. Merge commit
+``321f549ea002360ec82ff70ef4759505be1c0676`` was built and published by
+push run 31259230204 as SHA tag ``321f549``.
+On 2026-08-08, the anonymous GHCR OCI header and raw manifest sha256
 independently resolved to the digest below. The OCI index includes linux/amd64
 and linux/arm64 images plus unknown/unknown attestations.
 
@@ -30,14 +30,16 @@ DEPLOYMENT = os.path.join(REPO_ROOT, "platform", "base", "backstage", "deploymen
 VERSIONS_DOC = os.path.join(REPO_ROOT, "docs", "guides", "platform-versions.md")
 
 # Independently resolved from the anonymous GHCR OCI header and raw manifest
-# on 2026-07-30, and cross-checked against core-portal PR #10's exact reviewed
-# commit, PR CI run 30529314569, and publish run 30529864513.
+# on 2026-08-08, and cross-checked against core-portal PR #11's reviewed
+# product commit, authoritative merge commit, and exact-head publish run.
 EXPECTED_IMAGE = (
-    "ghcr.io/digiorg/core-portal:9e58bae"
-    "@sha256:d5d55426bbb4bc6ca9e9f14fe2ec38656801a31d017810b6ab0bcdbfb53b58cb"
+    "ghcr.io/digiorg/core-portal:321f549"
+    "@sha256:9838a2a610946705ecb488018c8188b7f9432b9cdf4f03588b4c34697e9a01f3"
 )
 INITIAL_SCAFFOLD_COMMIT = "48d262e"
-REVIEWED_COMMIT = "9e58baed46482361cfc5038f96611ea8c09097d2"
+PRODUCT_COMMIT = "341aa6e0852f9ef327bae8a0e1141ac6816dcafe"
+MERGE_COMMIT = "321f549ea002360ec82ff70ef4759505be1c0676"
+PUBLISH_RUN = "31259230204"
 
 
 def _backstage_container():
@@ -69,12 +71,12 @@ class BackstageImageProvenanceTest(unittest.TestCase):
         self.assertNotIn("core-portal` | 48d262e", doc)
         for provenance in (
             EXPECTED_IMAGE,
-            "Issue #290",
-            "PR #10",
-            REVIEWED_COMMIT,
-            "30529314569",
-            "30529864513",
-            "2026-07-30",
+            "Issue #301",
+            "PR #11",
+            PRODUCT_COMMIT,
+            MERGE_COMMIT,
+            PUBLISH_RUN,
+            "2026-08-08",
         ):
             self.assertIn(provenance, doc)
 

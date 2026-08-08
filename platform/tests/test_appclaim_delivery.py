@@ -52,8 +52,8 @@ KYVERNO_BLOCK_POLICY = os.path.join(
 )
 CHECK_PINS = os.path.join(REPO_ROOT, "scripts", "check_pins.py")
 # Sibling multi-repo checkout convention (see docs/guides/local-development.md);
-# core-portal is out of scope to edit for this issue, but its already-independently-
-# tested publishPhase.git config is the authoritative contract this repo must match.
+# core-portal's independently tested XRD claim namespace and publish target are
+# the authoritative producer contracts this consumer repo must match.
 CORE_PORTAL_APP_CONFIG = os.path.abspath(
     os.path.join(REPO_ROOT, "..", "core-portal", "app-config.yaml")
 )
@@ -624,9 +624,9 @@ class GitOpsRepoURLTest(unittest.TestCase):
 
 class CrossRepoPublishPathContractTest(unittest.TestCase):
     """Static, read-only cross-repo contract check against core-portal's own
-    publishPhase.git config. core-portal is out of scope to edit for this
-    issue; this only reads it. Skips cleanly when core-portal is not checked
-    out at the conventional sibling path (e.g. a CI checkout of core alone)."""
+    XRD and publish configuration. This only reads the sibling repository and
+    skips cleanly when core-portal is not checked out at the conventional path
+    (e.g. a CI checkout of core alone)."""
 
     @classmethod
     def setUpClass(cls):
@@ -637,7 +637,8 @@ class CrossRepoPublishPathContractTest(unittest.TestCase):
             )
         with open(CORE_PORTAL_APP_CONFIG, encoding="utf-8") as fh:
             portal_config = yaml.safe_load(fh)
-        cls.publish_git = portal_config["kubernetesIngestor"]["crossplane"]["xrds"]["publishPhase"]["git"]
+        cls.portal_xrds = portal_config["kubernetesIngestor"]["crossplane"]["xrds"]
+        cls.publish_git = cls.portal_xrds["publishPhase"]["git"]
 
     def _parse_gitea_ingestor_repo_url(self, repo_url):
         # kubernetesIngestor's Gitea repoUrl shape: "<host>?owner=<org>&repo=<repo>"
@@ -657,6 +658,13 @@ class CrossRepoPublishPathContractTest(unittest.TestCase):
         app = _app("app-config")
         host, owner, repo = self._parse_gitea_ingestor_repo_url(self.publish_git["repoUrl"])
         self.assertEqual(f"https://{host}/gitea/{owner}/{repo}.git", app["spec"]["source"]["repoURL"])
+
+    def test_claim_namespace_matches_the_app_config_destination_namespace(self):
+        app = _app("app-config")
+        self.assertEqual(
+            self.portal_xrds["claimNamespace"],
+            app["spec"]["destination"]["namespace"],
+        )
 
 
 class ControlFlowOrderingTest(SetupTextFixture):
