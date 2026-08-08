@@ -83,7 +83,7 @@ Third-party images record a human-readable tag **plus** an immutable digest:
 | `docker.gitea.com/gitea` | 1.26.1 | Gitea chart primary/init image |
 | `sonarqube` | 26.5.0.122743-community | SonarQube Community Build |
 | `ghcr.io/kyverno/readiness-checker` | v1.18.1 | Kyverno chart test/cleanup hooks |
-| `ghcr.io/digiorg/core-portal` | `ghcr.io/digiorg/core-portal:321f549@sha256:9838a2a610946705ecb488018c8188b7f9432b9cdf4f03588b4c34697e9a01f3` | Backstage — Issue #301, reviewed core-portal PR #11 product commit `341aa6e0852f9ef327bae8a0e1141ac6816dcafe`; authoritative merge commit `321f549ea002360ec82ff70ef4759505be1c0676` published by exact-head push run 31259230204; anonymous GHCR OCI header digest and raw manifest sha256 independently verified 2026-08-08 |
+| `ghcr.io/digiorg/core-portal` | `ghcr.io/digiorg/core-portal:a21f3e7@sha256:57312d346e27e87d72d17ebcf478827bb24d1c0a45ce9a49f5aa63fddcbb5593` | Backstage — Issue #301, reviewed core-portal PR #12 product commit `5fc1357107dd888c1fddab0cff31b51291ffcef9`; authoritative merge commit `a21f3e787250c9199e7a4ab7e9495fe1a1f424ac` published by exact-head push run 31272571743; anonymous GHCR OCI header digest and raw manifest sha256 independently verified 2026-08-08 |
 | `ghcr.io/digiorg/core-landingpage` | 32a6777 | Landing page (release tag + digest, was `main`) |
 
 ### Tier-1 DigiOrg-built images (allow-listed, kind-loaded)
