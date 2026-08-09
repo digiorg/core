@@ -17,26 +17,30 @@
 #   - {kind: system,  namespace: "/", access: [{resource: project, action: create}]}
 #     grants ONLY the ability to create new Harbor projects; no delete, no
 #     user/registry/system configuration, no scanning administration.
-#   - {kind: project, namespace: "*", access: [{resource: robot, action: create|read}, {resource: artifact, action: read}]}
-#     grants creating/reading project-scoped robot accounts, and reading
-#     artifact metadata (digest/tags), across ALL projects (namespace: "*" is
-#     required because, at the moment this system robot creates a new
-#     per-app robot or checks a freshly-pushed artifact, that project's own
-#     robots cannot yet be relied on — a namespace-scoped grant naming one
-#     project cannot work here). Issue #285 (automatic image promotion):
+#   - {kind: project, namespace: "*", access: [{resource: robot, action: create|read}, {resource: artifact, action: read}, {resource: repository, action: push|pull}]}
+#     grants creating/reading project-scoped robot accounts, reading artifact
+#     metadata, and only the two repository actions that Harbor v2.15.1
+#     requires a creator robot to possess before it may delegate the same
+#     push/pull actions to a per-app CI robot. The permission-subset check is
+#     enforced by src/server/v2.0/handler/robot.go isValidPermissionScope.
+#     These project permissions apply across projects because, at the moment
+#     this system robot creates a new per-app robot or checks a freshly-pushed
+#     artifact, that project's own robots cannot yet be relied on — a
+#     namespace-scoped grant naming one project cannot work here. Issue #285
+#     (automatic image promotion):
 #     `artifact: read` is the exact permission goharbor/harbor v2.15.1
 #     src/server/v2.0/handler/artifact.go GetArtifact requires
 #     (`RequireProjectAccess(ctx, project, rbac.ActionRead,
 #     rbac.ResourceArtifact)`) — this is what lets the AppClaim pipeline
 #     Composition's per-service Harbor artifact Request confirm a
 #     CI-pushed, commit-SHA-tagged image exists (and read its digest) before
-#     promoting it into a Deployment. Deliberately NOT `repository: pull`
-#     (the docker-pull scope): that permission is reserved for the separate,
-#     narrower per-app pull-only robot used solely for the Deployment's
-#     imagePullSecrets, never for the control plane's own API reads.
-# This is strictly narrower than the Harbor admin credential: it cannot
-# delete anything, cannot manage users/registries/replication/GC, and cannot
-# push/pull images itself.
+#     promoting it into a Deployment. The control-plane robot holds repository
+#     push/pull solely because Harbor requires those actions at delegation time;
+#     ordinary image operations use the separate per-app robot credential
+#     injected by the Composition.
+# This remains strictly narrower than the Harbor admin credential: it cannot
+# delete/update repositories or artifacts, cannot manage users, registries,
+# replication, GC, or system configuration.
 apiVersion: http.crossplane.io/v1alpha2
 kind: Request
 metadata:
@@ -97,7 +101,9 @@ spec:
               "access": [
                 {"resource": "robot", "action": "create"},
                 {"resource": "robot", "action": "read"},
-                {"resource": "artifact", "action": "read"}
+                {"resource": "artifact", "action": "read"},
+                {"resource": "repository", "action": "push"},
+                {"resource": "repository", "action": "pull"}
               ]
             }
           ]
@@ -150,6 +156,71 @@ spec:
       - method: "GET"
         action: OBSERVE
         url: .payload.baseUrl + "/robots?q=Name=crossplane-system"
+      # Issue #301: Harbor v2.15.1 requires a creator robot to possess every
+      # permission it delegates. Existing clusters therefore need a real
+      # permission UPDATE, not another CREATE (which would violate Harbor's
+      # unique robot identity). Harbor's robot update is PUT /robots/{id}; it
+      # leaves the credential unchanged. provider-http v1.0.14 retains a
+      # top-level JSON array response as a string, so both expressions normalize
+      # it explicitly. provider-http also retries invalid generated details with
+      # status.cache.response; every uncertain current response therefore renders
+      # a valid non-numeric sentinel URL plus empty body. That prevents cache
+      # fallback while Harbor rejects the request before any robot mutation.
+      - method: "PUT"
+        action: UPDATE
+        url: |-
+          def normalizedBody:
+            if (.response.body | type) == "string"
+            then try (.response.body | fromjson) catch null
+            else .response.body
+            end;
+          normalizedBody as $body |
+          (try (.payload.body | fromjson) catch null) as $desired |
+          if (.response.statusCode==200)
+             and (($body|type)=="array") and (($body|length)==1)
+             and (($body[0]|type)=="object")
+             and (($body[0].id|type)=="number")
+             and (($body[0].name|type)=="string")
+             and ($body[0].name | test("^[^$]+\\$crossplane-system$"))
+             and ($body[0].level=="system")
+             and (($body[0].description|type)=="string")
+             and (($body[0].duration|type)=="number")
+             and (($body[0].disable|type)=="boolean")
+             and (($desired|type)=="object")
+             and (($desired.permissions|type)=="array")
+          then .payload.baseUrl + "/robots/" + ($body[0].id | tostring)
+          else .payload.baseUrl + "/robots/provider-http-refused-noncanonical-observe"
+          end
+        body: |-
+          def normalizedBody:
+            if (.response.body | type) == "string"
+            then try (.response.body | fromjson) catch null
+            else .response.body
+            end;
+          normalizedBody as $body |
+          (try (.payload.body | fromjson) catch null) as $desired |
+          if (.response.statusCode==200)
+             and (($body|type)=="array") and (($body|length)==1)
+             and (($body[0]|type)=="object")
+             and (($body[0].id|type)=="number")
+             and (($body[0].name|type)=="string")
+             and ($body[0].name | test("^[^$]+\\$crossplane-system$"))
+             and ($body[0].level=="system")
+             and (($body[0].description|type)=="string")
+             and (($body[0].duration|type)=="number")
+             and (($body[0].disable|type)=="boolean")
+             and (($desired|type)=="object")
+             and (($desired.permissions|type)=="array")
+          then {
+            name: $body[0].name,
+            description: $body[0].description,
+            duration: $body[0].duration,
+            level: $body[0].level,
+            disable: $body[0].disable,
+            permissions: $desired.permissions
+          }
+          else {}
+          end
     # Runtime blocker (crash-safe identity), continued: rather than trusting
     # a bare 2xx status (the DEFAULT check), these CUSTOM checks verify the
     # LIST response actually contains an item with this robot's exact
@@ -169,11 +240,22 @@ spec:
     # in `cli/test.yaml` ("fromjson function"). Both paths are exercised in
     # core/platform/tests/test_harbor_bootstrap_crash_safety.py. A
     # mismatched/uncertain response (wrong permissions, empty list, non-200)
-    # is reported as both "not synced" and "not removed" -- it must never be
-    # silently trusted as up to date, but must also never be misreported as
-    # removed (that would re-trigger CREATE against a name Harbor's own
-    # `unique_robot UNIQUE(name, project_id)` constraint, confirmed via
+    # is reported as both "not synced" and "not removed" once provider-http
+    # has an observed object/status -- it must never be silently trusted as up
+    # to date, but must also never be misreported as removed (that would
+    # re-trigger CREATE against a name Harbor's own `unique_robot
+    # UNIQUE(name, project_id)` constraint, confirmed via
     # make/migrations/postgresql/0004_1.8.0_schema.up.sql, already holds).
+    #
+    # provider-http v1.0.14 initial-state boundary: while Request status is
+    # empty, IsUpToDate converts any non-2xx initial OBSERVE to ObjectNotFound
+    # before either CUSTOM check runs, so Crossplane invokes CREATE. This
+    # provider behavior cannot be changed by a response-check expression. It
+    # remains mutation-safe here: if the canonical robot already exists,
+    # Harbor's unique constraint rejects the duplicate without replacing the
+    # robot or its secret; if it is genuinely absent, CREATE applies exactly
+    # the least-privilege payload declared above. The UPDATE sentinel protects
+    # the separate existing-status/cache path.
     isRemovedCheck:
       type: CUSTOM
       # Issue #285 final blocker (round-4 review): now that the OBSERVE
@@ -244,8 +326,9 @@ spec:
           and r.level == "system"
           and hasArrayOfObjects(r.permissions // [])
           and (r.permissions // [] | length) == 2
+          and ([r.permissions[]? | (.access // [])[]? | select((.effect // "") != "")] | length) == 0
           and ([r.permissions[] | select(hasArrayOfObjects(.access // []) and .kind=="system" and .namespace=="/" and ((.access // []) | length) == 1 and ((.access // []) | any(.resource=="project" and .action=="create")))] | length) == 1
-          and ([r.permissions[] | select(hasArrayOfObjects(.access // []) and .kind=="project" and .namespace=="*" and ((.access // []) | length) == 3 and ((.access // []) | any(.resource=="robot" and .action=="create")) and ((.access // []) | any(.resource=="robot" and .action=="read")) and ((.access // []) | any(.resource=="artifact" and .action=="read")))] | length) == 1;
+          and ([r.permissions[] | select(hasArrayOfObjects(.access // []) and .kind=="project" and .namespace=="*" and ((.access // []) | length) == 5 and ((.access // []) | any(.resource=="robot" and .action=="create")) and ((.access // []) | any(.resource=="robot" and .action=="read")) and ((.access // []) | any(.resource=="artifact" and .action=="read")) and ((.access // []) | any(.resource=="repository" and .action=="push")) and ((.access // []) | any(.resource=="repository" and .action=="pull")))] | length) == 1;
         normalizedBody as $body |
         (.response.statusCode == 200) and (($body|type)=="array") and (($body|length) == 1) and (isCrossplaneSystemRobot($body[0]))
     secretInjectionConfigs:
