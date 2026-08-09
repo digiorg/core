@@ -16,8 +16,10 @@ same issue that the catalog cannot prove on its own, because it depends on
     `persist_gitea_bootstrap_token` (test_bootstrap_convergence.py already
     locks that one);
   * the declarative Harbor system-robot bootstrap Request only ever grants
-    `project:create` (system-wide) and `robot:create`/`robot:read`
-    (project-wildcard) -- never delete/user/registry/admin permissions;
+    `project:create` (system-wide), `robot:create`/`robot:read`,
+    `artifact:read`, and the exact `repository:push`/`repository:pull` actions
+    Harbor requires the creator to hold before delegating them to a per-app
+    robot -- never delete/user/registry/admin permissions;
   * the app-config GitOps sink Application, its dedicated read-only Gitea
     credential, and the `app-claims` namespace are wired together
     consistently.
@@ -458,7 +460,7 @@ class HarborBootstrapLeastPrivilegeTest(unittest.TestCase):
     def test_is_a_system_level_robot(self):
         self.assertEqual(self.body["level"], "system")
 
-    def test_permissions_are_exactly_project_create_and_robot_create_read(self):
+    def test_permissions_are_exactly_required_bootstrap_and_delegation_actions(self):
         seen = set()
         for perm in self.body["permissions"]:
             for access in perm["access"]:
@@ -470,6 +472,8 @@ class HarborBootstrapLeastPrivilegeTest(unittest.TestCase):
                 ("project", "*", "robot", "create"),
                 ("project", "*", "robot", "read"),
                 ("project", "*", "artifact", "read"),
+                ("project", "*", "repository", "push"),
+                ("project", "*", "repository", "pull"),
             },
         )
 

@@ -241,7 +241,9 @@ class RobotSelectionBehaviourTest(unittest.TestCase):
             {"kind": "project", "namespace": "*",
              "access": [{"resource": "robot", "action": "create"},
                         {"resource": "robot", "action": "read"},
-                        {"resource": "artifact", "action": "read"}]},
+                        {"resource": "artifact", "action": "read"},
+                        {"resource": "repository", "action": "push"},
+                        {"resource": "repository", "action": "pull"}]},
         ]
 
     def robot(self, **over):
@@ -272,7 +274,9 @@ class RobotSelectionBehaviourTest(unittest.TestCase):
             "level": "system",
             "permissions": [
                 {"namespace": "*", "kind": "project",
-                 "access": [{"action": "read", "resource": "artifact", "effect": "allow"},
+                 "access": [{"action": "pull", "resource": "repository"},
+                            {"action": "read", "resource": "artifact"},
+                            {"action": "push", "resource": "repository"},
                             {"action": "create", "resource": "robot"},
                             {"action": "read", "resource": "robot"}]},
                 {"kind": "system", "namespace": "/",
@@ -321,6 +325,16 @@ class RobotSelectionBehaviourTest(unittest.TestCase):
         perms[1]["access"].pop()
         self.assertEqual(self.select([self.robot(permissions=perms)])["reason"],
                          "permission-drift")
+
+    def test_nonempty_effect_is_permission_drift(self):
+        for effect in ("allow", "deny", "unexpected"):
+            with self.subTest(effect=effect):
+                perms = self.canonical_permissions()
+                perms[1]["access"][3]["effect"] = effect
+                self.assertEqual(
+                    self.select([self.robot(permissions=perms)])["reason"],
+                    "permission-drift",
+                )
 
     def test_wrong_namespace_is_permission_drift(self):
         perms = self.canonical_permissions()
@@ -3542,10 +3556,10 @@ class HealthyResumeStabilityTest(unittest.TestCase):
         self.assertIn("is-empty", preceding)
 
 
-class DeclarativeRequestUnchangedTest(unittest.TestCase):
-    """Scope guard: the Request keeps its verified least-privilege contract."""
+class DeclarativeRequestUpgradeBoundaryTest(unittest.TestCase):
+    """The Request preserves credentials while permissions converge in place."""
 
-    def test_secret_injection_and_permissions_are_untouched(self):
+    def test_secret_injection_and_permission_upgrade_boundary(self):
         forp = REQUEST["spec"]["forProvider"]
         injection = forp["secretInjectionConfigs"][0]
         self.assertEqual(injection["secretRef"],
@@ -3553,9 +3567,12 @@ class DeclarativeRequestUnchangedTest(unittest.TestCase):
         self.assertEqual(
             {m["secretKey"] for m in injection["keyMappings"]}, set(REQUIRED_KEYS)
         )
+        self.assertTrue(all(m["missingFieldStrategy"] == "preserve"
+                            for m in injection["keyMappings"]))
         methods = {(m["method"], m.get("action")) for m in forp["mappings"]}
-        self.assertEqual(methods, {("POST", "CREATE"), ("GET", "OBSERVE")},
-                         "recovery lives in the bootstrap boundary, not in new mappings")
+        self.assertEqual(methods, {
+            ("POST", "CREATE"), ("GET", "OBSERVE"), ("PUT", "UPDATE")
+        })
         self.assertEqual(REQUEST["spec"]["deletionPolicy"], "Orphan")
 
 

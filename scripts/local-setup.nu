@@ -2115,7 +2115,7 @@ roleRef:
 # handed to the platform. Kept byte-identical to that manifest's payload by
 # platform/tests/test_harbor_bootstrap_credential_recovery.py.
 def harbor_robot_expected_permissions [] {
-    r#'[{"kind":"system","namespace":"/","access":[{"resource":"project","action":"create"}]},{"kind":"project","namespace":"*","access":[{"resource":"robot","action":"create"},{"resource":"robot","action":"read"},{"resource":"artifact","action":"read"}]}]'#
+    r#'[{"kind":"system","namespace":"/","access":[{"resource":"project","action":"create"}]},{"kind":"project","namespace":"*","access":[{"resource":"robot","action":"create"},{"resource":"robot","action":"read"},{"resource":"artifact","action":"read"},{"resource":"repository","action":"push"},{"resource":"repository","action":"pull"}]}]'#
 }
 
 # Structural jq selection of the bootstrap robot from an accumulated (all
@@ -2127,9 +2127,10 @@ def harbor_robot_expected_permissions [] {
 #    adds it to responses). A response must contain a nonempty prefix followed
 #    by `$` (`^[^$]+\$`) before that prefix is stripped and the remainder
 #    compared exactly. Decoys and unprefixed responses therefore fail closed.
-#  * the complete permission set is compared exactly (order-insensitively, and
-#    ignoring Harbor's optional `effect`), so any extra or missing
-#    resource/action fails closed as permission drift.
+#  * the complete permission set is compared exactly (order-insensitively,
+#    including Harbor's effect-sensitive subset key; an omitted effect
+#    normalizes only to the empty string), so any extra, missing or nonempty
+#    effect fails closed as permission drift.
 #  * anything ambiguous, absent, mistyped or drifted returns a reason instead
 #    of an id, and never any credential material.
 def harbor_robot_selector_jq [] {
@@ -2139,7 +2140,7 @@ def hasArrayOfObjects: (type == "array") and (all(type == "object"));
 def normperms:
   if (hasArrayOfObjects | not) then null else
     [ .[] | if ((.access) | hasArrayOfObjects | not) then null
-            else {kind: .kind, namespace: .namespace, access: ([ .access[] | {resource: .resource, action: .action} ] | sort)}
+            else {kind: .kind, namespace: .namespace, access: ([ .access[] | {resource: .resource, action: .action, effect: (.effect // "")} ] | sort)}
             end ] | sort
   end;
 [ .[] | select((.level == "system") and hasprefix and (canonical == $name)) ] as $matches
