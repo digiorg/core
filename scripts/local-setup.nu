@@ -4370,8 +4370,10 @@ def parse_crossplane_gitea_secret_state [raw: string, scope_annotation: string] 
 }
 
 # Gitea v1.26.1 PATCH /teams/{id} returns both deprecated units and units_map.
-# Require both representations to prove the team is exactly code-write plus
-# org-repository creation, never all-repository/admin or extra-unit access.
+# Keep the legacy/base team permission at none: the granular TeamUnit contract
+# alone grants repo.code write, while can_create_org_repo is the separate
+# organization-repository creation capability. Require both unit
+# representations to reject all-repository/admin or extra-unit access.
 def crossplane_gitea_team_is_exact [] {
     let team = $in
     try {
@@ -4379,7 +4381,7 @@ def crossplane_gitea_team_is_exact [] {
         let unit_keys = ($team.units_map | columns | sort)
         [
             ($team.name == "platform-provisioners")
-            ($team.permission == "write")
+            ($team.permission == "none")
             ($team.includes_all_repositories == false)
             ($team.can_create_org_repo == true)
             ($units == ["repo.code"])
@@ -4435,7 +4437,7 @@ def configure_crossplane_gitea_credentials [gitea_pod: string, gitea_token: stri
     let provisioners_team = ($teams_result.stdout | from json | where name == "platform-provisioners")
     let provisioners_team_id = if ($provisioners_team | is-empty) {
         let team_create = (do {
-            $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /etc/gitea/trusted-cas/digiorg-local-ca.crt -fsS -X POST -H "Content-Type: application/json" --data "{\"name\":\"platform-provisioners\",\"description\":\"Least-privilege team: create+push app source repositories only (Issue #285)\",\"permission\":\"write\",\"includes_all_repositories\":false,\"can_create_org_repo\":true,\"units_map\":{\"repo.code\":\"write\"}}" https://digiorg.local/gitea/api/v1/orgs/DigiOrg/teams'
+            $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /etc/gitea/trusted-cas/digiorg-local-ca.crt -fsS -X POST -H "Content-Type: application/json" --data "{\"name\":\"platform-provisioners\",\"description\":\"Least-privilege team: create+push app source repositories only (Issue #285)\",\"permission\":\"none\",\"includes_all_repositories\":false,\"can_create_org_repo\":true,\"units_map\":{\"repo.code\":\"write\"}}" https://digiorg.local/gitea/api/v1/orgs/DigiOrg/teams'
         } | complete)
         if $team_create.exit_code != 0 {
             error make {msg: "Failed to create the platform-provisioners Gitea team"}
@@ -4450,7 +4452,7 @@ def configure_crossplane_gitea_credentials [gitea_pod: string, gitea_token: stri
     # Team representation, which is checked before membership/token handling.
     let team_url = $"https://digiorg.local/gitea/api/v1/teams/($provisioners_team_id)"
     let team_reconcile = (do {
-        $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /etc/gitea/trusted-cas/digiorg-local-ca.crt -fsS -X PATCH -H "Content-Type: application/json" --data "{\"name\":\"platform-provisioners\",\"description\":\"Least-privilege team: create+push app source repositories only (Issue #285)\",\"permission\":\"write\",\"includes_all_repositories\":false,\"can_create_org_repo\":true,\"units_map\":{\"repo.code\":\"write\"}}" "$1"' sh $team_url
+        $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /etc/gitea/trusted-cas/digiorg-local-ca.crt -fsS -X PATCH -H "Content-Type: application/json" --data "{\"name\":\"platform-provisioners\",\"description\":\"Least-privilege team: create+push app source repositories only (Issue #285)\",\"permission\":\"none\",\"includes_all_repositories\":false,\"can_create_org_repo\":true,\"units_map\":{\"repo.code\":\"write\"}}" "$1"' sh $team_url
     } | complete)
     if $team_reconcile.exit_code != 0 {
         error make {msg: "Failed to reconcile the platform-provisioners Gitea team"}
