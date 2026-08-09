@@ -42,8 +42,10 @@ green. The failure only surfaced ~15 minutes later as an unrelated gated-sync
 timeout on the *next* Application.
 
 The contracts below lock the correction: a fail-closed, in-cluster credential
-gate that inspects key presence/non-emptiness without ever reading a value,
-and a crash/resume-safe recovery that refreshes the existing robot's secret
+gate that inspects key presence/non-emptiness and validates the derived
+``basicAuth`` byte relation only inside a tokenless read-only pod, without ever
+printing a value, and a crash/resume-safe recovery that refreshes the existing
+robot's secret
 (Harbor ``PATCH /robots/{robot_id}`` -> ``RefreshSec``) instead of minting a
 second robot -- and that never runs at all when the credential is healthy.
 
@@ -52,7 +54,9 @@ Run:
         -p 'test_harbor_bootstrap_credential_recovery.py'
 """
 from pathlib import Path
+import base64
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -170,37 +174,59 @@ class ProbeOutputParserBehaviourTest(unittest.TestCase):
 
     def test_all_keys_present_parses_to_all_true(self):
         self.assertEqual(
-            self.parse("name=true\nsecret=true\nbasicAuth=true"),
-            {"name": True, "secret": True, "basicAuth": True},
+            self.parse("name=true\nsecret=true\nbasicAuth=true\nbasicAuthValid=true"),
+            {"name": True, "secret": True, "basicAuth": True, "basicAuthValid": True},
         )
 
     def test_realistic_partial_report_parses_each_key_independently(self):
         self.assertEqual(
-            self.parse("name=true\nsecret=true\nbasicAuth=false"),
-            {"name": True, "secret": True, "basicAuth": False},
+            self.parse("name=true\nsecret=true\nbasicAuth=false\nbasicAuthValid=false"),
+            {"name": True, "secret": True, "basicAuth": False, "basicAuthValid": False},
         )
 
     def test_empty_secret_shell_reports_every_key_false(self):
         self.assertEqual(
-            self.parse("name=false\nsecret=false\nbasicAuth=false"),
-            {"name": False, "secret": False, "basicAuth": False},
+            self.parse("name=false\nsecret=false\nbasicAuth=false\nbasicAuthValid=false"),
+            {"name": False, "secret": False, "basicAuth": False, "basicAuthValid": False},
         )
 
     def test_missing_and_unknown_lines_fail_closed_to_false(self):
-        # Truncated output, interleaved noise and unrelated keys must never be
-        # read as "present" -- the gate has to stay fail-closed.
+        # Truncated output, interleaved noise and unrelated keys invalidate the
+        # entire report; no partial true value may survive.
         self.assertEqual(
             self.parse("name=true\nsomethingElse=true\n\nnot-a-pair"),
-            {"name": True, "secret": False, "basicAuth": False},
+            {"name": False, "secret": False, "basicAuth": False, "basicAuthValid": False},
         )
+
+    def test_duplicate_or_noisy_complete_reports_fail_closed_entirely(self):
+        all_false = {"name": False, "secret": False, "basicAuth": False, "basicAuthValid": False}
+        reports = (
+            "name=true\nsecret=true\nbasicAuth=true\nbasicAuthValid=false\nbasicAuthValid=true",
+            "name=true\nsecret=true\nbasicAuth=true\nbasicAuthValid=true\nnoise",
+            "name=true\nsecret=true\nbasicAuth=true\nbasicAuthValid=TRUE",
+            "name =true\nsecret=true\nbasicAuth=true\nbasicAuthValid=true",
+            "name=true\nsecret=true\nbasicAuth=true\nbasicAuthValid=true ",
+            " name=true\nsecret=true\nbasicAuth=true\nbasicAuthValid=true",
+        )
+        for report in reports:
+            with self.subTest(report=report):
+                self.assertEqual(self.parse(report), all_false)
 
     def test_missing_keys_helper_agrees_with_parsed_report(self):
         result = run_nu(
-            'parse_harbor_credential_probe_output "name=true\\nsecret=false\\nbasicAuth=true"'
+            'parse_harbor_credential_probe_output "name=true\\nsecret=false\\nbasicAuth=true\\nbasicAuthValid=true"'
             " | harbor_credential_missing_keys $in | to json"
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout), ["secret"])
+
+    def test_nonempty_but_inconsistent_basic_auth_is_repair_required(self):
+        result = run_nu(
+            'parse_harbor_credential_probe_output "name=true\\nsecret=true\\nbasicAuth=true\\nbasicAuthValid=false"'
+            " | harbor_credential_missing_keys $in | to json"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), ["basicAuth"])
 
 
 @unittest.skipIf(NU is None or shutil.which("jq") is None, "nu and jq are required")
@@ -949,15 +975,261 @@ class CredentialGateOrderingTest(unittest.TestCase):
 class CredentialProbeSecurityTest(unittest.TestCase):
     """The completeness check must reveal key names and booleans -- nothing else."""
 
-    def test_probe_reports_presence_per_key_without_reading_values(self):
+    def test_probe_reports_only_key_booleans_and_validates_basic_auth_in_pod(self):
         script = func_body("harbor_credential_probe_script")
-        self.assertIn("-s ", script, "non-emptiness is tested with test -s, not by reading")
+        self.assertIn("-s ", script, "non-emptiness is tested with test -s")
+        self.assertIn("basicAuthValid", script)
+        self.assertIn("base64", script)
+        self.assertIn("cmp -s", script)
+        self.assertIn('tr -cd " -~"', script, "BusyBox tr needs an explicit ASCII range")
+        self.assertNotIn("[:print:]", script, "BusyBox tr treats this class as literal characters")
+        self.assertNotIn("$(cat", script, "credential bytes must never enter command substitution")
         self.assertIn("=true", script)
         self.assertIn("=false", script)
-        for leak in ("cat ", "head -c", "od ", "xxd", "base64 -d", "wc -c"):
+        for leak in ("head -c", "od ", "xxd", "base64 -d", "wc -c"):
             self.assertNotIn(
                 leak, script, f"probe must never surface credential bytes via {leak!r}"
             )
+
+    def run_probe_fixture(
+        self,
+        *,
+        basic_auth: bytes,
+        name: bytes = b"robot$crossplane-system",
+        secret: bytes = b"fixture-secret",
+    ) -> tuple[dict, str]:
+        generated = run_nu("harbor_credential_probe_script")
+        self.assertEqual(generated.returncode, 0, generated.stderr)
+        script = generated.stdout
+        with tempfile.TemporaryDirectory(prefix="harbor-probe-") as tmp:
+            root = Path(tmp)
+            revision = root / "..rev-a"
+            revision.mkdir()
+            (revision / "name").write_bytes(name)
+            (revision / "secret").write_bytes(secret)
+            (revision / "basicAuth").write_bytes(basic_auth)
+            (root / "..data").symlink_to(revision.name)
+            for key in ("name", "secret", "basicAuth"):
+                (root / key).symlink_to(f"..data/{key}")
+            work = root / "work"
+            work.mkdir()
+            script = script.replace("/var/run/secrets/harbor-credential", root.as_posix())
+            env = dict(os.environ)
+            env["HARBOR_PROBE_WORK"] = work.as_posix()
+            result = subprocess.run(
+                ["sh", "-c", script],
+                text=True,
+                capture_output=True,
+                timeout=30,
+                check=False,
+                env=env,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = dict(line.split("=", 1) for line in result.stdout.splitlines())
+        return report, result.stdout
+
+    def test_probe_accepts_only_byte_exact_derived_basic_auth_without_leaking_values(self):
+        expected = base64.b64encode(b"robot$crossplane-system:fixture-secret")
+        valid, valid_stdout = self.run_probe_fixture(basic_auth=expected)
+        self.assertEqual(valid["basicAuthValid"], "true")
+
+        alternate_name = b"ci$crossplane-system"
+        alternate_expected = base64.b64encode(alternate_name + b":fixture-secret")
+        alternate, alternate_stdout = self.run_probe_fixture(
+            basic_auth=alternate_expected,
+            name=alternate_name,
+        )
+        self.assertEqual(
+            alternate,
+            {"name": "true", "secret": "true", "basicAuth": "true", "basicAuthValid": "true"},
+        )
+
+        malformed = (
+            {"basic_auth": b"bnVsbDpudWxs"},
+            {"basic_auth": expected + b"\n"},
+            {"basic_auth": expected + b"\r\n"},
+            {"basic_auth": expected + b"\x00"},
+            {
+                "name": b"robot$crossplane-system\n",
+                "basic_auth": base64.b64encode(
+                    b"robot$crossplane-system\n:fixture-secret"
+                ),
+            },
+            {
+                "secret": b"fixture-secret\x00",
+                "basic_auth": base64.b64encode(
+                    b"robot$crossplane-system:fixture-secret\x00"
+                ),
+            },
+            {
+                "secret": b"fixture\rsecret",
+                "basic_auth": base64.b64encode(
+                    b"robot$crossplane-system:fixture\rsecret"
+                ),
+            },
+        )
+        outputs = [valid_stdout, alternate_stdout]
+        for fixture in malformed:
+            with self.subTest(fixture=fixture):
+                invalid, invalid_stdout = self.run_probe_fixture(**fixture)
+                self.assertEqual(invalid["basicAuthValid"], "false")
+                outputs.append(invalid_stdout)
+
+        for output in outputs:
+            self.assertNotIn("robot$crossplane-system", output)
+            self.assertNotIn(alternate_name.decode(), output)
+            self.assertNotIn("fixture-secret", output)
+            self.assertNotIn(expected.decode(), output)
+            self.assertNotIn(alternate_expected.decode(), output)
+            self.assertTrue(
+                all(
+                    re.fullmatch(
+                        r"(?:name|secret|basicAuth|basicAuthValid)=(?:true|false)", line
+                    )
+                    for line in output.splitlines()
+                )
+            )
+
+    def test_probe_fails_closed_when_a_checked_byte_producer_fails(self):
+        generated = run_nu("harbor_credential_probe_script")
+        self.assertEqual(generated.returncode, 0, generated.stderr)
+        script = generated.stdout
+        producer = 'cat "$snapshot_root/name" > "$name_snapshot"'
+        self.assertIn(producer, script)
+        script = script.replace(producer, "false", 1)
+
+        with tempfile.TemporaryDirectory(prefix="harbor-probe-failure-") as tmp:
+            root = Path(tmp)
+            work = root / "work"
+            work.mkdir()
+            revision = root / "..rev-a"
+            revision.mkdir()
+            (revision / "name").write_bytes(b"robot$crossplane-system")
+            (revision / "secret").write_bytes(b"fixture-secret")
+            # This is the value an old masked partial producer could accept.
+            (revision / "basicAuth").write_bytes(base64.b64encode(b":fixture-secret"))
+            (root / "..data").symlink_to(revision.name)
+            for key in ("name", "secret", "basicAuth"):
+                (root / key).symlink_to(f"..data/{key}")
+            script = script.replace("/var/run/secrets/harbor-credential", root.as_posix())
+            env = dict(os.environ)
+            env["HARBOR_PROBE_WORK"] = work.as_posix()
+            result = subprocess.run(
+                ["sh", "-c", script],
+                text=True,
+                capture_output=True,
+                timeout=30,
+                check=False,
+                env=env,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = dict(line.split("=", 1) for line in result.stdout.splitlines())
+        self.assertEqual(report["basicAuthValid"], "false")
+
+    def test_probe_fails_closed_when_projected_secret_revision_switches_mid_check(self):
+        generated = run_nu("harbor_credential_probe_script")
+        self.assertEqual(generated.returncode, 0, generated.stderr)
+        script = generated.stdout
+        marker = '    basic_present=true\n  fi\n  end_link='
+        self.assertIn(marker, script)
+        script = script.replace(
+            marker,
+            '    basic_present=true\n'
+            '    ln -sfn "..rev-b" "$root/..data"\n'
+            '  fi\n  end_link=',
+            1,
+        )
+
+        with tempfile.TemporaryDirectory(prefix="harbor-probe-race-") as tmp:
+            root = Path(tmp)
+            work = root / "work"
+            work.mkdir()
+            rev_a = root / "..rev-a"
+            rev_b = root / "..rev-b"
+            rev_a.mkdir()
+            rev_b.mkdir()
+            valid_name = b"robot$crossplane-system"
+            valid_secret = b"fixture-secret"
+            (rev_a / "name").write_bytes(valid_name)
+            (rev_a / "secret").write_bytes(valid_secret)
+            (rev_a / "basicAuth").write_bytes(
+                base64.b64encode(valid_name + b":" + valid_secret)
+            )
+            malformed_name = valid_name + b"\n"
+            (rev_b / "name").write_bytes(malformed_name)
+            (rev_b / "secret").write_bytes(valid_secret)
+            (rev_b / "basicAuth").write_bytes(
+                base64.b64encode(malformed_name + b":" + valid_secret)
+            )
+            (root / "..data").symlink_to(rev_a.name)
+            for key in ("name", "secret", "basicAuth"):
+                (root / key).symlink_to(f"..data/{key}")
+            script = script.replace("/var/run/secrets/harbor-credential", root.as_posix())
+            env = dict(os.environ)
+            env["HARBOR_PROBE_WORK"] = work.as_posix()
+            result = subprocess.run(
+                ["sh", "-c", script],
+                text=True,
+                capture_output=True,
+                timeout=30,
+                check=False,
+                env=env,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = dict(line.split("=", 1) for line in result.stdout.splitlines())
+        self.assertEqual(report["basicAuthValid"], "false")
+        self.assertEqual(report["name"], "false")
+        self.assertEqual(report["secret"], "false")
+        self.assertEqual(report["basicAuth"], "false")
+
+    def test_probe_presence_is_derived_from_the_captured_revision(self):
+        generated = run_nu("harbor_credential_probe_script")
+        self.assertEqual(generated.returncode, 0, generated.stderr)
+        script = generated.stdout
+        marker = 'start_link=$(readlink "$root/..data" 2>/dev/null) || start_link=""'
+        self.assertIn(marker, script)
+        script = script.replace(
+            marker,
+            'ln -sfn "..rev-b" "$root/..data"\n' + marker,
+            1,
+        )
+
+        with tempfile.TemporaryDirectory(prefix="harbor-probe-pre-capture-race-") as tmp:
+            root = Path(tmp)
+            work = root / "work"
+            work.mkdir()
+            rev_a = root / "..rev-a"
+            rev_b = root / "..rev-b"
+            rev_a.mkdir()
+            rev_b.mkdir()
+            name = b"robot$crossplane-system"
+            secret = b"fixture-secret"
+            (rev_a / "name").write_bytes(name)
+            (rev_a / "secret").write_bytes(secret)
+            (rev_a / "basicAuth").write_bytes(base64.b64encode(name + b":" + secret))
+            (rev_b / "name").write_bytes(name)
+            (rev_b / "secret").write_bytes(b"")
+            (rev_b / "basicAuth").write_bytes(base64.b64encode(name + b":"))
+            (root / "..data").symlink_to(rev_a.name)
+            for key in ("name", "secret", "basicAuth"):
+                (root / key).symlink_to(f"..data/{key}")
+            script = script.replace("/var/run/secrets/harbor-credential", root.as_posix())
+            env = dict(os.environ)
+            env["HARBOR_PROBE_WORK"] = work.as_posix()
+            result = subprocess.run(
+                ["sh", "-c", script],
+                text=True,
+                capture_output=True,
+                timeout=30,
+                check=False,
+                env=env,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = dict(line.split("=", 1) for line in result.stdout.splitlines())
+        self.assertEqual(
+            report,
+            {"name": "true", "secret": "false", "basicAuth": "true", "basicAuthValid": "false"},
+        )
 
     def test_probe_pod_projects_the_secret_optionally_and_has_no_api_access(self):
         body = func_body("harbor_credential_probe_job")
@@ -967,6 +1239,10 @@ class CredentialProbeSecurityTest(unittest.TestCase):
         for key in REQUIRED_KEYS:
             self.assertIn(f'key: "{key}"', body)
         self.assertIn("readOnly: true", body)
+        self.assertIn('name: "work"', body)
+        self.assertIn('mountPath: "/work"', body)
+        self.assertIn('medium: "Memory"', body)
+        self.assertIn('sizeLimit: "64Ki"', body)
         self.assertIn('restartPolicy: "Never"', body)
         self.assertIn("backoffLimit: 0", body)
 
@@ -1070,8 +1346,8 @@ class ContainerCommandLineEndingBehaviourTest(unittest.TestCase):
         self.assertNotIn("illegal option", probe.stderr.lower())
         self.assertEqual(
             probe.stdout,
-            "name=false\nsecret=false\nbasicAuth=false\n",
-            "probe stdout must contain only the three key-presence booleans",
+            "name=false\nsecret=false\nbasicAuth=false\nbasicAuthValid=false\n",
+            "probe stdout must contain only the three key-presence booleans and derived-validity boolean",
         )
 
     def test_lf_checkout_preserves_generated_command_semantics(self):

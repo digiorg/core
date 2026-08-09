@@ -8,6 +8,7 @@ through PUT /robots/{id}, without touching its credential Secret.
 """
 from __future__ import annotations
 
+import base64
 import json
 from pathlib import Path
 import subprocess
@@ -113,6 +114,55 @@ class HarborRobotDelegationUpgradeTest(unittest.TestCase):
         self.assertEqual(rendered["permissions"], self.target_permissions())
         self.assertNotIn("secret", rendered)
 
+    def test_update_accepts_provider_predecoded_payload_body(self):
+        update = self.mapping("UPDATE")
+        old_permissions = self.target_permissions()
+        old_permissions[1]["access"] = old_permissions[1]["access"][:-2]
+        context = self.context([self.robot(permissions=old_permissions)])
+        context["payload"] = dict(context["payload"])
+        context["payload"]["body"] = json.loads(context["payload"]["body"])
+
+        url = jq(update["url"], context)
+        body = jq(update["body"], context)
+        self.assertEqual(url.returncode, 0, url.stderr)
+        self.assertEqual(json.loads(url.stdout), "https://digiorg.local/api/v2.0/robots/7")
+        self.assertEqual(body.returncode, 0, body.stderr)
+        self.assertEqual(json.loads(body.stdout)["permissions"], self.target_permissions())
+
+    def test_error_partial_and_credentialless_responses_preserve_every_secret_key(self):
+        mappings = self.provider["secretInjectionConfigs"][0]["keyMappings"]
+        complete = {"name": "robot$crossplane-system", "secret": "fixture-secret"}
+        unsafe_responses = (
+            {"statusCode": 422, "body": {"errors": [{"code": "UNPROCESSABLE_ENTITY"}]}},
+            {"statusCode": 200, "body": [self.robot()]},
+            {"statusCode": 201, "body": {}},
+            {"statusCode": 201, "body": {"name": complete["name"]}},
+            {"statusCode": 201, "body": {"secret": complete["secret"]}},
+            {"statusCode": 500, "body": complete},
+            {"statusCode": 200, "body": complete},
+        )
+        for response in unsafe_responses:
+            with self.subTest(response=response):
+                rendered = {}
+                for mapping in mappings:
+                    result = jq(mapping["responseJQ"], response)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    rendered[mapping["secretKey"]] = json.loads(result.stdout)
+                self.assertEqual(rendered, {"name": None, "secret": None, "basicAuth": None})
+
+        rendered = {}
+        successful_create = {"statusCode": 201, "body": complete}
+        for mapping in mappings:
+            result = jq(mapping["responseJQ"], successful_create)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            rendered[mapping["secretKey"]] = json.loads(result.stdout)
+        self.assertEqual(rendered["name"], complete["name"])
+        self.assertEqual(rendered["secret"], complete["secret"])
+        self.assertEqual(
+            rendered["basicAuth"],
+            base64.b64encode(b"robot$crossplane-system:fixture-secret").decode(),
+        )
+
     def test_expected_response_accepts_only_the_new_exact_permission_contract(self):
         logic = self.provider["expectedResponseCheck"]["logic"]
         exact = jq(logic, self.context([self.robot()]))
@@ -185,6 +235,9 @@ class HarborRobotDelegationUpgradeTest(unittest.TestCase):
             self.context([]),
             self.context([self.robot(), self.robot(robot_id=8)]),
             self.context([self.robot(robot_id="not-a-number")]),
+            self.context([self.robot(robot_id=0)]),
+            self.context([self.robot(robot_id=-1)]),
+            self.context([self.robot(robot_id=1.5)]),
             self.context([self.robot(name="robot$wrong-name")]),
             {"payload": self.provider["payload"], "response": {"statusCode": 200, "body": "not-json"}},
             {"payload": self.provider["payload"], "response": {

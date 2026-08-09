@@ -161,8 +161,10 @@ spec:
       # permission UPDATE, not another CREATE (which would violate Harbor's
       # unique robot identity). Harbor's robot update is PUT /robots/{id}; it
       # leaves the credential unchanged. provider-http v1.0.14 retains a
-      # top-level JSON array response as a string, so both expressions normalize
-      # it explicitly. provider-http also retries invalid generated details with
+      # top-level JSON array response as a string, while it eagerly decodes the
+      # object-valued payload.body. The UPDATE expressions normalize both
+      # boundaries explicitly. provider-http also retries invalid generated
+      # details with
       # status.cache.response; every uncertain current response therefore renders
       # a valid non-numeric sentinel URL plus empty body. That prevents cache
       # fallback while Harbor rejects the request before any robot mutation.
@@ -174,12 +176,19 @@ spec:
             then try (.response.body | fromjson) catch null
             else .response.body
             end;
+          def normalizedDesired:
+            if (.payload.body | type) == "string"
+            then try (.payload.body | fromjson) catch null
+            else .payload.body
+            end;
           normalizedBody as $body |
-          (try (.payload.body | fromjson) catch null) as $desired |
+          normalizedDesired as $desired |
           if (.response.statusCode==200)
              and (($body|type)=="array") and (($body|length)==1)
              and (($body[0]|type)=="object")
              and (($body[0].id|type)=="number")
+             and ($body[0].id > 0)
+             and ($body[0].id == ($body[0].id | floor))
              and (($body[0].name|type)=="string")
              and ($body[0].name | test("^[^$]+\\$crossplane-system$"))
              and ($body[0].level=="system")
@@ -197,12 +206,19 @@ spec:
             then try (.response.body | fromjson) catch null
             else .response.body
             end;
+          def normalizedDesired:
+            if (.payload.body | type) == "string"
+            then try (.payload.body | fromjson) catch null
+            else .payload.body
+            end;
           normalizedBody as $body |
-          (try (.payload.body | fromjson) catch null) as $desired |
+          normalizedDesired as $desired |
           if (.response.statusCode==200)
              and (($body|type)=="array") and (($body|length)==1)
              and (($body[0]|type)=="object")
              and (($body[0].id|type)=="number")
+             and ($body[0].id > 0)
+             and ($body[0].id == ($body[0].id | floor))
              and (($body[0].name|type)=="string")
              and ($body[0].name | test("^[^$]+\\$crossplane-system$"))
              and ($body[0].level=="system")
@@ -353,13 +369,43 @@ spec:
           # which only ever populates `secret` on `CreateRobot`). Without
           # `missingFieldStrategy: preserve` (default: "delete"), every
           # OBSERVE reconcile after the first would delete the
-          # already-injected secret/basicAuth keys from this Secret.
+          # already-injected secret/basicAuth keys from this Secret. Each JQ
+          # mapping additionally returns null unless the response is the same
+          # complete, successful Harbor CREATE result (HTTP 201, canonical
+          # robot name, and a typed nonempty secret). This makes the three-key
+          # update atomic: partial/error/UPDATE responses preserve every old
+          # value instead of mixing credential generations or synthesizing
+          # base64("null:null").
           - secretKey: name
-            responseJQ: .body.name
+            responseJQ: |-
+              def validCreate:
+                (.statusCode==201)
+                and ((.body|type)=="object")
+                and ((.body.name|type)=="string")
+                and (.body.name | test("^[^$]+\\$crossplane-system$"))
+                and ((.body.secret|type)=="string") and ((.body.secret|length)>0);
+              if validCreate then .body.name else null end
             missingFieldStrategy: preserve
           - secretKey: secret
-            responseJQ: .body.secret
+            responseJQ: |-
+              def validCreate:
+                (.statusCode==201)
+                and ((.body|type)=="object")
+                and ((.body.name|type)=="string")
+                and (.body.name | test("^[^$]+\\$crossplane-system$"))
+                and ((.body.secret|type)=="string") and ((.body.secret|length)>0);
+              if validCreate then .body.secret else null end
             missingFieldStrategy: preserve
           - secretKey: basicAuth
-            responseJQ: "\"\\(.body.name):\\(.body.secret)\" | @base64"
+            responseJQ: |-
+              def validCreate:
+                (.statusCode==201)
+                and ((.body|type)=="object")
+                and ((.body.name|type)=="string")
+                and (.body.name | test("^[^$]+\\$crossplane-system$"))
+                and ((.body.secret|type)=="string") and ((.body.secret|length)>0);
+              if validCreate
+              then "\(.body.name):\(.body.secret)" | @base64
+              else null
+              end
             missingFieldStrategy: preserve

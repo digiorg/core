@@ -1429,20 +1429,89 @@ def normalize_posix_container_script [script: string] {
 }
 
 # Runs inside the read-only probe Job (harbor_credential_probe_job). Reports
-# per-key presence/non-emptiness with `test -s` -- it never reads, decodes or
-# prints a credential byte, only the two literal tokens `true`/`false`.
+# per-key presence/non-emptiness, canonical source bytes, and whether basicAuth
+# is the byte-exact base64(name:secret) derivation. Credential bytes are read
+# only inside this tokenless container and transformed through status-checked
+# commands in memory-backed files; only key=true|false lines reach stdout.
 def harbor_credential_probe_script [] {
     '#!/bin/sh
 set -e
 umask 077
-for key in name secret basicAuth; do
-  path="/var/run/secrets/harbor-credential/$key"
-  if [ -s "$path" ]; then
-    printf "%s=true\n" "$key"
-  else
-    printf "%s=false\n" "$key"
+root="/var/run/secrets/harbor-credential"
+work="${HARBOR_PROBE_WORK:-/work}"
+name_snapshot="$work/name-snapshot"
+secret_snapshot="$work/secret-snapshot"
+basic_snapshot="$work/basic-snapshot"
+plain="$work/basic-plain"
+encoded="$work/basic-encoded"
+expected="$work/basic-expected"
+printable_name="$work/name-printable"
+printable_secret="$work/secret-printable"
+cleanup() {
+  rm -f "$name_snapshot" "$secret_snapshot" "$basic_snapshot" \
+    "$plain" "$encoded" "$expected" "$printable_name" "$printable_secret" \
+    >/dev/null 2>&1 || true
+}
+trap cleanup 0 1 2 3 15
+
+name_present=false
+secret_present=false
+basic_present=false
+basic_auth_valid=false
+revision_stable=false
+
+# Bind every read to one immutable Kubernetes projected-Secret revision.
+# Reopening top-level key symlinks would allow ..data to switch mid-check.
+start_link=$(readlink "$root/..data" 2>/dev/null) || start_link=""
+snapshot_root=""
+case "$start_link" in
+  ..*/*|"") ;;
+  ..*) snapshot_root="$root/$start_link" ;;
+esac
+
+if [ -n "$snapshot_root" ]; then
+  if cat "$snapshot_root/name" > "$name_snapshot" && [ -s "$name_snapshot" ]; then
+    name_present=true
   fi
-done
+  if cat "$snapshot_root/secret" > "$secret_snapshot" && [ -s "$secret_snapshot" ]; then
+    secret_present=true
+  fi
+  if cat "$snapshot_root/basicAuth" > "$basic_snapshot" && [ -s "$basic_snapshot" ]; then
+    basic_present=true
+  fi
+  end_link=$(readlink "$root/..data" 2>/dev/null) || end_link=""
+  if [ "$end_link" = "$start_link" ]; then
+    revision_stable=true
+  else
+    name_present=false
+    secret_present=false
+    basic_present=false
+  fi
+fi
+
+if [ "$revision_stable" = true ] \
+    && [ "$name_present" = true ] \
+    && [ "$secret_present" = true ] \
+    && [ "$basic_present" = true ] \
+    && LC_ALL=C tr -cd " -~" < "$name_snapshot" > "$printable_name" \
+    && cmp -s "$name_snapshot" "$printable_name" \
+    && grep -Eq "^[^\$]+\\\$crossplane-system$" "$name_snapshot" \
+    && LC_ALL=C tr -cd " -~" < "$secret_snapshot" > "$printable_secret" \
+    && cmp -s "$secret_snapshot" "$printable_secret" \
+    && : > "$plain" \
+    && cat "$name_snapshot" > "$plain" \
+    && printf ":" >> "$plain" \
+    && cat "$secret_snapshot" >> "$plain" \
+    && base64 "$plain" > "$encoded" \
+    && tr -d "\\r\\n" < "$encoded" > "$expected" \
+    && cmp -s "$basic_snapshot" "$expected"; then
+  basic_auth_valid=true
+fi
+
+printf "name=%s\n" "$name_present"
+printf "secret=%s\n" "$secret_present"
+printf "basicAuth=%s\n" "$basic_present"
+printf "basicAuthValid=%s\n" "$basic_auth_valid"
 '
     | normalize_posix_container_script $in
 }
@@ -1495,6 +1564,7 @@ def harbor_credential_probe_job [] {
                             }
                             volumeMounts: [
                                 {name: "credential", mountPath: "/var/run/secrets/harbor-credential", readOnly: true}
+                                {name: "work", mountPath: "/work"}
                             ]
                         }
                     ]
@@ -1510,6 +1580,13 @@ def harbor_credential_probe_job [] {
                                     {key: "secret", path: "secret"}
                                     {key: "basicAuth", path: "basicAuth"}
                                 ]
+                            }
+                        }
+                        {
+                            name: "work"
+                            emptyDir: {
+                                medium: "Memory"
+                                sizeLimit: "64Ki"
                             }
                         }
                     ]
@@ -1991,26 +2068,59 @@ def select_owned_pod [pods_json: string, job_name: string, job_uid: string] {
 # `insert` targets an existing column -- which crashed every probe at runtime
 # while source-level tests still passed.
 def parse_harbor_credential_probe_output [output: string] {
+    let probe_fields = ((harbor_credential_required_keys) | append "basicAuthValid")
     mut result = {}
-    for key in (harbor_credential_required_keys) {
+    mut counts = {}
+    for key in $probe_fields {
         $result = ($result | upsert $key false)
+        $counts = ($counts | upsert $key 0)
     }
-    for line in ($output | lines) {
-        let parsed = ($line | str trim | parse "{key}={value}")
-        if ($parsed | length) == 1 {
-            let key = ($parsed | get key | first | str trim)
-            let value = ($parsed | get value | first | str trim)
-            if $key in (harbor_credential_required_keys) {
+
+    let report_lines = ($output | lines)
+    mut canonical = (($report_lines | length) == ($probe_fields | length))
+    for line in $report_lines {
+        let parsed = ($line | parse "{key}={value}")
+        if ($parsed | length) != 1 {
+            $canonical = false
+        } else {
+            let key = ($parsed | get key | first)
+            let value = ($parsed | get value | first)
+            if (not ($key in $probe_fields)) or (not ($value in ["true" "false"])) {
+                $canonical = false
+            } else {
+                let count = (($counts | get $key) + 1)
+                $counts = ($counts | upsert $key $count)
+                if $count != 1 {
+                    $canonical = false
+                }
                 $result = ($result | upsert $key ($value == "true"))
             }
         }
     }
-    $result
+    for key in $probe_fields {
+        if ($counts | get $key) != 1 {
+            $canonical = false
+        }
+    }
+
+    if $canonical { $result } else {
+        mut failed = {}
+        for key in $probe_fields {
+            $failed = ($failed | upsert $key false)
+        }
+        $failed
+    }
 }
 
-# Keys the probe reported as missing/empty, given its result record.
+# Keys the probe reported as missing/empty or structurally inconsistent. A
+# present but invalid derived basicAuth is classified as basicAuth drift so the
+# existing bounded transactional recovery rotates and persists all three keys.
 def harbor_credential_missing_keys [probe: record] {
-    (harbor_credential_required_keys) | where {|key| not ($probe | get -o $key | default false) }
+    (harbor_credential_required_keys) | where {|key|
+        let present = ($probe | get -o $key | default false)
+        let derived_valid = ($probe | get -o basicAuthValid | default false)
+        (not $present) or (($key == "basicAuth") and (not $derived_valid))
+    }
 }
 
 # Ensures crossplane-system/crossplane-harbor-credentials exists as a Secret
@@ -2628,7 +2738,7 @@ def harbor_recovery_resume_preflight [] {
 # recovery boundary is left behind on the cluster afterwards.
 def repair_harbor_credential_secret [] {
     $env.KUBECONFIG = $KUBECONFIG_PATH
-    print $"(ansi yellow)  ! crossplane-harbor-credentials is missing required key\(s\) -- attempting crash-safe recovery via Harbor RefreshSec...(ansi reset)"
+    print $"(ansi yellow)  ! crossplane-harbor-credentials is missing or invalid -- attempting crash-safe recovery via Harbor RefreshSec...(ansi reset)"
 
     let rbac_manifest = (harbor_credential_recovery_rbac)
 
@@ -2830,13 +2940,13 @@ def ensure_crossplane_harbor_credentials [] {
         return
     }
 
-    print $"(ansi yellow)  ! crossplane-harbor-credentials is missing (($missing | length)) required key\(s\)(ansi reset)"
+    print $"(ansi yellow)  ! crossplane-harbor-credentials has (($missing | length)) missing or invalid required key\(s\)(ansi reset)"
     repair_harbor_credential_secret
 
     let reprobe = (probe_harbor_credential_keys)
     let still_missing = (harbor_credential_missing_keys $reprobe)
     if not ($still_missing | is-empty) {
-        error make {msg: $"crossplane-harbor-credentials is still missing required key\(s\) after recovery: ($still_missing)"}
+        error make {msg: $"crossplane-harbor-credentials still has missing or invalid required key\(s\) after recovery: ($still_missing)"}
     }
     print $"(ansi green)  ✓ crossplane-harbor-credentials recovered(ansi reset)"
 }
