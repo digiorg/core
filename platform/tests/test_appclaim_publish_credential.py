@@ -290,7 +290,7 @@ class CrossplaneGiteaSecretStateBehaviourTest(unittest.TestCase):
 class CrossplaneGiteaTeamContractBehaviourTest(unittest.TestCase):
     EXACT = {
         "name": "platform-provisioners",
-        "permission": "write",
+        "permission": "none",
         "includes_all_repositories": False,
         "can_create_org_repo": True,
         "units": ["repo.code"],
@@ -322,7 +322,7 @@ class CrossplaneGiteaTeamContractBehaviourTest(unittest.TestCase):
     def test_each_team_permission_drift_is_rejected(self):
         drifts = {
             "name": "other",
-            "permission": "admin",
+            "permission": "write",
             "includes_all_repositories": True,
             "can_create_org_repo": False,
             "units": ["repo.code", "repo.issues"],
@@ -343,12 +343,14 @@ class CrossplaneGiteaTeamContractBehaviourTest(unittest.TestCase):
         )
         self.assertIn("sh $team_url", body)
         for fragment in (
-            '\\"permission\\":\\"write\\"',
+            '\\"permission\\":\\"none\\"',
             '\\"includes_all_repositories\\":false',
             '\\"can_create_org_repo\\":true',
             '\\"units_map\\":{\\"repo.code\\":\\"write\\"}',
         ):
             self.assertIn(fragment, body)
+        self.assertGreaterEqual(body.count('\\"permission\\":\\"none\\"'), 2)
+        self.assertNotIn('\\"permission\\":\\"write\\"', body)
         self.assertIn("crossplane_gitea_team_is_exact", body)
         self.assertIn("platform-provisioners Gitea team did not match", body)
 
