@@ -55,8 +55,8 @@ class NushellLiteralParenthesesRuntimeTest(unittest.TestCase):
 
     def test_gitea_credential_annotations_are_literal(self):
         cases = (
-            ("'crossplane-gitea-credentials' already present", "(membership re-verified)"),
-            ("Least-privilege 'crossplane-gitea-credentials' created", "(write:repository only)"),
+            ("'crossplane-gitea-credentials' already satisfies scope contract", "(membership re-verified)"),
+            ("Least-privilege 'crossplane-gitea-credentials' reconciled", "(write:organization,write:repository)"),
             ("ArgoCD app-config repository credential already present", "(membership re-verified)"),
             ("ArgoCD app-config repository credential created", "(read:repository only)"),
             ("Backstage app-config publish credential already present", "(membership re-verified)"),
