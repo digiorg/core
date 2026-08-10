@@ -4889,23 +4889,35 @@ def configure_app_config_repo [
     let app_claim_seed_target = "claims/digiorg-core-dev/app-claims/AppClaim/myapp.yaml"
     let app_claim_seed_path = ($env.PWD | path join "bootstrap/app-config/claims/digiorg-core-dev/app-claims/AppClaim/myapp.yaml")
     mut app_claim_seed_check = {exit_code: 1, stdout: "", stderr: ""}
+    mut app_claim_seed_status = ""
+    mut app_claim_seed_transport_ok = false
     for attempt in 1..5 {
         $app_claim_seed_check = (do {
-            $gitea_token | kubectl --request-timeout=15s --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c $'IFS= read -r token; printf "header = \"Authorization: token ***"\n" "$token" | curl --connect-timeout 5 --max-time 10 --config - --cacert /etc/gitea/trusted-cas/digiorg-local-ca.crt -sS -o /dev/null -w "%{http_code}" https://digiorg.local/gitea/api/v1/repos/DigiOrg/app-config/contents/($app_claim_seed_target)'
+            $gitea_token | kubectl --request-timeout=15s --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c $'IFS= read -r token; printf "header = \"Authorization: token ***"\n" "$token" | curl --connect-timeout 5 --max-time 10 --config - --cacert /etc/gitea/trusted-cas/digiorg-local-ca.crt -sS -o /dev/null -w "%{http_code}|%{exitcode}" https://digiorg.local/gitea/api/v1/repos/DigiOrg/app-config/contents/($app_claim_seed_target); exit 0'
         } | complete)
-        if $app_claim_seed_check.exit_code == 0 {
-            break
+        if $app_claim_seed_check.exit_code != 0 {
+            let error_class = (classify_app_config_seed_query_error $app_claim_seed_check.stderr)
+            print $"  app-config seed GET retry class: ($error_class) [attempt ($attempt)/5]"
+        } else {
+            let protocol_fields = ($app_claim_seed_check.stdout | str trim | split row "|")
+            if ($protocol_fields | length) != 2 or not (($protocol_fields | first) =~ '^[0-9]{3}$') or not (($protocol_fields | last) =~ '^[0-9]+$') {
+                error make {msg: "Malformed app-config seed GET transport response"}
+            }
+            let curl_exit = ($protocol_fields | last | into int)
+            if $curl_exit == 0 {
+                $app_claim_seed_status = ($protocol_fields | first)
+                $app_claim_seed_transport_ok = true
+                break
+            }
+            print $"  app-config seed GET curl exit: ($curl_exit) [attempt ($attempt)/5]"
         }
-        let error_class = (classify_app_config_seed_query_error $app_claim_seed_check.stderr)
-        print $"  app-config seed GET retry class: ($error_class) [attempt ($attempt)/5]"
         if $attempt < 5 {
             sleep $retry_delay
         }
     }
-    if $app_claim_seed_check.exit_code != 0 {
+    if not $app_claim_seed_transport_ok {
         error make {msg: "Failed to query the approved app-config AppClaim seed"}
     }
-    let app_claim_seed_status = ($app_claim_seed_check.stdout | str trim)
     if $app_claim_seed_status == "200" {
         print $"(ansi yellow)✓ Approved app-config AppClaim already exists; preserving repository state(ansi reset)"
     } else if $app_claim_seed_status == "404" {

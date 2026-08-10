@@ -123,6 +123,8 @@ class FreshSeedWiringTest(unittest.TestCase):
         claim_section = self.body[self.body.index(TARGET) :]
         self.assertIn("classify_app_config_seed_query_error", claim_section)
         self.assertIn("app-config seed GET retry class:", claim_section)
+        self.assertIn("curl exit:", claim_section)
+        self.assertIn('split row "|"', claim_section)
         self.assertNotIn("print $app_claim_seed_check.stderr", claim_section)
         self.assertNotIn("print ($app_claim_seed_check.stderr", claim_section)
 
@@ -146,8 +148,13 @@ class FreshSeedBehaviourTest(unittest.TestCase):
                     "  elif status == 'transport-always': sys.exit(7)\n"
                     "  elif status == 'transport-once':\n"
                     "    if not os.path.exists(state): open(state,'w').write('1'); sys.exit(7)\n"
-                    "    else: print('404',end='')\n"
-                    "  else: print(status,end='')\n"
+                    "    else: print('404|0',end='')\n"
+                    "  elif status == 'curl-always': print('000|6',end='')\n"
+                    "  elif status == 'curl-once':\n"
+                    "    if not os.path.exists(state): open(state,'w').write('1'); print('000|6',end='')\n"
+                    "    else: print('404|0',end='')\n"
+                    "  elif status == 'malformed': print('404',end='')\n"
+                    "  else: print(status+'|0',end='')\n"
                     "elif '/repos/DigiOrg/app-config' in script: print('200',end='')\n"
                     "else: sys.exit(3)\n"
                 )
@@ -204,6 +211,33 @@ class FreshSeedBehaviourTest(unittest.TestCase):
         scripts = [" ".join(call["args"]) for call in calls]
         claim_calls = [s for s in scripts if TARGET in s]
         self.assertEqual(len(claim_calls), 5)
+        self.assertFalse(any("-X POST" in s for s in claim_calls))
+
+    def test_curl_failure_with_successful_kubectl_transport_retries_then_creates_once(self):
+        result, calls = self._run("curl-once")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("curl exit: 6", result.stdout + result.stderr)
+        scripts = [" ".join(call["args"]) for call in calls]
+        claim_calls = [s for s in scripts if TARGET in s]
+        self.assertEqual(sum("-X POST" not in s for s in claim_calls), 2)
+        self.assertEqual(sum("-X POST" in s for s in claim_calls), 1)
+
+    def test_curl_failure_exhaustion_is_bounded_and_never_writes(self):
+        result, calls = self._run("curl-always")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual((result.stdout + result.stderr).count("curl exit: 6"), 5)
+        self.assertNotIn("sentinel-token", result.stdout + result.stderr)
+        scripts = [" ".join(call["args"]) for call in calls]
+        claim_calls = [s for s in scripts if TARGET in s]
+        self.assertEqual(len(claim_calls), 5)
+        self.assertFalse(any("-X POST" in s for s in claim_calls))
+
+    def test_malformed_remote_protocol_fails_closed_without_write(self):
+        result, calls = self._run("malformed")
+        self.assertNotEqual(result.returncode, 0)
+        scripts = [" ".join(call["args"]) for call in calls]
+        claim_calls = [s for s in scripts if TARGET in s]
+        self.assertEqual(len(claim_calls), 1)
         self.assertFalse(any("-X POST" in s for s in claim_calls))
 
 
