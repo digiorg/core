@@ -158,6 +158,43 @@ spec:
                   number: 3000
 
 ---
+# actions/checkout constructs Git fetch URLs from URL.origin and therefore
+# drops Gitea's /gitea subpath even when GITHUB_SERVER_URL contains it. Expose
+# only Gitea's three Git Smart HTTP endpoints at the host root; keep UI, API,
+# repository browsing and every other root path owned by their existing
+# routes. No rewrite is needed because Gitea's internal HTTP listener serves
+# these repository handlers at root-relative paths.
+# Verified against actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+# src/url-helper.ts and act_runner v0.6.1.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: gitea-smart-http-ingress
+  namespace: ingress-nginx
+  annotations:
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "512m"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - digiorg.local
+      secretName: digiorg-local-tls
+  rules:
+    - host: digiorg.local
+      http:
+        paths:
+          - path: /([^/]+)/([^/]+)/(info/refs|git-upload-pack|git-receive-pack)$
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: gitea-http
+                port:
+                  number: 3000
+
+---
 # ExternalName services to route cross-namespace
 apiVersion: v1
 kind: Service
