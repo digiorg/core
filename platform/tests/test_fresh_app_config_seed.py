@@ -119,6 +119,13 @@ class FreshSeedWiringTest(unittest.TestCase):
         retry_section = claim_section[: claim_section.index('if $app_claim_seed_status == "200"')]
         self.assertNotIn("-X POST", retry_section)
 
+    def test_failed_attempts_emit_only_a_bounded_error_class(self):
+        claim_section = self.body[self.body.index(TARGET) :]
+        self.assertIn("classify_app_config_seed_query_error", claim_section)
+        self.assertIn("app-config seed GET retry class:", claim_section)
+        self.assertNotIn("print $app_claim_seed_check.stderr", claim_section)
+        self.assertNotIn("print ($app_claim_seed_check.stderr", claim_section)
+
 
 class FreshSeedBehaviourTest(unittest.TestCase):
     def _run(self, status):
@@ -192,10 +199,51 @@ class FreshSeedBehaviourTest(unittest.TestCase):
     def test_transport_retry_exhaustion_is_bounded_and_never_writes(self):
         result, calls = self._run("transport-always")
         self.assertNotEqual(result.returncode, 0)
+        self.assertIn("retry class: unknown", result.stdout + result.stderr)
+        self.assertNotIn("sentinel-token", result.stdout + result.stderr)
         scripts = [" ".join(call["args"]) for call in calls]
         claim_calls = [s for s in scripts if TARGET in s]
         self.assertEqual(len(claim_calls), 5)
         self.assertFalse(any("-X POST" in s for s in claim_calls))
+
+
+class SeedQueryErrorClassificationTest(unittest.TestCase):
+    def _classify(self, stderr):
+        env = os.environ.copy()
+        env["QUERY_STDERR"] = stderr
+        result = subprocess.run(
+            [
+                "nu",
+                "--no-config-file",
+                "-c",
+                f"source {SETUP}; classify_app_config_seed_query_error $env.QUERY_STDERR",
+            ],
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=10,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout.strip()
+
+    def test_known_transport_errors_map_to_non_secret_classes(self):
+        cases = {
+            "curl: (6) Could not resolve host: digiorg.local": "dns",
+            "dial tcp: lookup digiorg.local: server misbehaving": "dns",
+            "curl: (7) Failed to connect to digiorg.local port 443": "connection",
+            "x509: certificate signed by unknown authority": "tls",
+            "unable to upgrade connection: container not found": "exec",
+            "context deadline exceeded": "timeout",
+            "operation timed out": "timeout",
+            "unrecognized transport text": "unknown",
+        }
+        for stderr, expected in cases.items():
+            with self.subTest(stderr=stderr):
+                self.assertEqual(self._classify(stderr), expected)
+
+    def test_classifier_never_returns_input_text_or_token_like_data(self):
+        sentinel = "opaque-token-value-must-not-escape"
+        self.assertEqual(self._classify(sentinel), "unknown")
 
 
 if __name__ == "__main__":
