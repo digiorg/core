@@ -3281,8 +3281,17 @@ def ensure_kind_node_digiorg_local_ca_trust [] {
     let node_script = r#'
 set -eu
 registry_dir="/etc/containerd/certs.d/digiorg.local"
+trust_root=${registry_dir%/digiorg.local}
 ca_path="$registry_dir/ca.crt"
 hosts_path="$registry_dir/hosts.toml"
+if [ -e "$trust_root" ]; then
+    if [ ! -d "$trust_root" ] || [ -L "$trust_root" ]; then
+        echo "invalid containerd trust root" >&2
+        exit 1
+    fi
+else
+    mkdir "$trust_root"
+fi
 if [ -e "$registry_dir" ]; then
     if [ ! -d "$registry_dir" ] || [ -L "$registry_dir" ]; then
         echo "invalid containerd registry trust directory for digiorg.local" >&2
