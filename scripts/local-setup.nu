@@ -178,6 +178,12 @@ def "main bootstrap" [] {
     # Wait for cluster
     print "Waiting for cluster nodes..."
     kubectl wait --for=condition=Ready nodes --all --timeout=120s
+
+    # containerd resolves registry hosts in the KinD node network namespace,
+    # not through the host OS hosts file or cluster CoreDNS. Keep the single
+    # local ingress hostname deterministic before any workload can pull a
+    # promoted private image.
+    ensure_kind_node_digiorg_local_resolution
     
     # 2. Set node runtime limits required by the local all-in-one platform.
     # OpenSearch needs vm.max_map_count. The many Kubernetes controllers use
@@ -3176,6 +3182,89 @@ def apply_bootstrap_managed_ingress_for_local_dev [] {
     print $"(ansi green)✓ Bootstrap-managed platform ingress promoted(ansi reset)"
 }
 
+# containerd runs inside the KinD node and uses the node's resolver for image
+# pulls. `digiorg.local` is a loopback ingress endpoint in this all-in-one local
+# cluster: the node's port 443 is mapped to the ingress controller, while host
+# and Pod DNS configuration does not apply to containerd. Enforce the one
+# permitted mapping idempotently and reject ambiguous/conflicting state rather
+# than rewriting an operator-managed hosts file.
+def ensure_kind_node_digiorg_local_resolution [] {
+    let kind_node = $"($CLUSTER_NAME)-control-plane"
+    let node_script = r#'
+set -eu
+hosts_file="/etc/hosts"
+
+inspect_hosts() {
+    awk '
+        BEGIN { occurrences = 0; exact_lines = 0; ambiguous = 0 }
+        {
+            line_occurrences = 0
+            for (i = 1; i <= NF; i++) {
+                if ($i == "digiorg.local") {
+                    occurrences++
+                    line_occurrences++
+                }
+            }
+            if (line_occurrences > 0) {
+                if (line_occurrences == 1 && NF == 2 && $1 == "127.0.0.1" && $2 == "digiorg.local") {
+                    exact_lines++
+                } else {
+                    ambiguous = 1
+                }
+            }
+        }
+        END {
+            if (occurrences == 0) print "absent"
+            else if (occurrences == 1 && exact_lines == 1 && ambiguous == 0) print "exact"
+            else print "conflict"
+        }
+    ' "$hosts_file"
+}
+
+if ! state=$(inspect_hosts); then
+    echo "failed to inspect KinD node hosts file" >&2
+    exit 1
+fi
+case "$state" in
+    exact) exit 0 ;;
+    absent) ;;
+    conflict)
+        echo "conflicting digiorg.local entry in KinD node hosts file" >&2
+        exit 1
+        ;;
+    *)
+        echo "failed to inspect KinD node hosts file: invalid result" >&2
+        exit 1
+        ;;
+esac
+
+printf '\n127.0.0.1 digiorg.local\n' >>"$hosts_file"
+if ! state=$(inspect_hosts); then
+    echo "failed to inspect KinD node hosts file after update" >&2
+    exit 1
+fi
+if [ "$state" != "exact" ]; then
+    echo "KinD node hosts file did not converge to exactly one digiorg.local loopback mapping" >&2
+    exit 1
+fi
+'#
+    # Windows Git checkouts can transcode this multiline literal to CRLF. The
+    # command executes in the Linux KinD node, so normalize at the final command
+    # boundary rather than relying on host checkout settings.
+    let normalized_node_script = (
+        $node_script
+        | str replace --all "\r\n" "\n"
+        | str replace --all "\r" "\n"
+    )
+    let result = (do {
+        docker exec $kind_node sh -c $normalized_node_script
+    } | complete)
+    if $result.exit_code != 0 {
+        error make {msg: $"Failed to configure KinD node digiorg.local resolution: ($result.stderr | str trim)"}
+    }
+    print $"(ansi green)✓ KinD node resolves digiorg.local to 127.0.0.1(ansi reset)"
+}
+
 def sync_gated_apps_for_local_dev [] {
     let gated_apps = [
         "external-secrets", "nats", "grafana", "opencost", "gitea",
@@ -3189,6 +3278,7 @@ def sync_gated_apps_for_local_dev [] {
     print ""
     print $"(ansi cyan_bold)Promoting gated upgrades sequentially on local KinD(ansi reset)"
 
+    ensure_kind_node_digiorg_local_resolution
     apply_bootstrap_managed_ingress_for_local_dev
 
     # Issue #285 runtime-v11: crossplane-harbor-bootstrap's Request objects need
