@@ -83,6 +83,20 @@ class KindContainerdCaTrustContractTest(unittest.TestCase):
             self.assertNotIn("skip_verify", hosts)
             self.assertNotIn("push", hosts)
 
+    def test_missing_containerd_trust_root_is_created_before_registry_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = Path(tmp) / "fixture"
+            fixture.mkdir()
+            ca = self.make_ca(fixture)
+            missing_trust_root = Path(tmp) / "certs.d"
+            self.assertFalse(missing_trust_root.exists())
+            result = self.run_node_script(missing_trust_root, ca)
+            self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+            registry = missing_trust_root / "digiorg.local"
+            self.assertTrue(registry.is_dir())
+            self.assertEqual((registry / "ca.crt").read_bytes(), ca)
+            self.assertTrue((registry / "hosts.toml").is_file())
+
     def faulting_mv_env(self, root: Path, mode: str):
         fake_bin = root / ("bin-" + mode)
         fake_bin.mkdir()
