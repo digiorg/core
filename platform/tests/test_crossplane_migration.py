@@ -43,13 +43,13 @@ FUNCTION = os.path.join(PKG_DIR, "function-patch-and-transform.yaml")
 PROVIDER_KUSTOMIZATION = os.path.join(PKG_DIR, "kustomization.yaml")
 VERSIONS_DOC = os.path.join(REPO_ROOT, "docs", "guides", "platform-versions.md")
 
-# core-catalog PR #18's exact independently reviewed Issue #285 head. Keep the
-# Core pin, manifest documentation, and this constant aligned. If GitHub creates
-# a different merge/squash commit, update all three before merging the Core PR.
-REVIEWED_CATALOG_REVISION = "7fd51323db2c38e7ca36f5496e22686a93aa9fc4"
+# core-catalog PR #19's exact independently reviewed Issue #301 canonical merge
+# commit. Keep the Core pin, manifest documentation, and this constant aligned.
+REVIEWED_CATALOG_REVISION = "9c92496334422aa5bff7519acdb478b16185a6ea"
 SUPERSEDED_CATALOG_REVISIONS = (
     "13b7a3b4a0b7a5f5e692dc6d5a3fa416852c4273",
     "4c30d9c3fa5c3c401c19f26b66a025854c65ee02",
+    "7fd51323db2c38e7ca36f5496e22686a93aa9fc4",
 )
 
 # Revalidated compatible provider package versions (exact pins).
@@ -145,17 +145,17 @@ class XrdLegacyClusterCompatTest(unittest.TestCase):
 
 
 class CoreCatalogReviewedRevisionPinTest(unittest.TestCase):
-    """Core must pin the exact reviewed Issue #285 PR #18 head and keep the
+    """Core must pin the exact reviewed Issue #301 PR #19 merge and keep the
     Catalog Application immutable and manually gated."""
 
     def setUp(self):
         self.app = _docs(CATALOG_APP)[0]
 
-    def test_pins_reviewed_issue_285_pr_head(self):
+    def test_pins_reviewed_issue_301_pr_merge(self):
         rev = str(self.app["spec"]["source"]["targetRevision"])
         self.assertEqual(
             rev, REVIEWED_CATALOG_REVISION,
-            "core-catalog must pin the exact reviewed Issue #285 PR #18 head",
+            "core-catalog must pin the exact reviewed Issue #301 PR #19 merge",
         )
 
     def test_superseded_revision_not_referenced_anywhere(self):

@@ -14,13 +14,11 @@ spec:
 
   source:
     repoURL: https://github.com/digiorg/core-catalog.git
-    # Issue #285 replaces the competing local Compositions with one deterministic
-    # KCL pipeline in core-catalog PR #18. Pin its exact independently reviewed
-    # head so Core and Catalog are deployed as one immutable integration. If the
-    # PR is squash/rebase merged, advance this to the resulting canonical commit
-    # before merging the Core PR.
+    # Issue #301 advances the deterministic KCL pipeline through core-catalog
+    # PR #19. Pin its exact independently reviewed canonical merge commit so
+    # Core and Catalog are deployed as one immutable integration.
     # Keep this manual (no syncPolicy.automated) — see docs/guides/platform-versions.md.
-    targetRevision: 7fd51323db2c38e7ca36f5496e22686a93aa9fc4
+    targetRevision: 9c92496334422aa5bff7519acdb478b16185a6ea
     path: compositions/local
 
   destination:
