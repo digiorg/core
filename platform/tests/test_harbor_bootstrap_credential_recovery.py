@@ -916,6 +916,66 @@ class RepairTransactionOrderTest(unittest.TestCase):
         self.assertIn("409", self.script)
         self.assertRegex(self.script, r"attempt|retry")
 
+    def test_kubernetes_basic_auth_data_round_trips_to_inner_base64_value(self):
+        """Kubernetes .data adds an outer base64 layer. After the API server
+        decodes that layer, the Secret value must still be base64(name:secret),
+        not plain name:secret."""
+        composed = run_nu("harbor_credential_repair_script")
+        self.assertEqual(composed.returncode, 0, composed.stderr)
+        with tempfile.TemporaryDirectory(prefix="harbor-encoding-") as tmp:
+            root = Path(tmp)
+            script = root / "repair.sh"
+            script.write_text(composed.stdout, encoding="utf-8")
+            secret_file = root / "secret.txt"
+            secret_file.write_bytes(b"Aa1fixtureSecretForEncoding32Byte")
+            cmd = (
+                f'. "{script}"; WORKDIR="{root}"; '
+                "robot_name='robot$crossplane-system'; "
+                f'secret_file="{secret_file}"; encode_recovered_credential_files'
+            )
+            env = {"HARBOR_REPAIR_LIB_ONLY": "1", "PATH": "/usr/bin:/bin"}
+            result = subprocess.run(
+                ["sh", "-c", cmd], text=True, capture_output=True, timeout=30, env=env,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            stored_name = base64.b64decode((root / "name.b64").read_bytes(), validate=True)
+            stored_secret = base64.b64decode((root / "secret.b64").read_bytes(), validate=True)
+            stored_basic_auth = base64.b64decode(
+                (root / "basic-auth.b64").read_bytes(), validate=True
+            )
+            self.assertEqual(stored_name, b"robot$crossplane-system")
+            self.assertEqual(stored_secret, secret_file.read_bytes())
+            self.assertEqual(
+                stored_basic_auth,
+                base64.b64encode(stored_name + b":" + stored_secret),
+            )
+
+    def test_basic_auth_pair_staging_does_not_mask_a_printf_failure(self):
+        composed = run_nu("harbor_credential_repair_script")
+        self.assertEqual(composed.returncode, 0, composed.stderr)
+        with tempfile.TemporaryDirectory(prefix="harbor-encoding-failure-") as tmp:
+            root = Path(tmp)
+            script = root / "repair.sh"
+            script.write_text(composed.stdout, encoding="utf-8")
+            secret_file = root / "secret.txt"
+            secret_file.write_bytes(b"Aa1fixtureSecretForEncoding32Byte")
+            cmd = (
+                f'. "{script}"; '
+                'printf() { if [ "$1" = "%s:" ]; then return 7; fi; command printf "$@"; }; '
+                f'WORKDIR="{root}"; '
+                "robot_name='robot$crossplane-system'; "
+                f'secret_file="{secret_file}"; encode_recovered_credential_files'
+            )
+            env = {"HARBOR_REPAIR_LIB_ONLY": "1", "PATH": "/usr/bin:/bin"}
+            result = subprocess.run(
+                ["sh", "-c", cmd], text=True, capture_output=True, timeout=30, env=env,
+            )
+            self.assertNotEqual(
+                result.returncode, 0,
+                "a failed name/colon producer must not be masked by a successful secret-file read",
+            )
+            self.assertNotIn(secret_file.read_text(), result.stdout + result.stderr)
+
     def test_readback_equality_is_preserved_on_encoded_values(self):
         for expected, persisted in (
             ("name_b64_file", "post_name_b64_file"),
