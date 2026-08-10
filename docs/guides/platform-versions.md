@@ -165,10 +165,11 @@ where noted (this environment has no cluster — see section 7).
   function pipeline (`crossplane beta convert pipeline-composition`). Out of
   scope for this repo; validate `core-catalog` separately before promoting.
 - **core-catalog pin (Issue #301):** `apps/platform/core-catalog.yaml` pins the
-  exact independently reviewed canonical merge commit of core-catalog PR #19,
-  `9c92496334422aa5bff7519acdb478b16185a6ea`. This deploys provider-http-safe
-  Gitea Actions-secret array normalization with the deterministic KCL pipeline
-  and Core integration. The Application stays manually gated
+  exact independently reviewed canonical merge commit of core-catalog PR #20,
+  `7b4d4c9f3b73cec4ac2f67d29a75025c0a1cbbcc`. This deploys provider-http-safe
+  Gitea Actions-secret array normalization plus credential-fingerprint drift
+  repair for in-place Harbor robot credential corrections, with the deterministic
+  KCL pipeline and Core integration. The Application stays manually gated
   (`platform.digiorg.io/upgrade-gate: issue-275-manual`, no `syncPolicy.automated`);
   do not enable automatic catalog sync. `test_crossplane_migration.py`
   (`CoreCatalogReviewedRevisionPinTest`) locks the reviewed revision, the
