@@ -4803,6 +4803,26 @@ def configure_gitea [] {
     configure_gitea_actions_runner $gitea_pod $gitea_token
 }
 
+# Reduce a failed seed GET's stderr to a fixed non-secret diagnostic enum. The
+# raw text is intentionally never printed: kubectl/curl diagnostics are not a
+# stable API and future versions could add request details.
+def classify_app_config_seed_query_error [stderr: string] {
+    let normalized = ($stderr | str lowercase)
+    if ($normalized | str contains "could not resolve host") or ($normalized | str contains "server misbehaving") or ($normalized | str contains "no such host") {
+        "dns"
+    } else if ($normalized | str contains "failed to connect") or ($normalized | str contains "connection refused") or ($normalized | str contains "connection reset") {
+        "connection"
+    } else if ($normalized | str contains "certificate") or ($normalized | str contains "x509") {
+        "tls"
+    } else if ($normalized | str contains "unable to upgrade connection") or ($normalized | str contains "container not found") or ($normalized | str contains "pod not found") {
+        "exec"
+    } else if ($normalized | str contains "deadline exceeded") or ($normalized | str contains "timed out") or ($normalized | str contains "timeout") {
+        "timeout"
+    } else {
+        "unknown"
+    }
+}
+
 # Create (idempotently) the private DigiOrg/app-config repository that is the
 # GitOps sink for generated AppClaim manifests (Issue #285 P0: "no declared
 # GitOps sink exists for generated manifests"), and seed the `claims/`
@@ -4876,6 +4896,8 @@ def configure_app_config_repo [
         if $app_claim_seed_check.exit_code == 0 {
             break
         }
+        let error_class = (classify_app_config_seed_query_error $app_claim_seed_check.stderr)
+        print $"  app-config seed GET retry class: ($error_class) [attempt ($attempt)/5]"
         if $attempt < 5 {
             sleep $retry_delay
         }
