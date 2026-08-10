@@ -96,6 +96,8 @@ BOUNDARY_FUNCS = (
     "harbor_credential_repair_script",
     "harbor_robot_selector_jq",
     "harbor_robot_expected_permissions",
+    "harbor_robot_observe_response_ready",
+    "wait_for_harbor_robot_permissions_ready",
     "harbor_credential_probe_job",
     "harbor_credential_repair_job",
     "harbor_credential_recovery_rbac",
@@ -922,6 +924,107 @@ class RepairTransactionOrderTest(unittest.TestCase):
         ):
             self.assertIn(f'cmp -s "${persisted}" "${expected}"', self.script)
 
+@unittest.skipIf(NU is None, "nushell (nu) is required for Observe parser tests")
+class HarborRobotObserveReadinessBehaviourTest(unittest.TestCase):
+    def robot(self, *, robot_id: object = 1, name="robot$crossplane-system", permissions=None):
+        expected = [
+            {"kind": "system", "namespace": "/", "access": [
+                {"resource": "project", "action": "create"},
+            ]},
+            {"kind": "project", "namespace": "*", "access": [
+                {"resource": "robot", "action": "create"},
+                {"resource": "robot", "action": "read"},
+                {"resource": "artifact", "action": "read"},
+                {"resource": "repository", "action": "push"},
+                {"resource": "repository", "action": "pull"},
+            ]},
+        ]
+        return {
+            "id": robot_id,
+            "name": name,
+            "level": "system",
+            "permissions": expected if permissions is None else permissions,
+        }
+
+    def request(self, body, *, generation=4, observed_generation=4, status_code=200):
+        return {
+            "metadata": {"generation": generation},
+            "status": {
+                "conditions": [{
+                    "type": "Synced", "status": "True",
+                    "observedGeneration": observed_generation,
+                }],
+                "response": {"statusCode": status_code, "body": body},
+            },
+        }
+
+    def ready(self, request):
+        payload = json.dumps(request, separators=(",", ":"))
+        result = run_nu(f"print (harbor_robot_observe_response_ready '{payload}')")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout.strip() == "true"
+
+    def test_accepts_string_and_already_object_valued_observe_bodies(self):
+        robots = [self.robot()]
+        self.assertTrue(self.ready(self.request(json.dumps(robots))))
+        self.assertTrue(self.ready(self.request(robots)))
+
+    def test_requires_current_generation_http_200_and_one_canonical_robot(self):
+        robots = [self.robot()]
+        self.assertFalse(self.ready(self.request(robots, observed_generation=3)))
+        self.assertFalse(self.ready(self.request(robots, status_code=422)))
+        self.assertFalse(self.ready(self.request([])))
+        self.assertFalse(self.ready(self.request(robots + robots)))
+        self.assertFalse(self.ready(self.request([self.robot(name="crossplane-system")])))
+
+    def test_requires_a_positive_integer_id_and_the_exact_permission_set(self):
+        for robot_id in (0, -1, 1.5, "1"):
+            self.assertFalse(self.ready(self.request([self.robot(robot_id=robot_id)])))
+        extra = self.robot()["permissions"] + [{
+            "kind": "system", "namespace": "/",
+            "access": [{"resource": "user", "action": "read"}],
+        }]
+        self.assertFalse(self.ready(self.request([self.robot(permissions=extra)])))
+
+        null_effect = json.loads(json.dumps(self.robot()["permissions"]))
+        null_effect[0]["access"][0]["effect"] = None
+        self.assertFalse(
+            self.ready(self.request([self.robot(permissions=null_effect)])),
+            "an explicit null effect is malformed, not equivalent to omission",
+        )
+
+        canonical = self.robot()["permissions"]
+        split_project = [
+            canonical[0],
+            {**canonical[1], "access": canonical[1]["access"][:2]},
+            {**canonical[1], "access": canonical[1]["access"][2:]},
+        ]
+        self.assertFalse(
+            self.ready(self.request([self.robot(permissions=split_project)])),
+            "permission grouping must match the recovery selector exactly",
+        )
+
+    def test_malformed_or_scalar_payloads_fail_closed(self):
+        self.assertFalse(self.ready(self.request("not-json")))
+        self.assertFalse(self.ready(self.request({"id": 1})))
+        self.assertFalse(self.ready(self.request(["not-a-robot"])))
+        canonical = self.robot()
+        for extra in (
+            "not-a-robot",
+            {},
+            self.robot(name="crossplane-system"),
+            self.robot(name="robot$unrelated"),
+        ):
+            self.assertFalse(
+                self.ready(self.request([canonical, extra])),
+                "the Observe body must contain exactly one valid robot and nothing else",
+            )
+        malformed_condition = self.request([self.robot()])
+        malformed_condition["status"]["conditions"] = ["not-a-condition"]
+        self.assertFalse(self.ready(malformed_condition))
+        self.assertFalse(self.ready("not-a-request"))
+
+
 class CredentialGateOrderingTest(unittest.TestCase):
     """provider ready -> bootstrap sync -> credentials ready -> downstream."""
 
@@ -938,6 +1041,26 @@ class CredentialGateOrderingTest(unittest.TestCase):
             loop.index("ensure_crossplane_harbor_credentials"),
             "the credential gate must run after the bootstrap Application syncs",
         )
+
+        self.assertLess(
+            loop.index("kubectl patch application $app"),
+            loop.index("wait_for_harbor_robot_permissions_ready"),
+            "the provider-http Observe gate must run after the bootstrap Application syncs",
+        )
+        self.assertLess(
+            loop.index("wait_for_harbor_robot_permissions_ready"),
+            loop.index("ensure_crossplane_harbor_credentials"),
+            "live robot permissions must converge before credential recovery can rotate",
+        )
+
+    def test_permission_wait_is_bounded_and_checks_the_exact_request(self):
+        wait = func_body("wait_for_harbor_robot_permissions_ready")
+        self.assertIn("harbor-crossplane-system-robot", wait)
+        self.assertIn("for attempt in 1..45", wait)
+        self.assertIn("--request-timeout=1s", wait)
+        self.assertIn("if $attempt < 45", wait)
+        self.assertIn("harbor_robot_observe_response_ready", wait)
+        self.assertIn("error make", wait)
 
     def test_downstream_applications_stay_ordered_behind_the_gate(self):
         loop = func_body("sync_gated_apps_for_local_dev")

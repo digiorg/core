@@ -2265,6 +2265,142 @@ def normperms:
   end'#
 }
 
+# The provider-http Request can remain Ready=True while its asynchronous UPDATE
+# has not reached Harbor yet. Parse only its latest secret-free Observe response
+# and accept it when the current generation is observed, HTTP is 200, and the
+# one canonical system robot has the exact least-privilege permission set.
+# provider-http v1.0.14 may store response.body as either JSON text or an
+# already-decoded value, so both representations are handled explicitly.
+def harbor_robot_observe_response_ready [request_json: string] {
+    let request = (try { $request_json | from json } catch { return false })
+    if not (($request | describe) | str starts-with "record") {
+        return false
+    }
+
+    let generation = ($request | get -o metadata.generation)
+    if (($generation | describe) != "int") or $generation <= 0 {
+        return false
+    }
+    let conditions = ($request | get -o status.conditions | default [])
+    let conditions_type = ($conditions | describe)
+    if not (($conditions_type | str starts-with "list") or ($conditions_type | str starts-with "table")) {
+        return false
+    }
+    let synced = ($conditions | where {|condition|
+        ((($condition | describe) | str starts-with "record") and (($condition | get -o type | default "") == "Synced") and (($condition | get -o status | default "") == "True") and (($condition | get -o observedGeneration) == $generation))
+    })
+    if ($synced | length) != 1 {
+        return false
+    }
+
+    let status_code = ($request | get -o status.response.statusCode)
+    if (($status_code | describe) != "int") or $status_code != 200 {
+        return false
+    }
+    let raw_body = ($request | get -o status.response.body)
+    let body = if (($raw_body | describe) == "string") {
+        try { $raw_body | from json } catch { return false }
+    } else {
+        $raw_body
+    }
+    let body_type = ($body | describe)
+    if not (($body_type | str starts-with "list") or ($body_type | str starts-with "table")) {
+        return false
+    }
+    if ($body | length) != 1 {
+        return false
+    }
+
+    let matches = ($body | where {|robot|
+        ((($robot | describe) | str starts-with "record") and (($robot | get -o level | default "") == "system") and (($robot | get -o name | default "") =~ '^[^$]+\$crossplane-system$'))
+    })
+    if ($matches | length) != 1 {
+        return false
+    }
+    let robot = ($matches | first)
+    let robot_id = ($robot | get -o id)
+    if (($robot_id | describe) != "int") or $robot_id <= 0 {
+        return false
+    }
+
+    let normalize_permissions = {|permissions|
+        let permissions_type = ($permissions | describe)
+        if not (($permissions_type | str starts-with "list") or ($permissions_type | str starts-with "table")) {
+            return null
+        }
+        mut normalized = []
+        for permission in $permissions {
+            if not (($permission | describe) | str starts-with "record") {
+                return null
+            }
+            let kind = ($permission | get -o kind)
+            let namespace = ($permission | get -o namespace)
+            let access = ($permission | get -o access)
+            let access_type = ($access | describe)
+            if (($kind | describe) != "string") or (($namespace | describe) != "string") or not (($access_type | str starts-with "list") or ($access_type | str starts-with "table")) {
+                return null
+            }
+            mut normalized_access = []
+            for entry in $access {
+                if not (($entry | describe) | str starts-with "record") {
+                    return null
+                }
+                let resource = ($entry | get -o resource)
+                let action = ($entry | get -o action)
+                let effect = if "effect" in ($entry | columns) {
+                    $entry | get effect
+                } else {
+                    ""
+                }
+                if (($resource | describe) != "string") or (($action | describe) != "string") or (($effect | describe) != "string") {
+                    return null
+                }
+                $normalized_access = ($normalized_access | append ([$resource $action $effect] | to json -r))
+            }
+            let permission_record = {
+                kind: $kind
+                namespace: $namespace
+                access: ($normalized_access | sort)
+            }
+            $normalized = ($normalized | append ($permission_record | to json -r))
+        }
+        $normalized | sort
+    }
+
+    let actual = (do $normalize_permissions ($robot | get -o permissions))
+    let expected_permissions = (try { harbor_robot_expected_permissions | from json } catch { return false })
+    let expected = (do $normalize_permissions $expected_permissions)
+    if ($actual == null) or ($expected == null) {
+        return false
+    }
+    $actual == $expected
+}
+
+# Bound the asynchronous provider-http UPDATE/OBSERVE window before the
+# credential gate is allowed to rotate anything. Request conditions alone are
+# insufficient: Ready remained true for ~50 seconds before Harbor received the
+# permission PUT in the Issue #301 upgrade runtime.
+def wait_for_harbor_robot_permissions_ready [] {
+    $env.KUBECONFIG = $KUBECONFIG_PATH
+    print "  Waiting for Harbor bootstrap robot permission convergence..."
+    for attempt in 1..45 {
+        let request_result = (do {
+            kubectl --request-timeout=1s get request.http.crossplane.io harbor-crossplane-system-robot -o json
+        } | complete)
+        if ($request_result.exit_code == 0) and (harbor_robot_observe_response_ready $request_result.stdout) {
+            print $"(ansi green)  ✓ Harbor bootstrap robot permissions converged(ansi reset)"
+            return
+        }
+        if $attempt > 40 {
+            print $"  Harbor bootstrap robot permissions pending [attempt ($attempt)/45]"
+        }
+        if $attempt < 45 {
+            sleep 5sec
+        }
+    }
+    error make {msg: "Harbor bootstrap robot permissions did not converge to the exact least-privilege contract within 5 minutes"}
+}
+
 # Runs entirely inside the recovery Job. Refreshes the EXISTING bootstrap
 # robot's secret (goharbor/harbor v2.15.1 PATCH /robots/{id} -> RefreshSec,
 # src/server/v2.0/handler/robot.go) instead of creating a second one --
@@ -3140,6 +3276,7 @@ def sync_gated_apps_for_local_dev [] {
         # recovered) before any downstream Application (crossplane-xrds,
         # core-catalog) is allowed to sync.
         if $app == "crossplane-harbor-bootstrap" {
+            wait_for_harbor_robot_permissions_ready
             ensure_crossplane_harbor_credentials
         }
     }
