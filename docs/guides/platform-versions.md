@@ -164,12 +164,11 @@ where noted (this environment has no cluster — see section 7).
   patch-and-transform — any P&T Composition there must be converted to the
   function pipeline (`crossplane beta convert pipeline-composition`). Out of
   scope for this repo; validate `core-catalog` separately before promoting.
-- **core-catalog pin (Issue #285):** `apps/platform/core-catalog.yaml` pins the
-  exact independently reviewed head of core-catalog PR #18,
-  `7fd51323db2c38e7ca36f5496e22686a93aa9fc4`. This deploys the deterministic
-  KCL pipeline together with the Core integration. If PR #18 is squash/rebase
-  merged, advance this pin to the resulting canonical commit before merging the
-  Core PR. The Application stays manually gated
+- **core-catalog pin (Issue #301):** `apps/platform/core-catalog.yaml` pins the
+  exact independently reviewed canonical merge commit of core-catalog PR #19,
+  `9c92496334422aa5bff7519acdb478b16185a6ea`. This deploys provider-http-safe
+  Gitea Actions-secret array normalization with the deterministic KCL pipeline
+  and Core integration. The Application stays manually gated
   (`platform.digiorg.io/upgrade-gate: issue-275-manual`, no `syncPolicy.automated`);
   do not enable automatic catalog sync. `test_crossplane_migration.py`
   (`CoreCatalogReviewedRevisionPinTest`) locks the reviewed revision, the
