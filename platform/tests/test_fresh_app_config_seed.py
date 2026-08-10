@@ -111,7 +111,8 @@ class FreshSeedWiringTest(unittest.TestCase):
 
     def test_read_only_seed_query_has_bounded_transport_retries_and_timeouts(self):
         claim_section = self.body[self.body.index(TARGET) :]
-        self.assertIn("for attempt in 1..3", claim_section)
+        self.assertIn("for attempt in 1..5", claim_section)
+        self.assertIn("--retry-delay: duration = 10sec", self.body)
         self.assertIn("--request-timeout=15s", claim_section)
         self.assertIn("--connect-timeout 5", claim_section)
         self.assertIn("--max-time 10", claim_section)
@@ -147,7 +148,7 @@ class FreshSeedBehaviourTest(unittest.TestCase):
             env = os.environ.copy()
             env.update({"PATH": tmp + os.pathsep + env["PATH"], "CALL_LOG": log, "CLAIM_STATUS": status, "STATE_FILE": state})
             result = subprocess.run(
-                ["nu", "--no-config-file", "-c", f"source {SETUP}; configure_app_config_repo fake-pod sentinel-token"],
+                ["nu", "--no-config-file", "-c", f"source {SETUP}; configure_app_config_repo fake-pod sentinel-token --retry-delay 0sec"],
                 cwd=REPO_ROOT,
                 env=env,
                 text=True,
@@ -193,7 +194,7 @@ class FreshSeedBehaviourTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         scripts = [" ".join(call["args"]) for call in calls]
         claim_calls = [s for s in scripts if TARGET in s]
-        self.assertEqual(len(claim_calls), 3)
+        self.assertEqual(len(claim_calls), 5)
         self.assertFalse(any("-X POST" in s for s in claim_calls))
 
 
