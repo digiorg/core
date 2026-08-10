@@ -128,6 +128,8 @@ Not a Nushell step: `crossplane/bootstrap/harbor-robot-request.yaml` is a `provi
 
 The gated local rollout does not trust Argo `Synced/Healthy` or a stale `Ready=True` Request condition as proof that Harbor has received the asynchronous update. Before credential probing or recovery, it waits up to five minutes for the current Request generation's secret-free Observe response (string- or object-valued body) to report HTTP `200`, exactly one canonical positive-integer robot identity, and exactly the six expected permissions. This prevents fail-closed recovery from racing provider-http's later permission `PUT`.
 
+The Kubernetes patch keeps all credential material in tmpfs-backed files and accounts for the API's outer `.data` base64 layer: `name` and `secret` receive one encoding, while `basicAuth` receives an inner `base64(name:secret)` value plus the outer Kubernetes encoding. The resourceVersion precondition and byte-exact encoded readback preserve the transaction boundary.
+
 ## Service Access
 
 After `up` completes, access services via:

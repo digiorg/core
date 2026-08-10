@@ -2548,6 +2548,54 @@ collect_robots() {
   return 0
 }
 
+encode_base64_file() {
+  input_file="$1"
+  output_file="$2"
+  raw_file="$output_file.raw"
+  if ! base64 < "$input_file" > "$raw_file"; then
+    echo "ERROR: failed to base64-encode recovered credential material" >&2
+    return 1
+  fi
+  if ! LC_ALL=C tr -cd 'A-Za-z0-9+/=' < "$raw_file" > "$output_file"; then
+    echo "ERROR: failed to normalize recovered credential encoding" >&2
+    return 1
+  fi
+  if [ ! -s "$output_file" ]; then
+    echo "ERROR: recovered credential encoding was empty" >&2
+    return 1
+  fi
+}
+
+encode_recovered_credential_files() {
+  name_value_file="$WORKDIR/name.value"
+  credential_pair_file="$WORKDIR/basic-auth-plain.value"
+  basic_auth_value_file="$WORKDIR/basic-auth.value"
+  name_b64_file="$WORKDIR/name.b64"
+  secret_b64_file="$WORKDIR/secret.b64"
+  basic_auth_b64_file="$WORKDIR/basic-auth.b64"
+
+  if ! printf '%s' "$robot_name" > "$name_value_file"; then
+    echo "ERROR: failed to stage recovered robot name" >&2
+    return 1
+  fi
+  if ! printf '%s:' "$robot_name" > "$credential_pair_file"; then
+    echo "ERROR: failed to stage recovered Basic-auth name" >&2
+    return 1
+  fi
+  if ! cat "$secret_file" >> "$credential_pair_file"; then
+    echo "ERROR: failed to stage recovered Basic-auth secret" >&2
+    return 1
+  fi
+
+  # Kubernetes Secret .data is itself base64. name and secret therefore need
+  # one encoding layer, while basicAuth needs two: the Secret's decoded value
+  # remains base64(name:secret), matching the declarative CREATE contract.
+  encode_base64_file "$name_value_file" "$name_b64_file" || return 1
+  encode_base64_file "$secret_file" "$secret_b64_file" || return 1
+  encode_base64_file "$credential_pair_file" "$basic_auth_value_file" || return 1
+  encode_base64_file "$basic_auth_value_file" "$basic_auth_b64_file" || return 1
+}
+
 # Sourcing this script with HARBOR_REPAIR_LIB_ONLY=1 defines the pure helpers
 # above and stops before any I/O, so the real shell logic can be exercised
 # directly against fixtures (Issue #285 second review: source-level assertions
@@ -2660,12 +2708,9 @@ while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
   # Keep every encoded credential field in the memory-backed workspace. Even
   # Kubernetes' base64 representation is credential material and must not be
   # expanded into another process's argv.
-  name_b64_file="$WORKDIR/name.b64"
-  secret_b64_file="$WORKDIR/secret.b64"
-  basic_auth_b64_file="$WORKDIR/basic-auth.b64"
-  printf '%s' "$robot_name" | base64 | tr -cd 'A-Za-z0-9+/=' > "$name_b64_file"
-  base64 < "$secret_file" | tr -cd 'A-Za-z0-9+/=' > "$secret_b64_file"
-  { printf '%s:' "$robot_name"; cat "$secret_file"; } | base64 | tr -cd 'A-Za-z0-9+/=' > "$basic_auth_b64_file"
+  if ! encode_recovered_credential_files; then
+    exit 1
+  fi
 
   # 4. Conditional write. The resourceVersion precondition makes the API
   #    server reject the patch if anything changed since step 1. A JSON merge
