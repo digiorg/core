@@ -1,0 +1,35 @@
+apiVersion: platform.digiorg.io/v1alpha1
+kind: AppClaim
+metadata:
+  name: myapp
+  namespace: app-claims
+  annotations:
+    terasky.backstage.io/source-info: '{"pushToGit":true,"gitBranch":"main","gitRepo":"digiorg.local?owner=DigiOrg&repo=app-config","gitLayout":"cluster-scoped","basePath":"digiorg-core-dev/app-claims/AppClaim"}'
+    terasky.backstage.io/add-to-catalog: "true"
+    terasky.backstage.io/owner: group:default/digiorgadmin
+    terasky.backstage.io/system: app-claims
+    terasky.backstage.io/source-file-url: https://digiorg.local/DigiOrg/app-config/blob/main/digiorg-core-dev/app-claims/AppClaim/myapp.yaml
+spec:
+  appName: myapp
+  compositeDeletePolicy: Background
+  compositionUpdatePolicy: Automatic
+  database:
+    enabled: false
+  gitea:
+    cicd: true
+    enabled: true
+    visibility: public
+  messaging:
+    enabled: false
+  services:
+    - build:
+        context: "."
+        enabled: true
+      image: myappapi
+      name: myappapi
+      port: 9950
+      replicas: 1
+  size: S
+  team: platform-team
+  writeConnectionSecretToRef:
+    name: myappsecret
