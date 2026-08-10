@@ -172,6 +172,14 @@ class RunnerManifestsTest(unittest.TestCase):
         self.assertIn(env["SSL_CERT_FILE"]["value"].rsplit("/", 1)[0], mount_paths)
         self.assertIn("/etc/docker/certs.d/digiorg.local", mount_paths)
 
+    def test_act_runner_config_revision_is_part_of_the_pod_template(self):
+        deploy = self.by_kind["Deployment"][0]
+        annotations = deploy["spec"]["template"].get("metadata", {}).get("annotations", {})
+        self.assertEqual(
+            annotations.get("platform.digiorg.io/act-runner-config-revision"),
+            "issue-301-ca-valid-volume-v1",
+        )
+
     def test_config_file_env_points_at_a_mounted_act_runner_config(self):
         # act_runner v0.6.1's entrypoint (scripts/run.sh) only passes
         # --config when CONFIG_FILE is set; without it there is no way to
@@ -195,6 +203,22 @@ class RunnerManifestsTest(unittest.TestCase):
         container_options = config_yaml["container"]["options"]
         self.assertIn("--volume", container_options)
         self.assertNotIn("insecureSkipVerify", container_options)
+
+    def test_act_runner_allowlists_exact_ca_bind_source_for_job_containers(self):
+        """act_runner v0.6.1 sanitizes every container.options bind against
+        container.valid_volumes and silently removes non-allowlisted sources.
+        Keep this least-privilege: allow exactly the CA file, never a wildcard.
+        """
+        configmaps = self.by_kind.get("ConfigMap", [])
+        config_doc = next(cm for cm in configmaps if "config.yaml" in (cm.get("data") or {}))
+        container = yaml.safe_load(config_doc["data"]["config.yaml"])["container"]
+        expected_source = "/etc/digiorg/ca/ca.crt"
+        self.assertEqual(container.get("valid_volumes"), [expected_source])
+        self.assertNotIn("**", container["valid_volumes"])
+        self.assertIn(
+            f"--volume={expected_source}:{expected_source}:ro",
+            container["options"],
+        )
 
     def test_registration_token_is_mounted_as_a_file_not_a_raw_env_value(self):
         c = self._container()

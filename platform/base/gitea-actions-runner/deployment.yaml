@@ -16,6 +16,11 @@ spec:
     metadata:
       labels:
         app: gitea-actions-runner
+      annotations:
+        # act_runner reads config.yaml only at process start. Bump this marker
+        # whenever that config's runtime semantics change so Argo rolls the
+        # Recreate Deployment declaratively rather than leaving a stale daemon.
+        platform.digiorg.io/act-runner-config-revision: issue-301-ca-valid-volume-v1
     spec:
       containers:
         - name: runner

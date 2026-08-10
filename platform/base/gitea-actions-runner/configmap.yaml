@@ -17,6 +17,15 @@ data:
       insecure: false
     container:
       privileged: true
+      # act_runner v0.6.1 sanitizes every bind produced by container.options
+      # against container.valid_volumes (act/container/docker_run.go
+      # sanitizeConfig). Without this exact allowlist entry it silently removes
+      # the CA bind before creating the job container, and actions/checkout
+      # fails because GIT_SSL_CAINFO points at a file that was never mounted.
+      # Keep this source-file-scoped: never allow `**` or the containing
+      # directory, which would let workflows request unrelated host binds.
+      valid_volumes:
+        - /etc/digiorg/ca/ca.crt
       # Bind-mounts the runner pod's own copy of the digiorg-local CA
       # (mounted at /etc/digiorg/ca/ca.crt, see deployment.yaml) into every
       # job container the embedded dockerd creates, at the path the
