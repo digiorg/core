@@ -4812,7 +4812,11 @@ def configure_gitea [] {
 # never reconciles. Uses the existing admin bootstrap token: this is one-time
 # platform bootstrap, not a per-AppClaim credential (see
 # configure_crossplane_gitea_credentials for that separate, narrower identity).
-def configure_app_config_repo [gitea_pod: string, gitea_token: string] {
+def configure_app_config_repo [
+    gitea_pod: string,
+    gitea_token: string,
+    --retry-delay: duration = 10sec,
+] {
     let repo_check = (do {
         $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /etc/gitea/trusted-cas/digiorg-local-ca.crt -sS -o /dev/null -w "%{http_code}" https://digiorg.local/gitea/api/v1/repos/DigiOrg/app-config'
     } | complete)
@@ -4865,15 +4869,15 @@ def configure_app_config_repo [gitea_pod: string, gitea_token: string] {
     let app_claim_seed_target = "claims/digiorg-core-dev/app-claims/AppClaim/myapp.yaml"
     let app_claim_seed_path = ($env.PWD | path join "bootstrap/app-config/claims/digiorg-core-dev/app-claims/AppClaim/myapp.yaml")
     mut app_claim_seed_check = {exit_code: 1, stdout: "", stderr: ""}
-    for attempt in 1..3 {
+    for attempt in 1..5 {
         $app_claim_seed_check = (do {
             $gitea_token | kubectl --request-timeout=15s --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c $'IFS= read -r token; printf "header = \"Authorization: token ***"\n" "$token" | curl --connect-timeout 5 --max-time 10 --config - --cacert /etc/gitea/trusted-cas/digiorg-local-ca.crt -sS -o /dev/null -w "%{http_code}" https://digiorg.local/gitea/api/v1/repos/DigiOrg/app-config/contents/($app_claim_seed_target)'
         } | complete)
         if $app_claim_seed_check.exit_code == 0 {
             break
         }
-        if $attempt < 3 {
-            sleep 1sec
+        if $attempt < 5 {
+            sleep $retry_delay
         }
     }
     if $app_claim_seed_check.exit_code != 0 {
