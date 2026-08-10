@@ -109,12 +109,22 @@ class FreshSeedWiringTest(unittest.TestCase):
         self.assertIn("Unexpected HTTP status while checking the approved AppClaim seed", self.body)
         self.assertIn("Failed to seed the approved app-config AppClaim", self.body)
 
+    def test_read_only_seed_query_has_bounded_transport_retries_and_timeouts(self):
+        claim_section = self.body[self.body.index(TARGET) :]
+        self.assertIn("for attempt in 1..3", claim_section)
+        self.assertIn("--request-timeout=15s", claim_section)
+        self.assertIn("--connect-timeout 5", claim_section)
+        self.assertIn("--max-time 10", claim_section)
+        retry_section = claim_section[: claim_section.index('if $app_claim_seed_status == "200"')]
+        self.assertNotIn("-X POST", retry_section)
+
 
 class FreshSeedBehaviourTest(unittest.TestCase):
     def _run(self, status):
         with tempfile.TemporaryDirectory() as tmp:
             fake = os.path.join(tmp, "kubectl")
             log = os.path.join(tmp, "calls.jsonl")
+            state = os.path.join(tmp, "state")
             with open(fake, "w", encoding="utf-8") as fh:
                 fh.write(
                     "#!/usr/bin/env python3\n"
@@ -123,13 +133,19 @@ class FreshSeedBehaviourTest(unittest.TestCase):
                     "with open(os.environ['CALL_LOG'],'a') as f: f.write(json.dumps({'args':args,'stdinBytes':len(stdin)})+'\\n')\n"
                     "if '/contents/claims/.gitkeep' in script: print('200',end='')\n"
                     "elif '/contents/claims/digiorg-core-dev/app-claims/AppClaim/myapp.yaml' in script:\n"
-                    "  print('201' if '-X POST' in script else os.environ['CLAIM_STATUS'],end='')\n"
+                    "  status=os.environ['CLAIM_STATUS']; state=os.environ['STATE_FILE']\n"
+                    "  if '-X POST' in script: print('201',end='')\n"
+                    "  elif status == 'transport-always': sys.exit(7)\n"
+                    "  elif status == 'transport-once':\n"
+                    "    if not os.path.exists(state): open(state,'w').write('1'); sys.exit(7)\n"
+                    "    else: print('404',end='')\n"
+                    "  else: print(status,end='')\n"
                     "elif '/repos/DigiOrg/app-config' in script: print('200',end='')\n"
                     "else: sys.exit(3)\n"
                 )
             os.chmod(fake, 0o755)
             env = os.environ.copy()
-            env.update({"PATH": tmp + os.pathsep + env["PATH"], "CALL_LOG": log, "CLAIM_STATUS": status})
+            env.update({"PATH": tmp + os.pathsep + env["PATH"], "CALL_LOG": log, "CLAIM_STATUS": status, "STATE_FILE": state})
             result = subprocess.run(
                 ["nu", "--no-config-file", "-c", f"source {SETUP}; configure_app_config_repo fake-pod sentinel-token"],
                 cwd=REPO_ROOT,
@@ -163,6 +179,22 @@ class FreshSeedBehaviourTest(unittest.TestCase):
         scripts = [" ".join(call["args"]) for call in calls]
         claim_calls = [s for s in scripts if TARGET in s]
         self.assertFalse(any("-X POST" in s or "-X PUT" in s for s in claim_calls))
+
+    def test_one_transient_get_failure_recovers_then_creates_once(self):
+        result, calls = self._run("transport-once")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        scripts = [" ".join(call["args"]) for call in calls]
+        claim_calls = [s for s in scripts if TARGET in s]
+        self.assertEqual(sum("-X POST" not in s for s in claim_calls), 2)
+        self.assertEqual(sum("-X POST" in s for s in claim_calls), 1)
+
+    def test_transport_retry_exhaustion_is_bounded_and_never_writes(self):
+        result, calls = self._run("transport-always")
+        self.assertNotEqual(result.returncode, 0)
+        scripts = [" ".join(call["args"]) for call in calls]
+        claim_calls = [s for s in scripts if TARGET in s]
+        self.assertEqual(len(claim_calls), 3)
+        self.assertFalse(any("-X POST" in s for s in claim_calls))
 
 
 if __name__ == "__main__":
