@@ -3161,6 +3161,21 @@ def gated_sync_operation_succeeded [
     argocd_app_has_no_material_diff $app
 }
 
+# The platform ingress is installed before Argo CD exists, so it cannot rely on
+# an Application for first bootstrap. Existing local clusters still need an
+# idempotent, declarative promotion path when those manifests change. Keep that
+# promotion inside the same resume/upgrade wrapper used for gated Applications
+# rather than requiring an operator to run an ad-hoc kubectl command.
+def apply_bootstrap_managed_ingress_for_local_dev [] {
+    let result = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH apply -k platform/base/ingress/
+    } | complete)
+    if $result.exit_code != 0 {
+        error make {msg: $"Failed to promote bootstrap-managed platform ingress: ($result.stderr | str trim)"}
+    }
+    print $"(ansi green)✓ Bootstrap-managed platform ingress promoted(ansi reset)"
+}
+
 def sync_gated_apps_for_local_dev [] {
     let gated_apps = [
         "external-secrets", "nats", "grafana", "opencost", "gitea",
@@ -3173,6 +3188,8 @@ def sync_gated_apps_for_local_dev [] {
 
     print ""
     print $"(ansi cyan_bold)Promoting gated upgrades sequentially on local KinD(ansi reset)"
+
+    apply_bootstrap_managed_ingress_for_local_dev
 
     # Issue #285 runtime-v11: crossplane-harbor-bootstrap's Request objects need
     # crossplane-system/digiorg-local-ca (proven live ReconcileError: missing
