@@ -15,10 +15,10 @@ spec:
   source:
     repoURL: https://github.com/digiorg/core-catalog.git
     # Issue #301 advances the deterministic KCL pipeline through core-catalog
-    # PR #20. Pin its exact independently reviewed canonical merge commit so
+    # PR #21. Pin its exact independently reviewed canonical merge commit so
     # Core and Catalog are deployed as one immutable integration.
     # Keep this manual (no syncPolicy.automated) — see docs/guides/platform-versions.md.
-    targetRevision: 7b4d4c9f3b73cec4ac2f67d29a75025c0a1cbbcc
+    targetRevision: 7de26a07b81e28af68cabafc44a3283ef615f724
     path: compositions/local
 
   destination:
