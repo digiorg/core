@@ -3265,6 +3265,117 @@ fi
     print $"(ansi green)✓ KinD node resolves digiorg.local to 127.0.0.1(ansi reset)"
 }
 
+# containerd's pinned v2.3.1 hosts configuration is loaded dynamically from
+# /etc/containerd/certs.d, so the local Harbor CA can be installed without a
+# daemon or Pod restart. Transfer only the public CA over stdin, validate it in
+# the Linux node, and keep any conflicting hosts.toml fail-closed.
+def ensure_kind_node_digiorg_local_ca_trust [] {
+    let kind_node = $"($CLUSTER_NAME)-control-plane"
+    let ca_result = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH get secret digiorg-local-ca-secret -n cert-manager -o jsonpath='{.data.ca\.crt}'
+    } | complete)
+    if $ca_result.exit_code != 0 or ($ca_result.stdout | str trim | is-empty) {
+        error make {msg: "Failed to read the public digiorg.local CA for KinD containerd"}
+    }
+    let ca_b64 = ($ca_result.stdout | str trim)
+    let node_script = r#'
+set -eu
+registry_dir="/etc/containerd/certs.d/digiorg.local"
+ca_path="$registry_dir/ca.crt"
+hosts_path="$registry_dir/hosts.toml"
+if [ -e "$registry_dir" ]; then
+    if [ ! -d "$registry_dir" ] || [ -L "$registry_dir" ]; then
+        echo "invalid containerd registry trust directory for digiorg.local" >&2
+        exit 1
+    fi
+else
+    mkdir "$registry_dir"
+fi
+
+tmp_ca=$(mktemp "$registry_dir/.ca.crt.XXXXXX")
+tmp_hosts=$(mktemp "$registry_dir/.hosts.toml.XXXXXX")
+cleanup() {
+    [ -z "${tmp_ca:-}" ] || rm -f "$tmp_ca"
+    [ -z "${tmp_hosts:-}" ] || rm -f "$tmp_hosts"
+}
+trap cleanup EXIT HUP INT TERM
+
+cat >"$tmp_ca"
+if [ ! -s "$tmp_ca" ] || ! openssl x509 -in "$tmp_ca" -noout >/dev/null 2>&1; then
+    echo "invalid digiorg.local public CA" >&2
+    exit 1
+fi
+chmod 0644 "$tmp_ca"
+
+cat >"$tmp_hosts" <<'EOF'
+server = "https://digiorg.local"
+
+capabilities = ["pull", "resolve"]
+ca = "/etc/containerd/certs.d/digiorg.local/ca.crt"
+EOF
+chmod 0644 "$tmp_hosts"
+expected_hosts_sha=$(sha256sum "$tmp_hosts" | awk '{print $1}')
+hosts_matches() {
+    [ -f "$hosts_path" ] && [ ! -L "$hosts_path" ] || return 1
+    actual_hosts_sha=$(sha256sum "$hosts_path" | awk '{print $1}') || return 1
+    [ "$actual_hosts_sha" = "$expected_hosts_sha" ]
+}
+
+# Publish the restrictive policy first. If the process stops before the CA is
+# installed, its referenced CA is absent and containerd fails closed. `mv -n`
+# never overwrites a hosts.toml created between the existence check and rename.
+if [ -e "$hosts_path" ]; then
+    if ! hosts_matches; then
+        echo "conflicting containerd hosts configuration for digiorg.local" >&2
+        exit 1
+    fi
+else
+    if ! mv -n "$tmp_hosts" "$hosts_path"; then
+        echo "failed to publish containerd hosts configuration for digiorg.local" >&2
+        exit 1
+    fi
+fi
+if ! hosts_matches; then
+    echo "conflicting containerd hosts configuration for digiorg.local" >&2
+    exit 1
+fi
+[ ! -e "$tmp_hosts" ] || rm -f "$tmp_hosts"
+tmp_hosts=""
+
+if [ -e "$ca_path" ]; then
+    if [ ! -f "$ca_path" ] || [ -L "$ca_path" ]; then
+        echo "invalid containerd CA path for digiorg.local" >&2
+        exit 1
+    fi
+fi
+if [ -f "$ca_path" ] && cmp -s "$tmp_ca" "$ca_path"; then
+    rm -f "$tmp_ca"
+else
+    mv -f "$tmp_ca" "$ca_path"
+fi
+tmp_ca=""
+
+chmod 0644 "$ca_path" "$hosts_path"
+if ! hosts_matches || ! openssl x509 -in "$ca_path" -noout >/dev/null 2>&1; then
+    echo "KinD containerd trust did not converge for digiorg.local" >&2
+    exit 1
+fi
+'#
+    # The script executes in Linux even when Git/Nushell run on Windows.
+    let normalized_node_script = (
+        $node_script
+        | str replace --all "\r\n" "\n"
+        | str replace --all "\r" "\n"
+    )
+    let result = (do {
+        ($ca_b64 | decode base64) | docker exec -i $kind_node sh -c $normalized_node_script
+    } | complete)
+    if $result.exit_code != 0 {
+        error make {msg: $"Failed to configure KinD containerd digiorg.local CA trust: ($result.stderr | str trim)"}
+    }
+    print $"(ansi green)✓ KinD containerd trusts the digiorg.local public CA(ansi reset)"
+}
+
 def sync_gated_apps_for_local_dev [] {
     let gated_apps = [
         "external-secrets", "nats", "grafana", "opencost", "gitea",
@@ -3298,6 +3409,7 @@ def sync_gated_apps_for_local_dev [] {
     wait_for_configuration_dependencies "Digiorg local CA" ["cert-manager"] [
         {namespace: "cert-manager", name: "digiorg-local-ca"}
     ]
+    ensure_kind_node_digiorg_local_ca_trust
     copy_digiorg_local_ca_to_namespace "harbor"
     copy_digiorg_local_ca_to_namespace "crossplane-system"
     let gitea_deployment_lookup = (do {
