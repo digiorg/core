@@ -4837,6 +4837,9 @@ def configure_app_config_repo [
     gitea_token: string,
     --retry-delay: duration = 10sec,
 ] {
+    if not ($gitea_token =~ '^[0-9a-f]{40}$') {
+        error make {msg: "Refusing a malformed Gitea bootstrap token"}
+    }
     let repo_check = (do {
         $gitea_token | kubectl --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c 'IFS= read -r token; printf "header = \"Authorization: token %s\"\n" "$token" | curl --config - --cacert /etc/gitea/trusted-cas/digiorg-local-ca.crt -sS -o /dev/null -w "%{http_code}" https://digiorg.local/gitea/api/v1/repos/DigiOrg/app-config'
     } | complete)
@@ -4888,28 +4891,25 @@ def configure_app_config_repo [
     # any existing file byte-for-byte: subsequent portal PRs own its lifecycle.
     let app_claim_seed_target = "claims/digiorg-core-dev/app-claims/AppClaim/myapp.yaml"
     let app_claim_seed_path = ($env.PWD | path join "bootstrap/app-config/claims/digiorg-core-dev/app-claims/AppClaim/myapp.yaml")
+    let app_claim_seed_ca = ($env.PWD | path join "digiorg-local-ca.crt")
     mut app_claim_seed_check = {exit_code: 1, stdout: "", stderr: ""}
     mut app_claim_seed_status = ""
     mut app_claim_seed_transport_ok = false
     for attempt in 1..5 {
         $app_claim_seed_check = (do {
-            $"($gitea_token)\n" | kubectl --request-timeout=60s --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c $'IFS= read -r token; printf "header = \"Authorization: token ***"\n" "$token" | curl --connect-timeout 5 --max-time 10 --config - --cacert /etc/gitea/trusted-cas/digiorg-local-ca.crt -sS -o /dev/null -w "%{http_code}|%{exitcode}" https://digiorg.local/gitea/api/v1/repos/DigiOrg/app-config/contents/($app_claim_seed_target); exit 0'
+            $"header = \"Authorization: token ($gitea_token)\"\n" | curl --connect-timeout 5 --max-time 10 --config - --resolve digiorg.local:443:127.0.0.1 --cacert $app_claim_seed_ca -sS -o /dev/null -w "%{http_code}" $"https://digiorg.local/gitea/api/v1/repos/DigiOrg/app-config/contents/($app_claim_seed_target)"
         } | complete)
         if $app_claim_seed_check.exit_code != 0 {
             let error_class = (classify_app_config_seed_query_error $app_claim_seed_check.stderr)
-            print $"  app-config seed GET retry class: ($error_class) [attempt ($attempt)/5]"
+            print $"  app-config seed GET retry class: ($error_class); curl exit: ($app_claim_seed_check.exit_code) [attempt ($attempt)/5]"
         } else {
-            let protocol_fields = ($app_claim_seed_check.stdout | str trim | split row "|")
-            if ($protocol_fields | length) != 2 or not (($protocol_fields | first) =~ '^[0-9]{3}$') or not (($protocol_fields | last) =~ '^[0-9]+$') {
+            let http_status = $app_claim_seed_check.stdout
+            if not ($http_status =~ '^[0-9]{3}$') {
                 error make {msg: "Malformed app-config seed GET transport response"}
             }
-            let curl_exit = ($protocol_fields | last | into int)
-            if $curl_exit == 0 {
-                $app_claim_seed_status = ($protocol_fields | first)
-                $app_claim_seed_transport_ok = true
-                break
-            }
-            print $"  app-config seed GET curl exit: ($curl_exit) [attempt ($attempt)/5]"
+            $app_claim_seed_status = $http_status
+            $app_claim_seed_transport_ok = true
+            break
         }
         if $attempt < 5 {
             sleep $retry_delay
@@ -4923,9 +4923,9 @@ def configure_app_config_repo [
     } else if $app_claim_seed_status == "404" {
         let app_claim_seed_content = (open --raw $app_claim_seed_path | encode base64)
         let app_claim_seed_create = (do {
-            $"($gitea_token)\n" | kubectl --request-timeout=60s --kubeconfig $KUBECONFIG_PATH exec -i -n gitea $gitea_pod -c gitea -- sh -c $'IFS= read -r token; printf "header = \"Authorization: token ***"\n" "$token" | curl --connect-timeout 5 --max-time 10 --config - --cacert /etc/gitea/trusted-cas/digiorg-local-ca.crt -sS -o /dev/null -w "%{http_code}" -X POST -H "Content-Type: application/json" --data "{\"content\":\"($app_claim_seed_content)\",\"message\":\"feat: seed approved Issue 301 AppClaim\",\"branch\":\"main\"}" https://digiorg.local/gitea/api/v1/repos/DigiOrg/app-config/contents/($app_claim_seed_target)'
+            $"header = \"Authorization: token ($gitea_token)\"\n" | curl --connect-timeout 5 --max-time 10 --config - --resolve digiorg.local:443:127.0.0.1 --cacert $app_claim_seed_ca -sS -o /dev/null -w "%{http_code}" -X POST -H "Content-Type: application/json" --data $"{\"content\":\"($app_claim_seed_content)\",\"message\":\"feat: seed approved Issue 301 AppClaim\",\"branch\":\"main\"}" $"https://digiorg.local/gitea/api/v1/repos/DigiOrg/app-config/contents/($app_claim_seed_target)"
         } | complete)
-        if $app_claim_seed_create.exit_code != 0 or (($app_claim_seed_create.stdout | str trim) != "201") {
+        if $app_claim_seed_create.exit_code != 0 or ($app_claim_seed_create.stdout != "201") {
             error make {msg: "Failed to seed the approved app-config AppClaim"}
         }
         print $"(ansi green)✓ Approved Issue #301 AppClaim seeded through app-config Git(ansi reset)"
