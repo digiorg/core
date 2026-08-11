@@ -28,6 +28,7 @@ SEED = os.path.join(
     "myapp.yaml",
 )
 TARGET = "claims/digiorg-core-dev/app-claims/AppClaim/myapp.yaml"
+TOKEN_SENTINEL = "a" * 40
 
 
 def _read(path):
@@ -113,10 +114,14 @@ class FreshSeedWiringTest(unittest.TestCase):
         claim_section = self.body[self.body.index(TARGET) :]
         self.assertIn("for attempt in 1..5", claim_section)
         self.assertIn("--retry-delay: duration = 10sec", self.body)
-        self.assertEqual(claim_section.count("--request-timeout=60s"), 2)
-        self.assertNotIn("--request-timeout=15s", claim_section)
+        self.assertNotIn("kubectl", claim_section)
+        self.assertEqual(claim_section.count("digiorg.local:443:127.0.0.1"), 2)
+        self.assertEqual(claim_section.count("digiorg-local-ca.crt"), 1)
+        self.assertEqual(claim_section.count("$app_claim_seed_ca"), 2)
         self.assertIn("--connect-timeout 5", claim_section)
         self.assertIn("--max-time 10", claim_section)
+        self.assertNotIn("--insecure", claim_section)
+        self.assertNotIn("-k ", claim_section)
         retry_section = claim_section[: claim_section.index('if $app_claim_seed_status == "200"')]
         self.assertNotIn("-X POST", retry_section)
 
@@ -125,15 +130,17 @@ class FreshSeedWiringTest(unittest.TestCase):
         self.assertIn("classify_app_config_seed_query_error", claim_section)
         self.assertIn("app-config seed GET retry class:", claim_section)
         self.assertIn("curl exit:", claim_section)
-        self.assertIn('split row "|"', claim_section)
+        self.assertIn("'^[0-9]{3}$'", claim_section)
+        self.assertNotIn('split row "|"', claim_section)
         self.assertNotIn("print $app_claim_seed_check.stderr", claim_section)
         self.assertNotIn("print ($app_claim_seed_check.stderr", claim_section)
 
 
 class FreshSeedBehaviourTest(unittest.TestCase):
-    def _run(self, status):
+    def _run(self, status, token=TOKEN_SENTINEL):
         with tempfile.TemporaryDirectory() as tmp:
             fake = os.path.join(tmp, "kubectl")
+            fake_curl = os.path.join(tmp, "curl")
             log = os.path.join(tmp, "calls.jsonl")
             state = os.path.join(tmp, "state")
             with open(fake, "w", encoding="utf-8") as fh:
@@ -141,29 +148,35 @@ class FreshSeedBehaviourTest(unittest.TestCase):
                     "#!/usr/bin/env python3\n"
                     "import json,os,sys\n"
                     "args=sys.argv[1:]; script=' '.join(args); stdin=sys.stdin.read()\n"
-                    "with open(os.environ['CALL_LOG'],'a') as f: f.write(json.dumps({'args':args,'stdinBytes':len(stdin),'stdinEndsLf':stdin.endswith('\\n')})+'\\n')\n"
+                    "with open(os.environ['CALL_LOG'],'a') as f: f.write(json.dumps({'tool':'kubectl','args':args,'stdinBytes':len(stdin),'stdinEndsLf':stdin.endswith('\\n'),'stdinHasSentinel':os.environ['TEST_TOKEN'] in stdin})+'\\n')\n"
                     "if '/contents/claims/.gitkeep' in script: print('200',end='')\n"
-                    "elif '/contents/claims/digiorg-core-dev/app-claims/AppClaim/myapp.yaml' in script:\n"
-                    "  status=os.environ['CLAIM_STATUS']; state=os.environ['STATE_FILE']\n"
-                    "  if '-X POST' in script: print('201',end='')\n"
-                    "  elif status == 'transport-always': sys.exit(7)\n"
-                    "  elif status == 'transport-once':\n"
-                    "    if not os.path.exists(state): open(state,'w').write('1'); sys.exit(7)\n"
-                    "    else: print('404|0',end='')\n"
-                    "  elif status == 'curl-always': print('000|6',end='')\n"
-                    "  elif status == 'curl-once':\n"
-                    "    if not os.path.exists(state): open(state,'w').write('1'); print('000|6',end='')\n"
-                    "    else: print('404|0',end='')\n"
-                    "  elif status == 'malformed': print('404',end='')\n"
-                    "  else: print(status+'|0',end='')\n"
+                    "elif '/contents/claims/digiorg-core-dev/app-claims/AppClaim/myapp.yaml' in script: sys.exit(88)\n"
                     "elif '/repos/DigiOrg/app-config' in script: print('200',end='')\n"
                     "else: sys.exit(3)\n"
                 )
             os.chmod(fake, 0o755)
+            with open(fake_curl, "w", encoding="utf-8") as fh:
+                fh.write(
+                    "#!/usr/bin/env python3\n"
+                    "import json,os,sys\n"
+                    "args=sys.argv[1:]; joined=' '.join(args); stdin=sys.stdin.read()\n"
+                    "with open(os.environ['CALL_LOG'],'a') as f: f.write(json.dumps({'tool':'curl','args':args,'stdinBytes':len(stdin),'stdinEndsLf':stdin.endswith('\\n'),'stdinHasSentinel':os.environ['TEST_TOKEN'] in stdin})+'\\n')\n"
+                    "if '/contents/claims/digiorg-core-dev/app-claims/AppClaim/myapp.yaml' not in joined: sys.exit(3)\n"
+                    "status=os.environ['CLAIM_STATUS']; state=os.environ['STATE_FILE']\n"
+                    "if '-X POST' in joined: print((' 201\\n' if status == 'post-whitespace' else '201'),end='')\n"
+                    "elif status in ('transport-always','curl-always'):\n"
+                    "  sys.stderr.write('could not resolve host'); sys.exit(6)\n"
+                    "elif status in ('transport-once','curl-once') and not os.path.exists(state):\n"
+                    "  open(state,'w').write('1'); sys.stderr.write('could not resolve host'); sys.exit(6)\n"
+                    "elif status == 'malformed': print('bad-status',end='')\n"
+                    "elif status == 'get-whitespace': print(' 404\\n',end='')\n"
+                    "else: print(('404' if status in ('transport-once','curl-once','post-whitespace') else status),end='')\n"
+                )
+            os.chmod(fake_curl, 0o755)
             env = os.environ.copy()
-            env.update({"PATH": tmp + os.pathsep + env["PATH"], "CALL_LOG": log, "CLAIM_STATUS": status, "STATE_FILE": state})
+            env.update({"PATH": tmp + os.pathsep + env["PATH"], "CALL_LOG": log, "CLAIM_STATUS": status, "STATE_FILE": state, "TEST_TOKEN": token})
             result = subprocess.run(
-                ["nu", "--no-config-file", "-c", f"source {SETUP}; configure_app_config_repo fake-pod sentinel-token --retry-delay 0sec"],
+                ["nu", "--no-config-file", "-c", f"source {SETUP}; configure_app_config_repo fake-pod $env.TEST_TOKEN --retry-delay 0sec"],
                 cwd=REPO_ROOT,
                 env=env,
                 text=True,
@@ -181,8 +194,12 @@ class FreshSeedBehaviourTest(unittest.TestCase):
         self.assertEqual(len(claim_calls), 2)
         self.assertEqual(sum("-X POST" in s for s in claim_calls), 1)
         target_calls = [call for call in calls if TARGET in " ".join(call["args"])]
+        self.assertTrue(all(call["tool"] == "curl" for call in target_calls))
         self.assertTrue(all(call["stdinEndsLf"] for call in target_calls))
-        self.assertTrue(all(call["stdinBytes"] == len("sentinel-token\n") for call in target_calls))
+        self.assertTrue(all(call["stdinHasSentinel"] for call in target_calls))
+        self.assertTrue(all(TOKEN_SENTINEL not in " ".join(call["args"]) for call in target_calls))
+        self.assertTrue(all("digiorg.local:443:127.0.0.1" in call["args"] for call in target_calls))
+        self.assertTrue(all("digiorg-local-ca.crt" in " ".join(call["args"]) for call in target_calls))
 
     def test_existing_claim_is_preserved_without_write(self):
         result, calls = self._run("200")
@@ -192,12 +209,35 @@ class FreshSeedBehaviourTest(unittest.TestCase):
         self.assertEqual(len(claim_calls), 1)
         self.assertFalse(any("-X POST" in s or "-X PUT" in s for s in claim_calls))
 
+    def test_malformed_token_fails_before_any_api_call(self):
+        malformed = 'a' * 39 + '\noutput = "/tmp/injected"'
+        result, calls = self._run("404", malformed)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(calls)
+        self.assertNotIn(malformed, result.stdout + result.stderr)
+
     def test_unexpected_claim_status_fails_closed_without_write(self):
         result, calls = self._run("500")
         self.assertNotEqual(result.returncode, 0)
         scripts = [" ".join(call["args"]) for call in calls]
         claim_calls = [s for s in scripts if TARGET in s]
         self.assertFalse(any("-X POST" in s or "-X PUT" in s for s in claim_calls))
+
+    def test_whitespace_wrapped_get_status_fails_closed_without_write(self):
+        result, calls = self._run("get-whitespace")
+        self.assertNotEqual(result.returncode, 0)
+        scripts = [" ".join(call["args"]) for call in calls]
+        claim_calls = [s for s in scripts if TARGET in s]
+        self.assertEqual(len(claim_calls), 1)
+        self.assertFalse(any("-X POST" in s for s in claim_calls))
+
+    def test_whitespace_wrapped_post_status_is_not_accepted(self):
+        result, calls = self._run("post-whitespace")
+        self.assertNotEqual(result.returncode, 0)
+        scripts = [" ".join(call["args"]) for call in calls]
+        claim_calls = [s for s in scripts if TARGET in s]
+        self.assertEqual(len(claim_calls), 2)
+        self.assertEqual(sum("-X POST" in s for s in claim_calls), 1)
 
     def test_one_transient_get_failure_recovers_then_creates_once(self):
         result, calls = self._run("transport-once")
@@ -210,8 +250,8 @@ class FreshSeedBehaviourTest(unittest.TestCase):
     def test_transport_retry_exhaustion_is_bounded_and_never_writes(self):
         result, calls = self._run("transport-always")
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("retry class: unknown", result.stdout + result.stderr)
-        self.assertNotIn("sentinel-token", result.stdout + result.stderr)
+        self.assertIn("retry class: dns", result.stdout + result.stderr)
+        self.assertNotIn(TOKEN_SENTINEL, result.stdout + result.stderr)
         scripts = [" ".join(call["args"]) for call in calls]
         claim_calls = [s for s in scripts if TARGET in s]
         self.assertEqual(len(claim_calls), 5)
@@ -230,7 +270,7 @@ class FreshSeedBehaviourTest(unittest.TestCase):
         result, calls = self._run("curl-always")
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual((result.stdout + result.stderr).count("curl exit: 6"), 5)
-        self.assertNotIn("sentinel-token", result.stdout + result.stderr)
+        self.assertNotIn(TOKEN_SENTINEL, result.stdout + result.stderr)
         scripts = [" ".join(call["args"]) for call in calls]
         claim_calls = [s for s in scripts if TARGET in s]
         self.assertEqual(len(claim_calls), 5)
