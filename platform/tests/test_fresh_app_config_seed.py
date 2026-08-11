@@ -113,7 +113,8 @@ class FreshSeedWiringTest(unittest.TestCase):
         claim_section = self.body[self.body.index(TARGET) :]
         self.assertIn("for attempt in 1..5", claim_section)
         self.assertIn("--retry-delay: duration = 10sec", self.body)
-        self.assertIn("--request-timeout=15s", claim_section)
+        self.assertEqual(claim_section.count("--request-timeout=60s"), 2)
+        self.assertNotIn("--request-timeout=15s", claim_section)
         self.assertIn("--connect-timeout 5", claim_section)
         self.assertIn("--max-time 10", claim_section)
         retry_section = claim_section[: claim_section.index('if $app_claim_seed_status == "200"')]
