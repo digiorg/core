@@ -140,7 +140,7 @@ class FreshSeedBehaviourTest(unittest.TestCase):
                     "#!/usr/bin/env python3\n"
                     "import json,os,sys\n"
                     "args=sys.argv[1:]; script=' '.join(args); stdin=sys.stdin.read()\n"
-                    "with open(os.environ['CALL_LOG'],'a') as f: f.write(json.dumps({'args':args,'stdinBytes':len(stdin)})+'\\n')\n"
+                    "with open(os.environ['CALL_LOG'],'a') as f: f.write(json.dumps({'args':args,'stdinBytes':len(stdin),'stdinEndsLf':stdin.endswith('\\n')})+'\\n')\n"
                     "if '/contents/claims/.gitkeep' in script: print('200',end='')\n"
                     "elif '/contents/claims/digiorg-core-dev/app-claims/AppClaim/myapp.yaml' in script:\n"
                     "  status=os.environ['CLAIM_STATUS']; state=os.environ['STATE_FILE']\n"
@@ -179,6 +179,9 @@ class FreshSeedBehaviourTest(unittest.TestCase):
         claim_calls = [s for s in scripts if TARGET in s]
         self.assertEqual(len(claim_calls), 2)
         self.assertEqual(sum("-X POST" in s for s in claim_calls), 1)
+        target_calls = [call for call in calls if TARGET in " ".join(call["args"])]
+        self.assertTrue(all(call["stdinEndsLf"] for call in target_calls))
+        self.assertTrue(all(call["stdinBytes"] == len("sentinel-token\n") for call in target_calls))
 
     def test_existing_claim_is_preserved_without_write(self):
         result, calls = self._run("200")
