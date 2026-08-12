@@ -1,0 +1,13 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: crossplane-namespace-observer
+  labels:
+    # Crossplane v2.3.3's chart aggregates this role into ClusterRole/crossplane.
+    # RequiredResources needs this read-only informer before a Composition can
+    # safely gate one-shot credential creation on an Active target Namespace.
+    rbac.crossplane.io/aggregate-to-crossplane: "true"
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["list", "watch"]
