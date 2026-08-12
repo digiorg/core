@@ -4236,28 +4236,53 @@ def wait_for_appclaim_api_ready [
 # late-wave drift while remaining bounded and fail-closed. App and Certificate
 # names are trusted repository constants; no untrusted operation messages or
 # Secret data are emitted.
-def wait_for_configuration_dependencies [phase: string, apps: list, certificates: list] {
+def wait_for_configuration_dependencies [
+    phase: string,
+    apps: list,
+    certificates: list,
+    --poll-delay: duration = 5sec,
+    --transient-grace-attempts: int = 15,
+] {
     $env.KUBECONFIG = $KUBECONFIG_PATH
 
+    let normal_attempts = 60
+    let max_attempts = ($normal_attempts + $transient_grace_attempts)
     mut last_non_ready = []
-    for attempt in 1..60 {
+    for attempt in 1..$max_attempts {
         mut non_ready = []
+        mut transient_grace_eligible = true
 
         for app in $apps {
             let result = (do { kubectl get application $app -n argocd -o json } | complete)
             if $result.exit_code != 0 {
                 $non_ready = ($non_ready | append $"Application/($app)=missing")
+                $transient_grace_eligible = false
                 continue
             }
             let state = (try { $result.stdout | from json } catch { null })
             if ($state | describe | str starts-with "record") == false {
                 $non_ready = ($non_ready | append $"Application/($app)=invalid-status")
+                $transient_grace_eligible = false
                 continue
             }
             let health = ($state | get -o status.health.status | default "Unknown")
             let sync = ($state | get -o status.sync.status | default "Unknown")
             if not ($health == "Healthy" and $sync == "Synced") {
                 $non_ready = ($non_ready | append $"Application/($app)=health:($health),sync:($sync)")
+                let conditions = ($state | get -o status.conditions | default [])
+                let condition_messages = (
+                    $conditions
+                    | each {|condition| $condition | get -o message | default "" }
+                )
+                let transient_unknown = (
+                    ($health == "Healthy")
+                    and ($sync == "Unknown")
+                    and (not ($condition_messages | is-empty))
+                    and ($condition_messages | all {|message| is_retryable_sync_error $message })
+                )
+                if not $transient_unknown {
+                    $transient_grace_eligible = false
+                }
             }
         }
 
@@ -4267,11 +4292,13 @@ def wait_for_configuration_dependencies [phase: string, apps: list, certificates
             let result = (do { kubectl get certificate $name -n $namespace -o json } | complete)
             if $result.exit_code != 0 {
                 $non_ready = ($non_ready | append $"Certificate/($namespace)/($name)=missing")
+                $transient_grace_eligible = false
                 continue
             }
             let resource = (try { $result.stdout | from json } catch { null })
             if ($resource | describe | str starts-with "record") == false {
                 $non_ready = ($non_ready | append $"Certificate/($namespace)/($name)=invalid-status")
+                $transient_grace_eligible = false
                 continue
             }
             let conditions = ($resource | get -o status.conditions | default [])
@@ -4280,6 +4307,7 @@ def wait_for_configuration_dependencies [phase: string, apps: list, certificates
             })
             if not $ready {
                 $non_ready = ($non_ready | append $"Certificate/($namespace)/($name)=Ready:False")
+                $transient_grace_eligible = false
             }
         }
 
@@ -4289,10 +4317,22 @@ def wait_for_configuration_dependencies [phase: string, apps: list, certificates
             return
         }
 
-        if $attempt > 55 {
-            print $"  ($phase) dependencies pending: (($non_ready | str join ', ')) [attempt ($attempt)/60]"
+        if ($attempt > 55) and ($attempt <= $normal_attempts) {
+            print $"  ($phase) dependencies pending: (($non_ready | str join ', ')) [attempt ($attempt)/($normal_attempts)]"
         }
-        sleep 5sec
+
+        if $attempt >= $normal_attempts {
+            if not $transient_grace_eligible {
+                break
+            }
+            if $attempt > $normal_attempts {
+                print $"  ($phase) transient comparison grace: (($non_ready | str join ', ')) [grace ($attempt - $normal_attempts)/($transient_grace_attempts)]"
+            }
+            if $attempt == $max_attempts {
+                break
+            }
+        }
+        sleep $poll_delay
     }
 
     let bounded = ($last_non_ready | first 20 | str join ", ")
