@@ -43,10 +43,11 @@ FUNCTION = os.path.join(PKG_DIR, "function-patch-and-transform.yaml")
 PROVIDER_KUSTOMIZATION = os.path.join(PKG_DIR, "kustomization.yaml")
 VERSIONS_DOC = os.path.join(REPO_ROOT, "docs", "guides", "platform-versions.md")
 
-# core-catalog PR #23's exact independently reviewed Issue #301 canonical merge
+# core-catalog PR #24's exact independently reviewed Issue #301 canonical merge
 # commit. Keep the Core pin, manifest documentation, and this constant aligned.
-REVIEWED_CATALOG_REVISION = "b5d7add455bf8ba25defc102e22f84da5c719902"
+REVIEWED_CATALOG_REVISION = "3a312cece16e145501c720065b528ca93768a8d3"
 SUPERSEDED_CATALOG_REVISIONS = (
+    "b5d7add455bf8ba25defc102e22f84da5c719902",
     "7b4d4c9f3b73cec4ac2f67d29a75025c0a1cbbcc",
     "9c92496334422aa5bff7519acdb478b16185a6ea",
     "13b7a3b4a0b7a5f5e692dc6d5a3fa416852c4273",
@@ -149,7 +150,7 @@ class XrdLegacyClusterCompatTest(unittest.TestCase):
 
 
 class CoreCatalogReviewedRevisionPinTest(unittest.TestCase):
-    """Core must pin the exact reviewed Issue #301 PR #23 merge and keep the
+    """Core must pin the exact reviewed Issue #301 PR #24 merge and keep the
     Catalog Application immutable and manually gated."""
 
     def setUp(self):
@@ -159,7 +160,7 @@ class CoreCatalogReviewedRevisionPinTest(unittest.TestCase):
         rev = str(self.app["spec"]["source"]["targetRevision"])
         self.assertEqual(
             rev, REVIEWED_CATALOG_REVISION,
-            "core-catalog must pin the exact reviewed Issue #301 PR #23 merge",
+            "core-catalog must pin the exact reviewed Issue #301 PR #24 merge",
         )
 
     def test_superseded_revision_not_referenced_anywhere(self):

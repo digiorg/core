@@ -165,8 +165,8 @@ where noted (this environment has no cluster — see section 7).
   function pipeline (`crossplane beta convert pipeline-composition`). Out of
   scope for this repo; validate `core-catalog` separately before promoting.
 - **core-catalog pin (Issue #301):** `apps/platform/core-catalog.yaml` pins the
-  exact independently reviewed canonical merge commit of core-catalog PR #23,
-  `b5d7add455bf8ba25defc102e22f84da5c719902`. This retains provider-http-safe
+  exact independently reviewed canonical merge commit of core-catalog PR #24,
+  `3a312cece16e145501c720065b528ca93768a8d3`. This retains provider-http-safe
   Gitea Actions-secret array normalization, in-place credential-fingerprint drift
   repair, and shell-data-safe Harbor credentials. It additionally withholds the
   push-triggered workflow Request on fresh installs until the Harbor robot has a
@@ -179,6 +179,12 @@ where noted (this environment has no cluster — see section 7).
   injection from racing Namespace creation and losing Harbor's write-only
   credential. Malformed, deleting, duplicate, or wrong-identity Namespace
   observations fail closed while the Namespace and other prerequisites reconcile.
+  For each unique build-enabled context, a TLS-verified, Secret-file-backed,
+  one-shot source-scaffold Job now preserves an existing Dockerfile or creates
+  all missing Dockerfiles atomically with create-only operations. The generated
+  workflow remains withheld until the scaffold Job is positively observed
+  Complete; malformed repository observations, unsafe HTTP responses, duplicate
+  contexts, and failed or unknown Jobs fail closed without overwriting user source.
   The deterministic KCL pipeline and Core integration remain unchanged. The
   Application stays manually gated
   (`platform.digiorg.io/upgrade-gate: issue-275-manual`, no `syncPolicy.automated`);
