@@ -165,8 +165,8 @@ where noted (this environment has no cluster — see section 7).
   function pipeline (`crossplane beta convert pipeline-composition`). Out of
   scope for this repo; validate `core-catalog` separately before promoting.
 - **core-catalog pin (Issue #301):** `apps/platform/core-catalog.yaml` pins the
-  exact independently reviewed canonical merge commit of core-catalog PR #22,
-  `0e2061da4985280cb8e4bc7ed74b0888393b2d11`. This retains provider-http-safe
+  exact independently reviewed canonical merge commit of core-catalog PR #23,
+  `b5d7add455bf8ba25defc102e22f84da5c719902`. This retains provider-http-safe
   Gitea Actions-secret array normalization, in-place credential-fingerprint drift
   repair, and shell-data-safe Harbor credentials. It additionally withholds the
   push-triggered workflow Request on fresh installs until the Harbor robot has a
@@ -174,6 +174,11 @@ where noted (this environment has no cluster — see section 7).
   secret metadata entries are uniquely observed with the current description.
   Missing, stale, duplicate, malformed, wrong-shaped, or mixed-shape list responses
   fail closed while the Harbor/Gitea prerequisite Requests continue reconciling.
+  The one-shot Harbor robot credential CREATE is additionally withheld until the
+  exact target Namespace is observed Active, preventing fresh-install Secret
+  injection from racing Namespace creation and losing Harbor's write-only
+  credential. Malformed, deleting, duplicate, or wrong-identity Namespace
+  observations fail closed while the Namespace and other prerequisites reconcile.
   The deterministic KCL pipeline and Core integration remain unchanged. The
   Application stays manually gated
   (`platform.digiorg.io/upgrade-gate: issue-275-manual`, no `syncPolicy.automated`);
