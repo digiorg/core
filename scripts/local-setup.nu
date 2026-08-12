@@ -885,13 +885,32 @@ def deploy_core_data_layer [] {
 def deploy_root_app [] {
     $env.KUBECONFIG = $KUBECONFIG_PATH
 
-    # Issue #279: the root Application immediately fans out into many
-    # concurrent Git/Helm/Kustomize renders. Wait for argocd-repo-server to be
-    # Ready and restart-stable before applying ANY Application (including the
-    # core data layer below), so the first sync doesn't race the initial
-    # render burst (confirmed cause of the repo-server liveness restart that
-    # severed External Secrets' manifest generation with gRPC Unavailable/EOF).
+    # Issue #279: wait for the initial ArgoCD install to be Ready and
+    # restart-stable before applying any Application directly.
     print $"(ansi cyan_bold)Waiting for argocd-repo-server to stabilize(ansi reset)"
+    print "────────────────────────────────────"
+    wait_for_repo_server_stable
+
+    # Issue #301: bootstrap cert-manager and the local CA before the root
+    # Application exists, then install ArgoCD's OIDC/repository CA trust. The
+    # Helm upgrade replaces Argo control-plane pods, so prove that rollout is
+    # stable before creating the core data layer or the full root-app fan-out.
+    print ""
+    print $"(ansi cyan_bold)Bootstrapping ArgoCD trust before root-app fan-out(ansi reset)"
+    print "────────────────────────────────────"
+    let cert_manager_apply = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH --request-timeout=30s apply -f apps/platform/cert-manager.yaml
+    } | complete)
+    if $cert_manager_apply.exit_code != 0 {
+        error make {msg: $"Failed to apply the cert-manager Application: (redact_sync_diagnostic ($cert_manager_apply.stderr | str trim))"}
+    }
+    wait_for_configuration_dependencies "ArgoCD trust bootstrap" ["cert-manager"] [
+        {namespace: "cert-manager", name: "digiorg-local-ca"}
+    ]
+    patch_argocd_oidc_ca
+
+    print ""
+    print $"(ansi cyan_bold)Waiting for argocd-repo-server after trust rollout(ansi reset)"
     print "────────────────────────────────────"
     wait_for_repo_server_stable
 
@@ -908,7 +927,7 @@ def deploy_root_app [] {
     print ""
     print "ArgoCD Sync Waves:"
     print "  Wave -1: root-app (just deployed), namespaces"
-    print "  Wave  0: cert-manager, external-secrets, nats, postgresql*, opensearch* (core data layer)"
+    print "  Wave  0: cert-manager*, external-secrets, nats, postgresql*, opensearch* (core data layer)"
     print "  Wave  1: keycloak, argocd (self-managed)"
     print "  Wave  2: backstage, gitea, grafana, harbor, jaeger, landingpage, opencost, sonarqube"
     print "  Wave  3: crossplane, kyverno"
@@ -919,25 +938,19 @@ def deploy_root_app [] {
     print "  Wave  8: core-catalog"
     print "  Wave  9: cnpg (optional future-app database infrastructure)"
     print "  Wave 10: cnpg-cluster (optional future-app database infrastructure)"
-    print "  * postgresql/opensearch were already applied directly and proven ready above"
+    print "  * cert-manager, postgresql, and opensearch were already applied directly and proven ready above"
 
     # The repository keeps major upgrades manual so a Git merge cannot trigger
     # them concurrently in a shared cluster. This script targets only the named
     # local KinD environment; invoking `main up` is the explicit approval to sync
     # its gated apps sequentially.
     sync_gated_apps_for_local_dev
-
-    # Issue #281: the ArgoCD OIDC CA patch is independent of the global
-    # convergence gate (which now runs LAST, in `main up`, after identity
-    # configuration). Embedding the CA here keeps ArgoCD's own OIDC working
-    # without coupling it to full-platform convergence.
-    patch_argocd_oidc_ca
 }
 
-# Issue #279: wait for argocd-repo-server to be Ready AND to have stopped
-# restarting before promoting any gated Application. Bounded and fails closed
-# — a repo-server that never stabilizes surfaces as a clear error rather than
-# racing the first gated sync against it.
+# Issue #279/#301: wait for argocd-repo-server to be Ready AND to have stopped
+# restarting both before direct Application bootstrap and after the ArgoCD
+# trust Helm rollout. Bounded and fails closed — a repo-server that never
+# stabilizes surfaces as a clear error rather than racing later fan-out.
 def wait_for_repo_server_stable [] {
     $env.KUBECONFIG = $KUBECONFIG_PATH
 
