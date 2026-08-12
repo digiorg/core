@@ -165,13 +165,17 @@ where noted (this environment has no cluster — see section 7).
   function pipeline (`crossplane beta convert pipeline-composition`). Out of
   scope for this repo; validate `core-catalog` separately before promoting.
 - **core-catalog pin (Issue #301):** `apps/platform/core-catalog.yaml` pins the
-  exact independently reviewed canonical merge commit of core-catalog PR #21,
-  `7de26a07b81e28af68cabafc44a3283ef615f724`. This deploys provider-http-safe
-  Gitea Actions-secret array normalization plus credential-fingerprint drift
-  repair for in-place Harbor robot credential corrections and injects `$`-bearing
-  Harbor robot names and arbitrary passwords through the Actions step environment
-  instead of interpolating credentials into Bash source. The deterministic KCL
-  pipeline and Core integration remain unchanged. The Application stays manually gated
+  exact independently reviewed canonical merge commit of core-catalog PR #22,
+  `0e2061da4985280cb8e4bc7ed74b0888393b2d11`. This retains provider-http-safe
+  Gitea Actions-secret array normalization, in-place credential-fingerprint drift
+  repair, and shell-data-safe Harbor credentials. It additionally withholds the
+  push-triggered workflow Request on fresh installs until the Harbor robot has a
+  numeric ID, the credential fingerprint is available, and both Gitea Actions
+  secret metadata entries are uniquely observed with the current description.
+  Missing, stale, duplicate, malformed, wrong-shaped, or mixed-shape list responses
+  fail closed while the Harbor/Gitea prerequisite Requests continue reconciling.
+  The deterministic KCL pipeline and Core integration remain unchanged. The
+  Application stays manually gated
   (`platform.digiorg.io/upgrade-gate: issue-275-manual`, no `syncPolicy.automated`);
   do not enable automatic catalog sync. `test_crossplane_migration.py`
   (`CoreCatalogReviewedRevisionPinTest`) locks the reviewed revision, the
