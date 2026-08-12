@@ -5,3 +5,4 @@ resources:
   - provider-kubernetes-config.yaml
   - provider-helm-config.yaml
   - provider-http-config.yaml
+  - crossplane-namespace-observer-rbac.yaml
