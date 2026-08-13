@@ -29,6 +29,10 @@ elif scenario == "transient_then_ready_immediately":
     status["conditions"] = [transient]
     if n >= 2:
         status["sync"]["status"] = "Synced"
+elif scenario == "transient_then_ready_after_observed_oidc_tail":
+    status["conditions"] = [transient]
+    if n >= 78:
+        status["sync"]["status"] = "Synced"
 elif scenario == "deterministic":
     status["conditions"] = [deterministic]
 elif scenario == "empty":
@@ -50,7 +54,8 @@ class DependencyComparisonGraceTest(unittest.TestCase):
         if shutil.which("nu") is None:
             raise unittest.SkipTest("nu is required")
 
-    def run_case(self, scenario, apps, expect_success, expected_calls):
+    def run_case(self, scenario, apps, expect_success, expected_calls,
+                 transient_grace_attempts=3):
         with tempfile.TemporaryDirectory() as td:
             fake = os.path.join(td, "kubectl")
             counter = os.path.join(td, "counter")
@@ -61,7 +66,7 @@ class DependencyComparisonGraceTest(unittest.TestCase):
             expr = (
                 f'source {json.dumps(SETUP)}; '
                 f'wait_for_configuration_dependencies "test" {app_list} [] '
-                '--poll-delay 0sec --transient-grace-attempts 3'
+                f'--poll-delay 0sec --transient-grace-attempts {transient_grace_attempts}'
             )
             env = os.environ.copy()
             env.update({"PATH": td + os.pathsep + env.get("PATH", ""),
@@ -80,6 +85,12 @@ class DependencyComparisonGraceTest(unittest.TestCase):
     def test_transient_comparison_gets_bounded_grace_and_recovers(self):
         self.run_case("transient_then_ready", ["app"], True, 62)
 
+    def test_observed_oidc_tail_recovers_with_three_additional_samples(self):
+        self.run_case(
+            "transient_then_ready_after_observed_oidc_tail",
+            ["app"], True, 78, transient_grace_attempts=18,
+        )
+
     def test_deterministic_comparison_gets_no_grace(self):
         self.run_case("deterministic", ["app"], False, 60)
 
@@ -95,7 +106,7 @@ class DependencyComparisonGraceTest(unittest.TestCase):
     def test_empty_condition_message_gets_no_grace(self):
         self.run_case("empty_message", ["app"], False, 60)
 
-    def test_production_call_sites_keep_safe_defaults(self):
+    def test_only_oidc_restart_call_extends_the_safe_default_by_three_samples(self):
         with open(SETUP, encoding="utf-8") as fh:
             source = fh.read()
         calls = [line for line in source.splitlines()
@@ -104,7 +115,10 @@ class DependencyComparisonGraceTest(unittest.TestCase):
         self.assertGreaterEqual(len(calls), 4)
         for line in calls:
             self.assertNotIn("--poll-delay", line)
-            self.assertNotIn("--transient-grace-attempts", line)
+            if '"OIDC restarts"' in line:
+                self.assertIn("--transient-grace-attempts 18", line)
+            else:
+                self.assertNotIn("--transient-grace-attempts", line)
 
     def test_production_default_really_waits_five_seconds(self):
         with tempfile.TemporaryDirectory() as td:

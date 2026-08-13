@@ -5602,7 +5602,11 @@ def restart_oidc_dependent_pods [] {
     $env.KUBECONFIG = $KUBECONFIG_PATH
     print "Restarting OIDC-dependent pods to refresh DNS/config..."
 
-    wait_for_configuration_dependencies "OIDC restarts" ["argocd" "grafana" "backstage" "landingpage"] []
+    # Fresh runtime on 6c682bc showed the final retryable Healthy/Unknown
+    # comparison converging naturally 12 seconds after the default grace ended.
+    # Add exactly three 5-second samples only at this post-OIDC fan-out boundary;
+    # deterministic, mixed, malformed, or non-Healthy states still receive no grace.
+    wait_for_configuration_dependencies "OIDC restarts" ["argocd" "grafana" "backstage" "landingpage"] [] --transient-grace-attempts 18
 
     restart_oidc_deployment "argocd" "argocd-server" "120s"
     restart_oidc_deployment "monitoring" "prometheus-grafana" "120s"
