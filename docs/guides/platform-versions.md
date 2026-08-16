@@ -165,8 +165,8 @@ where noted (this environment has no cluster — see section 7).
   function pipeline (`crossplane beta convert pipeline-composition`). Out of
   scope for this repo; validate `core-catalog` separately before promoting.
 - **core-catalog pin (Issue #301):** `apps/platform/core-catalog.yaml` pins the
-  exact independently reviewed canonical merge commit of core-catalog PR #25,
-  `4296b8c1a4fbcd961b0742e9993007d09fb039c0`. This retains provider-http-safe
+  exact independently reviewed canonical merge commit of core-catalog PR #26,
+  `1e6d4271192c30826022742dc4de7ddc2a4e3815`. This retains provider-http-safe
   Gitea Actions-secret array normalization, in-place credential-fingerprint drift
   repair, and shell-data-safe Harbor credentials. It additionally withholds the
   push-triggered workflow Request on fresh installs until the Harbor robot has a
@@ -190,8 +190,15 @@ where noted (this environment has no cluster — see section 7).
   Crossplane-owned `spec.resourceRefs` persistence and resulting XR generation
   changes therefore keep the same identity, while Dockerfile-relevant context,
   port, base-image, or scaffold-contract changes create a new revision; an old
-  observer cannot release a new revision. Core integration remains immutable. The
-  Application stays manually gated
+  observer cannot release a new revision. Local application Ingresses now share
+  the platform's existing `digiorg.local` HTTPS virtual host under the injective
+  `/apps/<appName>/<serviceName>/` route. ingress-nginx strips that external
+  prefix before proxying to the backend root, while the central Core Ingress
+  remains the single TLS certificate owner. Separate validated path segments
+  prevent cross-app collisions when either name contains hyphens. Applications
+  that emit absolute redirects, assets, path-scoped cookies, or callbacks still
+  require native external base-path support. Core integration remains immutable.
+  The Application stays manually gated
   (`platform.digiorg.io/upgrade-gate: issue-275-manual`, no `syncPolicy.automated`);
   do not enable automatic catalog sync. `test_crossplane_migration.py`
   (`CoreCatalogReviewedRevisionPinTest`) locks the reviewed revision, the
