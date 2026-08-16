@@ -165,8 +165,8 @@ where noted (this environment has no cluster — see section 7).
   function pipeline (`crossplane beta convert pipeline-composition`). Out of
   scope for this repo; validate `core-catalog` separately before promoting.
 - **core-catalog pin (Issue #301):** `apps/platform/core-catalog.yaml` pins the
-  exact independently reviewed canonical merge commit of core-catalog PR #24,
-  `3a312cece16e145501c720065b528ca93768a8d3`. This retains provider-http-safe
+  exact independently reviewed canonical merge commit of core-catalog PR #25,
+  `4296b8c1a4fbcd961b0742e9993007d09fb039c0`. This retains provider-http-safe
   Gitea Actions-secret array normalization, in-place credential-fingerprint drift
   repair, and shell-data-safe Harbor credentials. It additionally withholds the
   push-triggered workflow Request on fresh installs until the Harbor robot has a
@@ -185,7 +185,12 @@ where noted (this environment has no cluster — see section 7).
   workflow remains withheld until the scaffold Job is positively observed
   Complete; malformed repository observations, unsafe HTTP responses, duplicate
   contexts, and failed or unknown Jobs fail closed without overwriting user source.
-  The deterministic KCL pipeline and Core integration remain unchanged. The
+  Scaffold ConfigMap, Job, and observer identities use an 80-bit SHA-256 prefix
+  of the exact canonical scaffold payload plus an explicit `v2` contract marker.
+  Crossplane-owned `spec.resourceRefs` persistence and resulting XR generation
+  changes therefore keep the same identity, while Dockerfile-relevant context,
+  port, base-image, or scaffold-contract changes create a new revision; an old
+  observer cannot release a new revision. Core integration remains immutable. The
   Application stays manually gated
   (`platform.digiorg.io/upgrade-gate: issue-275-manual`, no `syncPolicy.automated`);
   do not enable automatic catalog sync. `test_crossplane_migration.py`
