@@ -164,9 +164,9 @@ where noted (this environment has no cluster — see section 7).
   patch-and-transform — any P&T Composition there must be converted to the
   function pipeline (`crossplane beta convert pipeline-composition`). Out of
   scope for this repo; validate `core-catalog` separately before promoting.
-- **core-catalog pin (Issue #301):** `apps/platform/core-catalog.yaml` pins the
-  exact independently reviewed canonical merge commit of core-catalog PR #27,
-  `e68870a5400b3c97ec2826d0c8838aab02144a1a`. This retains provider-http-safe
+- **core-catalog pin (Issue #301 follow-up):** `apps/platform/core-catalog.yaml`
+  pins the exact independently reviewed canonical merge commit of
+  core-catalog PR #28, `d531180b322dc0128477ecb9bb0fc9071b41d631`. This retains provider-http-safe
   Gitea Actions-secret array normalization, in-place credential-fingerprint drift
   repair, and shell-data-safe Harbor credentials. It additionally withholds the
   push-triggered workflow Request on fresh installs until the Harbor robot has a
@@ -186,7 +186,7 @@ where noted (this environment has no cluster — see section 7).
   Complete; malformed repository observations, unsafe HTTP responses, duplicate
   contexts, and failed or unknown Jobs fail closed without overwriting user source.
   Scaffold ConfigMap, Job, and observer identities use an 80-bit SHA-256 prefix
-  of the exact canonical scaffold payload plus an explicit `v2` contract marker.
+  of the exact canonical scaffold payload plus an explicit `v3` contract marker.
   Crossplane-owned `spec.resourceRefs` persistence and resulting XR generation
   changes therefore keep the same identity, while Dockerfile-relevant context,
   port, base-image, or scaffold-contract changes create a new revision; an old
@@ -201,9 +201,15 @@ where noted (this environment has no cluster — see section 7).
   app-scoped Harbor project, repository, robot, pull-secret, digest-status, and
   Deployment boundaries with two-app rendered regression tests, including a
   fail-closed mismatched-artifact promotion case. Newly created NGINX scaffolds
-  identify their owning AppClaim with `DigiOrg - <appName>`; the content-derived
-  revision rotates for this Dockerfile change while create-only behavior leaves
-  existing user source untouched. Private Harbor project visibility remains a
+  now emit the syntactically valid single-argument directive
+  `return 200 "DigiOrg - <appName>";`. Catalog CI builds the exact rendered,
+  digest-pinned Dockerfile and requires `nginx -t`, bounded startup, exactly one
+  `HTTP/1.x 200 OK`, exactly one `Content-Type: text/plain`, and the exact
+  app-specific body. The content-derived revision rotates for this Dockerfile
+  and contract-marker change, while create-only behavior leaves existing user
+  source untouched. Existing repositories therefore require a normal reviewed
+  source PR or authoritative clean recreation; Catalog reconciliation never
+  overwrites them. Private Harbor project visibility remains a
   separate membership concern and is not weakened by this promotion. Core
   integration remains immutable.
   The Application stays manually gated
