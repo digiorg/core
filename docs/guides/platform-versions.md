@@ -165,8 +165,8 @@ where noted (this environment has no cluster — see section 7).
   function pipeline (`crossplane beta convert pipeline-composition`). Out of
   scope for this repo; validate `core-catalog` separately before promoting.
 - **core-catalog pin (Issue #301):** `apps/platform/core-catalog.yaml` pins the
-  exact independently reviewed canonical merge commit of core-catalog PR #26,
-  `1e6d4271192c30826022742dc4de7ddc2a4e3815`. This retains provider-http-safe
+  exact independently reviewed canonical merge commit of core-catalog PR #27,
+  `e68870a5400b3c97ec2826d0c8838aab02144a1a`. This retains provider-http-safe
   Gitea Actions-secret array normalization, in-place credential-fingerprint drift
   repair, and shell-data-safe Harbor credentials. It additionally withholds the
   push-triggered workflow Request on fresh installs until the Harbor robot has a
@@ -197,7 +197,15 @@ where noted (this environment has no cluster — see section 7).
   remains the single TLS certificate owner. Separate validated path segments
   prevent cross-app collisions when either name contains hyphens. Applications
   that emit absolute redirects, assets, path-scoped cookies, or callbacks still
-  require native external base-path support. Core integration remains immutable.
+  require native external base-path support. The promoted Catalog also locks
+  app-scoped Harbor project, repository, robot, pull-secret, digest-status, and
+  Deployment boundaries with two-app rendered regression tests, including a
+  fail-closed mismatched-artifact promotion case. Newly created NGINX scaffolds
+  identify their owning AppClaim with `DigiOrg - <appName>`; the content-derived
+  revision rotates for this Dockerfile change while create-only behavior leaves
+  existing user source untouched. Private Harbor project visibility remains a
+  separate membership concern and is not weakened by this promotion. Core
+  integration remains immutable.
   The Application stays manually gated
   (`platform.digiorg.io/upgrade-gate: issue-275-manual`, no `syncPolicy.automated`);
   do not enable automatic catalog sync. `test_crossplane_migration.py`
