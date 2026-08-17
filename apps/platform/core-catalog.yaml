@@ -14,11 +14,12 @@ spec:
 
   source:
     repoURL: https://github.com/digiorg/core-catalog.git
-    # Issue #301 advances the deterministic KCL pipeline through core-catalog
-    # PR #27. Pin its exact independently reviewed canonical merge commit so
+    # Core-catalog PR #28 repairs the deterministic source scaffold's NGINX
+    # response and advances its contract to v3. Pin its exact independently
+    # reviewed canonical merge commit so
     # Core and Catalog are deployed as one immutable integration.
     # Keep this manual (no syncPolicy.automated) — see docs/guides/platform-versions.md.
-    targetRevision: e68870a5400b3c97ec2826d0c8838aab02144a1a
+    targetRevision: d531180b322dc0128477ecb9bb0fc9071b41d631
     path: compositions/local
 
   destination:

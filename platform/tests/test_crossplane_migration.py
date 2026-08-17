@@ -43,10 +43,11 @@ FUNCTION = os.path.join(PKG_DIR, "function-patch-and-transform.yaml")
 PROVIDER_KUSTOMIZATION = os.path.join(PKG_DIR, "kustomization.yaml")
 VERSIONS_DOC = os.path.join(REPO_ROOT, "docs", "guides", "platform-versions.md")
 
-# core-catalog PR #27's exact independently reviewed Issue #301 canonical merge
+# core-catalog PR #28's exact independently reviewed NGINX-scaffold canonical merge
 # commit. Keep the Core pin, manifest documentation, and this constant aligned.
-REVIEWED_CATALOG_REVISION = "e68870a5400b3c97ec2826d0c8838aab02144a1a"
+REVIEWED_CATALOG_REVISION = "d531180b322dc0128477ecb9bb0fc9071b41d631"
 SUPERSEDED_CATALOG_REVISIONS = (
+    "e68870a5400b3c97ec2826d0c8838aab02144a1a",
     "1e6d4271192c30826022742dc4de7ddc2a4e3815",
     "b5d7add455bf8ba25defc102e22f84da5c719902",
     "7b4d4c9f3b73cec4ac2f67d29a75025c0a1cbbcc",
@@ -153,17 +154,17 @@ class XrdLegacyClusterCompatTest(unittest.TestCase):
 
 
 class CoreCatalogReviewedRevisionPinTest(unittest.TestCase):
-    """Core must pin the exact reviewed Issue #301 PR #27 merge and keep the
+    """Core must pin the exact reviewed Catalog PR #28 merge and keep the
     Catalog Application immutable and manually gated."""
 
     def setUp(self):
         self.app = _docs(CATALOG_APP)[0]
 
-    def test_pins_reviewed_issue_301_pr_merge(self):
+    def test_pins_reviewed_catalog_pr_28_merge(self):
         rev = str(self.app["spec"]["source"]["targetRevision"])
         self.assertEqual(
             rev, REVIEWED_CATALOG_REVISION,
-            "core-catalog must pin the exact reviewed Issue #301 PR #27 merge",
+            "core-catalog must pin the exact reviewed Catalog PR #28 merge",
         )
 
     def test_superseded_revision_not_referenced_anywhere(self):
@@ -192,6 +193,13 @@ class CoreCatalogReviewedRevisionPinTest(unittest.TestCase):
         self.assertIn(REVIEWED_CATALOG_REVISION,
                       _read(VERSIONS_DOC),
                       "platform-versions.md must record the reviewed catalog revision")
+
+    def test_versions_doc_records_nginx_scaffold_v3_runtime_contract(self):
+        doc = _read(VERSIONS_DOC)
+        self.assertIn("core-catalog PR #28", doc)
+        self.assertIn("`v3` contract marker", doc)
+        self.assertIn('return 200 "DigiOrg - <appName>";', doc)
+        self.assertIn("`nginx -t`", doc)
 
 
 if __name__ == "__main__":
