@@ -8,11 +8,9 @@ OpenSearch is an open-source, Apache 2.0-licensed search and analytics engine fo
 
 | File | Purpose |
 |------|---------|
-| `values.yaml` | OpenSearch Helm Chart values (cluster identity, JVM heap, auth, storage, resource limits). Chart: `opensearch-project/opensearch` v3.6.0, Repo: https://helm.opensearch.org |
-| `servicemonitor.yaml` | Prometheus Operator ServiceMonitor scraping OpenSearch metrics at `/_prometheus/metrics` (port 9200, interval 30s) |
+| `values.yaml` | OpenSearch Helm Chart values (cluster identity, JVM heap, auth, storage, resource limits). Chart: `opensearch-project/opensearch` v3.7.0, Repo: https://opensearch-project.github.io/helm-charts |
 | `ism-retention-job.yaml` | ArgoCD PostSync Job that bootstraps the `digiorg-logs-retention-7d` ISM policy for 7-day Fluentd log retention. |
-| `index-template-job.yaml` | ArgoCD PostSync Job that bootstraps the `digiorg-logs-template` composable index template, mapping `kubernetes.labels` and `kubernetes.namespace_labels` as `flat_object` to prevent dotted-key mapping conflicts. |
-| `kustomization.yaml` | Kustomize entrypoint — manages supplementary resources (ISM bootstrap job, index template bootstrap job). OpenSearch itself is deployed via Helm by the ArgoCD Application (`apps/platform/opensearch.yaml`). Running `kubectl apply -k platform/base/opensearch/` deploys **only supplementary resources**, not OpenSearch itself. |
+| `kustomization.yaml` | Kustomize entrypoint for the supplementary ISM resource. OpenSearch itself is deployed via Helm by `apps/platform/opensearch.yaml`. |
 
 ## Role in the Platform
 
@@ -42,9 +40,11 @@ OpenSearch is an open-source, Apache 2.0-licensed search and analytics engine fo
 
 ## Architecture
 
-This deployment uses the **official OpenSearch Helm chart** (`opensearch-project/opensearch` v3.6.0, repo: https://helm.opensearch.org) in single-node mode for local development.
+This deployment uses the **official OpenSearch Helm chart** (`opensearch-project/opensearch` v3.7.0, repo: https://opensearch-project.github.io/helm-charts) in single-node mode for local development.
 
-> **Note:** Running `kubectl apply -k platform/base/opensearch/` deploys **only the ServiceMonitor** — not OpenSearch itself. OpenSearch is deployed by the ArgoCD Application at `apps/platform/opensearch.yaml` via Helm.
+> **Note:** Running `kubectl apply -k platform/base/opensearch/` deploys only
+> the supplementary ISM hook, not OpenSearch itself. OpenSearch is deployed by
+> the ArgoCD Application at `apps/platform/opensearch.yaml` via Helm.
 
 ```
 platform-db namespace
@@ -166,13 +166,15 @@ kubectl exec -n platform-db opensearch-cluster-master-0 -- \
   curl -s 'http://localhost:9200/_plugins/_ism/explain/digiorg-logs-*'
 ```
 
-### Index Template — `digiorg-logs-template`
+### Fluentd-owned log schema
 
-An OpenSearch composable index template (`_index_template` API) is bootstrapped automatically by the `opensearch-index-template-bootstrap` ArgoCD PostSync Job defined in `index-template-job.yaml`.
+The `digiorg-logs-template` is a Fluentd writer prerequisite, not an OpenSearch
+bootstrap concern. Its complete definition and additive current-index migration
+are owned by `platform/base/fluentd/log-schema-job.yaml`, a same-Application
+`PreSync` hook. OpenSearch retains ownership of the unrelated ISM retention
+policy above.
 
-This template solves a mapping conflict caused by Kubernetes label keys containing dots (e.g. `app.kubernetes.io/component`). OpenSearch interprets dotted field names as nested object paths, which conflicts with single-segment keys like `app` that also exist in the labels map.
-
-**Template behaviour:**
+**Schema behaviour:**
 
 | Setting | Value |
 |---------|-------|
@@ -184,33 +186,32 @@ This template solves a mapping conflict caused by Kubernetes label keys containi
 | Other `kubernetes.*` fields | `keyword` (namespace_name, pod_name, container_name, host) |
 | `@timestamp` | `date` |
 | `log`, `message` | `text` + `.keyword` sub-field |
+| `level` | `text` + `.keyword` sub-field |
+| `structured` | `flat_object` — complete parsed application payload without root-field collisions |
 | `dynamic` | `true` — other fields are auto-mapped |
 
 > **Why `flat_object`?** OpenSearch 2.x `flat_object` type stores the entire JSON subtree without expanding each key into a dedicated field. This avoids the mapping conflict where both `kubernetes.labels.app` (string) and `kubernetes.labels.app_kubernetes_io/component` (string) would otherwise compete as sibling document fields. See [OpenSearch flat_object docs](https://docs.opensearch.org/latest/field-types/supported-field-types/flat-object/).
 
 > **Note:** Fluentd's `record_transformer` filter (in `configmap.yaml`) also sanitizes label keys by replacing dots and slashes with underscores before ingest. The `flat_object` mapping provides a second layer of defence for any dotted keys that slip through.
 
-**Bootstrap job behaviour:**
+The Fluentd hook unconditionally upserts the template, migrates every currently
+open `digiorg-logs-*` index (including hidden indices) additively, verifies both
+mapping scopes, and fails
+closed before the writer sync. It does not mutate ISM state or perform index
+deletion, close, rollover, or reindex operations. See the
+[Fluentd README](../fluentd/README.md) for record shape, retry, verification,
+and forward-rollback details.
 
-- Runs as an ArgoCD `PostSync` hook after the opensearch application syncs.
-- Idempotent: checks whether the template already exists; skips creation if so.
-- Fails fast if OpenSearch is unreachable so ArgoCD reports degraded status rather than silently continuing.
-- Delete policy: `BeforeHookCreation,HookSucceeded` — cleans up the Job pod after success; removes any stale failed Job before re-creating on the next sync.
-
-**Verify the template was applied:**
+**Read-only verification after an authorized deployment:**
 
 ```bash
 # Check the index template
 kubectl exec -n platform-db opensearch-cluster-master-0 -- \
   curl -s 'http://localhost:9200/_index_template/digiorg-logs-template' | python3 -m json.tool
 
-# Confirm flat_object mapping on an existing index
+# Confirm isolated-payload and level mappings on existing indices
 kubectl exec -n platform-db opensearch-cluster-master-0 -- \
-  curl -s 'http://localhost:9200/digiorg-logs-*/_mapping' | python3 -m json.tool | grep -A2 '"labels"'
-
-# Check bootstrap Job status
-kubectl get job -n platform-db opensearch-index-template-bootstrap
-kubectl logs -n platform-db -l app.kubernetes.io/name=opensearch-index-template-bootstrap
+  curl -s 'http://localhost:9200/digiorg-logs-*/_mapping?filter_path=*.mappings.properties.structured,*.mappings.properties.level' | python3 -m json.tool
 ```
 
 ## Jaeger Integration

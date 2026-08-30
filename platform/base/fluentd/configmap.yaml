@@ -68,15 +68,26 @@ data:
       key_name log
       reserve_data true
       remove_key_name_field false
+      hash_value_field structured
+      emit_invalid_record_to_error false
       <parse>
-        @type multi_format
-        <pattern>
-          format json
-        </pattern>
-        <pattern>
-          format none
-        </pattern>
+        @type json
       </parse>
+    </filter>
+
+    # ============================================================
+    # FILTER: Promote governed string log level
+    # ============================================================
+    # The parser keeps the complete application object under structured. This
+    # is the only governed promotion: strings remain strings; non-string or
+    # absent levels become null, which OpenSearch does not index.
+    <filter raw.kubernetes.**>
+      @type record_transformer
+      enable_ruby true
+      auto_typecast true
+      <record>
+        level ${record["structured"].is_a?(Hash) && record["structured"]["level"].is_a?(String) ? record["structured"]["level"] : nil}
+      </record>
     </filter>
 
     # ============================================================

@@ -5,6 +5,7 @@ namespace: logging
 
 resources:
   - rbac.yaml
+  - log-schema-job.yaml
   - configmap.yaml
   - daemonset.yaml
   - service.yaml

@@ -6,8 +6,9 @@ metadata:
   finalizers:
     - resources-finalizer.argocd.argoproj.io
   annotations:
-    # Wave 4: After opensearch (Wave 0, core data layer — Issue #283) — log
-    # collector deployed once its storage backend is functionally ready
+    # Wave 4 follows OpenSearch as cross-Application ordering metadata; it does
+    # not prove backend readiness. The Fluentd Application's own PreSync schema
+    # hook is the writer safety boundary and must pass before writer resources.
     argocd.argoproj.io/sync-wave: "4"
 spec:
   project: default
