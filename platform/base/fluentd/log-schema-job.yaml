@@ -1,0 +1,202 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: fluentd-log-schema
+  namespace: logging
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+spec:
+  activeDeadlineSeconds: 240
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: fluentd-log-schema
+        app.kubernetes.io/part-of: digiorg-core-platform
+        app.kubernetes.io/component: logging
+    spec:
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      terminationGracePeriodSeconds: 10
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 100
+        runAsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: log-schema
+          image: curlimages/curl:8.16.0@sha256:463eaf6072688fe96ac64fa623fe73e1dbe25d8ad6c34404a669ad3ce1f104b6
+          command: ["/bin/sh", "-c"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          args:
+            - |
+              set -eu
+              export LC_ALL=C
+
+              OPENSEARCH_URL="http://opensearch-cluster-master.platform-db.svc.cluster.local:9200"
+              TEMPLATE_NAME="digiorg-logs-template"
+
+              curl_bounded() {
+                curl --fail --silent --show-error \
+                  --connect-timeout 5 --max-time 20 \
+                  --retry 3 --retry-delay 1 --retry-connrefused "$@"
+              }
+
+              urlencode_path_segment() {
+                URL_VALUE=$1
+                URL_ENCODED=
+                while [ -n "${URL_VALUE}" ]; do
+                  URL_CHAR=${URL_VALUE%"${URL_VALUE#?}"}
+                  URL_VALUE=${URL_VALUE#?}
+                  case "${URL_CHAR}" in
+                    [A-Za-z0-9._~-]) URL_ENCODED="${URL_ENCODED}${URL_CHAR}" ;;
+                    *)
+                      URL_CODE=$(printf '%d' "'${URL_CHAR}")
+                      URL_ENCODED="${URL_ENCODED}$(printf '%%%02X' "${URL_CODE}")"
+                      ;;
+                  esac
+                done
+                printf '%s' "${URL_ENCODED}"
+              }
+
+              require_mapping_contract() {
+                CONTRACT_BODY="$1"
+                COMPACT_BODY=$(printf '%s' "${CONTRACT_BODY}" | tr -d '[:space:]')
+                case "${COMPACT_BODY}" in
+                  *'"structured":{"type":"flat_object"}'*) ;;
+                  *) echo "ERROR: structured mapping verification failed" >&2; return 1 ;;
+                esac
+                for REQUIRED_FRAGMENT in \
+                  '"level":{' \
+                  '"type":"text"' \
+                  '"fields":{' \
+                  '"keyword":{' \
+                  '"type":"keyword"' \
+                  '"ignore_above":256'
+                do
+                  case "${COMPACT_BODY}" in
+                    *"${REQUIRED_FRAGMENT}"*) ;;
+                    *) echo "ERROR: level mapping verification failed" >&2; return 1 ;;
+                  esac
+                done
+              }
+
+              TEMPLATE_PAYLOAD='{
+                "index_patterns": ["digiorg-logs-*"],
+                "priority": 200,
+                "template": {
+                  "mappings": {
+                    "dynamic": true,
+                    "properties": {
+                      "@timestamp": { "type": "date" },
+                      "stream": { "type": "keyword" },
+                      "log": {
+                        "type": "text",
+                        "fields": {
+                          "keyword": { "type": "keyword", "ignore_above": 256 }
+                        }
+                      },
+                      "message": {
+                        "type": "text",
+                        "fields": {
+                          "keyword": { "type": "keyword", "ignore_above": 256 }
+                        }
+                      },
+                      "level": {
+                        "type": "text",
+                        "fields": {
+                          "keyword": { "type": "keyword", "ignore_above": 256 }
+                        }
+                      },
+                      "structured": { "type": "flat_object" },
+                      "kubernetes": {
+                        "properties": {
+                          "namespace_name": { "type": "keyword" },
+                          "pod_name": { "type": "keyword" },
+                          "container_name": { "type": "keyword" },
+                          "host": { "type": "keyword" },
+                          "labels": { "type": "flat_object" },
+                          "namespace_labels": { "type": "flat_object" }
+                        }
+                      }
+                    }
+                  }
+                }
+              }'
+
+              INDEX_MAPPING_PAYLOAD='{
+                "properties": {
+                  "structured": { "type": "flat_object" },
+                  "level": {
+                    "type": "text",
+                    "fields": {
+                      "keyword": { "type": "keyword", "ignore_above": 256 }
+                    }
+                  }
+                }
+              }'
+
+              echo "Waiting for acceptable OpenSearch health ..."
+              HEALTH=$(curl_bounded \
+                "${OPENSEARCH_URL}/_cluster/health?wait_for_status=yellow&timeout=30s&filter_path=status,timed_out")
+              COMPACT_HEALTH=$(printf '%s' "${HEALTH}" | tr -d '[:space:]')
+              case "${COMPACT_HEALTH}" in
+                *'"timed_out":false'*) ;;
+                *) echo "ERROR: OpenSearch health wait timed out" >&2; exit 1 ;;
+              esac
+              case "${COMPACT_HEALTH}" in
+                *'"status":"yellow"'*|*'"status":"green"'*) ;;
+                *) echo "ERROR: OpenSearch health is not acceptable" >&2; exit 1 ;;
+              esac
+
+              # Always replace stale/create-only state with the complete contract.
+              echo "Reconciling index template ${TEMPLATE_NAME} ..."
+              curl_bounded -X PUT \
+                "${OPENSEARCH_URL}/_index_template/${TEMPLATE_NAME}" \
+                -H 'Content-Type: application/json' \
+                --data "${TEMPLATE_PAYLOAD}" > /dev/null
+
+              TEMPLATE_MAPPING=$(curl_bounded \
+                "${OPENSEARCH_URL}/_index_template/${TEMPLATE_NAME}?filter_path=index_templates.index_template.template.mappings.properties.structured,index_templates.index_template.template.mappings.properties.level")
+              require_mapping_contract "${TEMPLATE_MAPPING}"
+              echo "Log index template mapping verified."
+
+              # Every open matching index is eligible, including hidden indices.
+              # Mapping PUT is additive and safe to repeat after a partial run.
+              OPEN_INDICES=$(curl_bounded \
+                "${OPENSEARCH_URL}/_cat/indices/digiorg-logs-*?expand_wildcards=open,hidden&h=index&format=txt")
+
+              printf '%s\n' "${OPEN_INDICES}" | while IFS= read -r INDEX_NAME; do
+                [ -n "${INDEX_NAME}" ] || continue
+                case "${INDEX_NAME}" in
+                  digiorg-logs-*) ;;
+                  *) echo "ERROR: unexpected index outside digiorg-logs-*" >&2; exit 1 ;;
+                esac
+                INDEX_PATH=$(urlencode_path_segment "${INDEX_NAME}")
+
+                echo "Reconciling mapping for ${INDEX_NAME} ..."
+                curl_bounded -X PUT \
+                  "${OPENSEARCH_URL}/${INDEX_PATH}/_mapping" \
+                  -H 'Content-Type: application/json' \
+                  --data "${INDEX_MAPPING_PAYLOAD}" > /dev/null
+
+                INDEX_MAPPING=$(curl_bounded \
+                  "${OPENSEARCH_URL}/${INDEX_PATH}/_mapping?filter_path=*.mappings.properties.structured,*.mappings.properties.level")
+                require_mapping_contract "${INDEX_MAPPING}"
+                echo "Mapping verified for ${INDEX_NAME}."
+              done
+
+              echo "Fluentd log schema is ready."

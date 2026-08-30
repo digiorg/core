@@ -14,6 +14,8 @@ metadata:
     # Application even exists) and this Application's own Kustomize base
     # carries no ServiceMonitor (that lives in platform/base/monitoring-extras,
     # wave 5) — so that justification never applied to this Application's sync.
+    # This Application retains ISM lifecycle ownership; Fluentd owns its log
+    # schema prerequisite in the writer Application's same-Application PreSync.
     argocd.argoproj.io/sync-wave: "0"
 spec:
   project: default
