@@ -13,7 +13,7 @@ spec:
 
   source:
     repoURL: https://github.com/digiorg/core.git
-    targetRevision: main
+    targetRevision: issue348-runtime-v1-20260830T192049Z
     path: platform/base/backstage
 
   destination:
