@@ -65,6 +65,48 @@ def nats_env_contract_errors(rendered: str) -> list[str]:
     return errors
 
 
+def opensearch_resource_contract_errors(rendered: str) -> list[str]:
+    """Require the measured local logs-and-traces memory-headroom contract."""
+    stateful_set = next(
+        (
+            document
+            for document in yaml.safe_load_all(rendered)
+            if isinstance(document, dict)
+            and document.get("kind") == "StatefulSet"
+            and document.get("metadata", {}).get("name")
+            == "opensearch-cluster-master"
+        ),
+        None,
+    )
+    if stateful_set is None:
+        return ["opensearch: rendered StatefulSet/opensearch-cluster-master was not found"]
+
+    containers = stateful_set["spec"]["template"]["spec"].get("containers", [])
+    opensearch = next(
+        (container for container in containers if container.get("name") == "opensearch"),
+        None,
+    )
+    if opensearch is None:
+        return ["opensearch: rendered StatefulSet has no opensearch container"]
+
+    errors: list[str] = []
+    expected_resources = {
+        "requests": {"cpu": "250m", "memory": "1Gi"},
+        "limits": {"cpu": "1000m", "memory": "2Gi"},
+    }
+    if opensearch.get("resources") != expected_resources:
+        errors.append("opensearch: rendered resources violate the local headroom contract")
+
+    java_opts = [
+        item.get("value")
+        for item in opensearch.get("env", [])
+        if item.get("name") == "OPENSEARCH_JAVA_OPTS"
+    ]
+    if java_opts != ["-Xmx512M -Xms512M"]:
+        errors.append("opensearch: rendered JVM heap must remain exactly 512 MiB")
+    return errors
+
+
 def sources(app: dict) -> list[dict]:
     spec = app.get("spec", {})
     return spec.get("sources") or ([spec["source"]] if "source" in spec else [])
@@ -133,6 +175,10 @@ def main() -> int:
                 rendered += 1
                 if name == "nats":
                     contract_errors.extend(nats_env_contract_errors(proc.stdout))
+                elif name == "opensearch":
+                    contract_errors.extend(
+                        opensearch_resource_contract_errors(proc.stdout)
+                    )
                 for ref in IMAGE_RE.findall(proc.stdout):
                     # CRD OpenAPI schemas contain `image: description:` prose;
                     # only OCI-like scalar references participate in the policy.
