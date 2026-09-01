@@ -40,7 +40,7 @@ OpenSearch is an open-source, Apache 2.0-licensed search and analytics engine fo
 
 ## Architecture
 
-This deployment uses the **official OpenSearch Helm chart** (`opensearch-project/opensearch` v3.7.0, repo: https://opensearch-project.github.io/helm-charts) in single-node mode for local development.
+This deployment uses the **official OpenSearch Helm chart** (`opensearch-project/opensearch` v3.7.0, repo: https://opensearch-project.github.io/helm-charts) in single-node mode for local development. The node serves the combined Fluentd logs and Jaeger traces workload. Its `512Mi heap` remains fixed because retained-cluster measurements showed no heap pressure; Kubernetes reserves a `1Gi request / 2Gi limit` so native memory and persisted-index recovery have explicit cgroup headroom.
 
 > **Note:** Running `kubectl apply -k platform/base/opensearch/` deploys only
 > the supplementary ISM hook, not OpenSearch itself. OpenSearch is deployed by
@@ -97,7 +97,7 @@ curl http://opensearch-cluster-master.platform-db.svc.cluster.local:9200/_cat/in
 | Storage | 8Gi PVC | Default provisioner (standard on KinD) |
 | `vm.max_map_count` | 262144 | Set at KinD node level via `docker exec` in `local-setup.nu` |
 | CPU | 250m request / 1000m limit | Kubernetes resource limits |
-| Memory | 512Mi request / 1Gi limit | Kubernetes resource limits |
+| Memory | 1Gi request / 2Gi limit | Combined logs/traces working-set reservation plus native/recovery headroom |
 | `rbac.create` | `false` | No ServiceAccount or RBAC resources created; required if enabling the Security Plugin in production |
 | `discovery.type` | `single-node` | Set in `opensearch.yml`; suppresses cluster bootstrap checks — the actual mechanism behind `singleNode: true` |
 

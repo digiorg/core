@@ -37,8 +37,10 @@ image:
 # =============================================================================
 # Java Heap
 # =============================================================================
-# Keep Xms == Xmx to avoid heap resize overhead.
-# 512 MB is sufficient for trace-only workloads on local dev.
+# Keep Xms == Xmx to avoid heap resize overhead. The local single node serves
+# both Fluentd logs and Jaeger traces. Keep the measured 512 MiB heap because
+# heap pressure was not observed; reserve separate cgroup headroom below for
+# native memory, thread stacks, Lucene/index buffers, page cache, and recovery.
 opensearchJavaOpts: "-Xmx512M -Xms512M"
 
 # =============================================================================
@@ -59,13 +61,17 @@ extraEnvs:
 # =============================================================================
 # Resources
 # =============================================================================
+# The previous 1 GiB limit was fully consumed under combined log/trace ingest
+# and persisted-primary recovery, causing an OOM kill. Reserve the observed
+# 1 GiB working-set baseline and provide another 1 GiB of explicit cgroup
+# headroom without increasing the 512 MiB JVM heap.
 resources:
   requests:
     cpu: "250m"
-    memory: "512Mi"
+    memory: "1Gi"
   limits:
     cpu: "1000m"
-    memory: "1Gi"
+    memory: "2Gi"
 
 # =============================================================================
 # Persistent storage
