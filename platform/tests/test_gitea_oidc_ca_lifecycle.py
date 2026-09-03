@@ -137,6 +137,7 @@ class GiteaSetupCaLifecycleTest(unittest.TestCase):
         cls.main_up = _function(cls.source, '"main up" []')
         cls.configure_gitea = _function(cls.source, "configure_gitea []")
         cls.gated_sync = _function(cls.source, "sync_gated_apps_for_local_dev []")
+        cls.gated_apps = _function(cls.source, "gated_apps_for_local_dev []")
 
     def _convergence_helpers(self):
         helpers = []
@@ -214,7 +215,7 @@ class GiteaSetupCaLifecycleTest(unittest.TestCase):
         return copy.group("changed"), existed.group("exists")
 
     def test_gitea_ca_secret_exists_before_the_gated_sync_loop_can_reach_gitea(self):
-        apps_match = re.search(r"(?ms)let gated_apps = \[(.*?)^\s*\]", self.gated_sync)
+        apps_match = re.search(r"(?ms)^\s*\[(.*?)^\s*\]", self.gated_apps)
         self.assertIsNotNone(apps_match)
         gated_apps = re.findall(r'"([^"]+)"', apps_match.group(1))
         self.assertIn("gitea", gated_apps)

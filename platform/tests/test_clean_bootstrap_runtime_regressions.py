@@ -71,7 +71,7 @@ class NatsControllerAuthenticationTest(unittest.TestCase):
 class CrossplaneHarborOrderingTest(unittest.TestCase):
     def test_harbor_bootstrap_is_manual_and_gated_after_provider_configs(self):
         self.assertNotIn("automated", HARBOR_APP["spec"].get("syncPolicy", {}))
-        gated = SETUP[SETUP.index("let gated_apps"):]
+        gated = func_body("gated_apps_for_local_dev")
         self.assertLess(gated.index('"crossplane-provider-configs"'), gated.index('"crossplane-harbor-bootstrap"'))
         self.assertLess(gated.index('"crossplane-harbor-bootstrap"'), gated.index('"crossplane-xrds"'))
 
@@ -84,7 +84,12 @@ class CrossplaneHarborOrderingTest(unittest.TestCase):
         self.assertIn("requests.http.crossplane.io", body)
         self.assertIn("condition=Established", body)
         loop = func_body("sync_gated_apps_for_local_dev")
-        self.assertLess(loop.index("wait_for_provider_http_ready"), loop.index("kubectl patch application $app"))
+        operation = func_body("sync_gated_application_for_local_dev")
+        self.assertIn("patch application $app", operation)
+        self.assertLess(
+            loop.index("wait_for_provider_http_ready"),
+            loop.index("sync_gated_application_for_local_dev"),
+        )
 
     def test_ca_copy_happens_once_before_first_gated_app_sync_not_gated_on_harbor(self):
         """Issue #285 runtime-v11 (stdout10 live evidence): Harbor's

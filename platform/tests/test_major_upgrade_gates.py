@@ -42,13 +42,13 @@ class MajorUpgradeGateTest(unittest.TestCase):
         with open(path, encoding="utf-8") as fh:
             setup = fh.read()
         self.assertIn("sync_gated_apps_for_local_dev", setup)
-        self.assertIn("kubectl patch application $app", setup)
+        self.assertIn("patch application $app", setup)
         self.assertIn("status.operationState.finishedAt", setup)
         self.assertIn("status.operationState.phase", setup)
         self.assertIn("status.sync.status", setup)
         self.assertIn('phase in ["Failed" "Error"]', setup)
         self.assertIn("Synced+Healthy", setup)
-        positions = [setup.index(f'\"{name}\"', setup.index("let gated_apps")) for name in MAJOR_APPS]
+        positions = [setup.index(f'\"{name}\"', setup.index("def gated_apps_for_local_dev")) for name in MAJOR_APPS]
         self.assertEqual(positions, sorted(positions))
 
 

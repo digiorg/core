@@ -1090,20 +1090,22 @@ class CredentialGateOrderingTest(unittest.TestCase):
 
     def test_gate_runs_inside_the_gated_loop_after_the_bootstrap_app_syncs(self):
         loop = func_body("sync_gated_apps_for_local_dev")
+        operation = func_body("sync_gated_application_for_local_dev")
         self.assertIn("ensure_crossplane_harbor_credentials", loop)
+        self.assertIn("patch application $app", operation)
         self.assertLess(
             loop.index("wait_for_provider_http_ready"),
-            loop.index("kubectl patch application $app"),
+            loop.index("sync_gated_application_for_local_dev"),
             "provider-http must be proven ready before any gated sync starts",
         )
         self.assertLess(
-            loop.index("kubectl patch application $app"),
+            loop.index("sync_gated_application_for_local_dev"),
             loop.index("ensure_crossplane_harbor_credentials"),
             "the credential gate must run after the bootstrap Application syncs",
         )
 
         self.assertLess(
-            loop.index("kubectl patch application $app"),
+            loop.index("sync_gated_application_for_local_dev"),
             loop.index("wait_for_harbor_robot_permissions_ready"),
             "the provider-http Observe gate must run after the bootstrap Application syncs",
         )
@@ -1124,7 +1126,7 @@ class CredentialGateOrderingTest(unittest.TestCase):
 
     def test_downstream_applications_stay_ordered_behind_the_gate(self):
         loop = func_body("sync_gated_apps_for_local_dev")
-        gated = loop[loop.index("let gated_apps") : loop.index("for app in $gated_apps")]
+        gated = func_body("gated_apps_for_local_dev")
         order = [gated.index(f'"{app}"') for app in
                  ("crossplane-provider-configs", "crossplane-harbor-bootstrap",
                   "crossplane-xrds", "core-catalog")]
