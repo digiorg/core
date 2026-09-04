@@ -115,6 +115,10 @@ if not any(arg.startswith("--request-timeout=") for arg in args):
     print("password=unbounded-command-secret", file=sys.stderr)
     sys.exit(91)
 
+if scenario == "cleanup_kill_race":
+    time.sleep(0.05)
+    sys.exit(0)
+
 if scenario == "hung_kubectl" and "get" in args and "deployment" in args:
     print("hung-command-secret", file=sys.stderr, flush=True)
     time.sleep(60)
@@ -151,10 +155,15 @@ if "get" in args and "pods" in args:
     emit({"apiVersion": "v1", "kind": "PodList", "items": pods})
     sys.exit(0)
 
-if "get" in args and any("endpointslices" in arg for arg in args):
-    selector = args[args.index("-l") + 1]
-    service = selector.split("=", 1)[1]
-    namespace = args[args.index("-n") + 1]
+typed_endpoint_paths = {
+    "/apis/discovery.k8s.io/v1/namespaces/kube-system/endpointslices?labelSelector=kubernetes.io%2Fservice-name%3Dkube-dns": ("kube-dns", "kube-system"),
+    "/apis/discovery.k8s.io/v1/namespaces/argocd/endpointslices?labelSelector=kubernetes.io%2Fservice-name%3Dargocd-repo-server": ("argocd-repo-server", "argocd"),
+    "/apis/discovery.k8s.io/v1/namespaces/argocd/endpointslices?labelSelector=kubernetes.io%2Fservice-name%3Dargocd-redis": ("argocd-redis", "argocd"),
+}
+if (len(args) == 4
+        and args[:3] == ["--request-timeout=10s", "get", "--raw"]
+        and args[3] in typed_endpoint_paths):
+    service, namespace = typed_endpoint_paths[args[3]]
     value = endpoints_ready(service, namespace)
     if scenario == "endpoint_slice_identity_missing" and service == "argocd-repo-server":
         value["items"][0].pop("metadata")
@@ -676,6 +685,25 @@ class ArgoDependencyGateBehaviorTest(unittest.TestCase):
         self.assertTrue(all("timeout" in call and "getent" in " ".join(call)
                             for call in exec_calls))
 
+    def test_gate_uses_exact_typed_endpoint_slice_raw_paths(self):
+        expected_paths = {
+            "/apis/discovery.k8s.io/v1/namespaces/kube-system/endpointslices?labelSelector=kubernetes.io%2Fservice-name%3Dkube-dns",
+            "/apis/discovery.k8s.io/v1/namespaces/argocd/endpointslices?labelSelector=kubernetes.io%2Fservice-name%3Dargocd-repo-server",
+            "/apis/discovery.k8s.io/v1/namespaces/argocd/endpointslices?labelSelector=kubernetes.io%2Fservice-name%3Dargocd-redis",
+        }
+        result = self.run_nu(
+            "ready", "wait_for_argocd_control_plane_dependencies 0sec 3 3"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.calls()
+        raw_calls = [call for call in calls if "--raw" in call]
+        self.assertEqual(len(raw_calls), 9)
+        self.assertEqual({call[-1] for call in raw_calls}, expected_paths)
+        self.assertTrue(all(call == ["--request-timeout=10s", "get", "--raw", call[-1]]
+                            for call in raw_calls))
+        self.assertFalse(any("endpointslices.discovery.k8s.io" in call
+                             for call in calls))
+
     def test_hung_kubectl_is_killed_at_the_total_gate_deadline(self):
         started = time.monotonic()
         result = self.run_nu(
@@ -687,6 +715,58 @@ class ArgoDependencyGateBehaviorTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertLess(elapsed, 2.5)
         self.assertEqual(self.patch_indexes(), [])
+        self.assertNotIn("hung-command-secret", result.stdout + result.stderr)
+
+    def test_completed_job_kill_race_returns_bounded_timeout_record(self):
+        source = SETUP.read_text(encoding="utf-8")
+        start = source.index("def bounded_dependency_kubectl ")
+        end = source.index("\n# Issue #352:", start)
+        bounded_function = source[start:end]
+        self.assertIn("job kill $job_id", bounded_function)
+        bounded_function = bounded_function.replace(
+            "job kill $job_id", "sleep 100ms\n        job kill $job_id", 1
+        )
+        harness = Path(self.tmp.name) / "bounded-kill-race.nu"
+        harness.write_text(
+            bounded_function
+            + "\nbounded_dependency_kubectl ((date now) + 10ms) -- "
+              "--request-timeout=10s version | to json --raw\n",
+            encoding="utf-8",
+        )
+        self.env["FAKE_SCENARIO"] = "cleanup_kill_race"
+        result = subprocess.run(
+            ["nu", "--no-config-file", str(harness)], cwd=REPO_ROOT,
+            env=self.env, capture_output=True, text=True, timeout=3,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), {
+            "stdout": "", "stderr": "", "exit_code": 124,
+        })
+
+    def test_live_job_kill_failure_is_not_swallowed(self):
+        source = SETUP.read_text(encoding="utf-8")
+        start = source.index("def bounded_dependency_kubectl ")
+        end = source.index("\n# Issue #352:", start)
+        bounded_function = source[start:end]
+        self.assertIn("job kill $job_id", bounded_function)
+        bounded_function = bounded_function.replace(
+            "job kill $job_id", 'error make {msg: "forced kill failure"}', 1
+        )
+        harness = Path(self.tmp.name) / "bounded-live-kill-failure.nu"
+        harness.write_text(
+            bounded_function
+            + "\nbounded_dependency_kubectl ((date now) + 100ms) -- "
+              "--request-timeout=10s get deployment coredns -n kube-system -o json "
+              "| to json --raw\n",
+            encoding="utf-8",
+        )
+        self.env["FAKE_SCENARIO"] = "hung_kubectl"
+        result = subprocess.run(
+            ["nu", "--no-config-file", str(harness)], cwd=REPO_ROOT,
+            env=self.env, capture_output=True, text=True, timeout=3,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Dependency command cleanup failed", result.stderr)
         self.assertNotIn("hung-command-secret", result.stdout + result.stderr)
 
     def test_gated_application_order_is_unchanged(self):
