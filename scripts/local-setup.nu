@@ -3683,7 +3683,14 @@ def bounded_dependency_kubectl [deadline: datetime, ...arguments: string] {
     })
     let result = (try { job recv --timeout $command_budget } catch { null })
     if $result == null {
-        job kill $job_id
+        try {
+            job kill $job_id
+        } catch {
+            let job_still_running = (job list | any {|job| $job.id == $job_id })
+            if $job_still_running {
+                error make {msg: "Dependency command cleanup failed"}
+            }
+        }
         {stdout: "", stderr: "", exit_code: 124}
     } else {
         $result
@@ -3719,9 +3726,9 @@ def wait_for_argocd_control_plane_dependencies [
         let coredns_deployment_result = (bounded_dependency_kubectl $deadline -- --request-timeout=10s get deployment coredns -n kube-system -o json)
         let repo_deployment_result = (bounded_dependency_kubectl $deadline -- --request-timeout=10s get deployment argocd-repo-server -n argocd -o json)
         let redis_deployment_result = (bounded_dependency_kubectl $deadline -- --request-timeout=10s get deployment argocd-redis -n argocd -o json)
-        let coredns_slices_result = (bounded_dependency_kubectl $deadline -- --request-timeout=10s get endpointslices.discovery.k8s.io -n kube-system -l kubernetes.io/service-name=kube-dns -o json)
-        let repo_slices_result = (bounded_dependency_kubectl $deadline -- --request-timeout=10s get endpointslices.discovery.k8s.io -n argocd -l kubernetes.io/service-name=argocd-repo-server -o json)
-        let redis_slices_result = (bounded_dependency_kubectl $deadline -- --request-timeout=10s get endpointslices.discovery.k8s.io -n argocd -l kubernetes.io/service-name=argocd-redis -o json)
+        let coredns_slices_result = (bounded_dependency_kubectl $deadline -- --request-timeout=10s get --raw '/apis/discovery.k8s.io/v1/namespaces/kube-system/endpointslices?labelSelector=kubernetes.io%2Fservice-name%3Dkube-dns')
+        let repo_slices_result = (bounded_dependency_kubectl $deadline -- --request-timeout=10s get --raw '/apis/discovery.k8s.io/v1/namespaces/argocd/endpointslices?labelSelector=kubernetes.io%2Fservice-name%3Dargocd-repo-server')
+        let redis_slices_result = (bounded_dependency_kubectl $deadline -- --request-timeout=10s get --raw '/apis/discovery.k8s.io/v1/namespaces/argocd/endpointslices?labelSelector=kubernetes.io%2Fservice-name%3Dargocd-redis')
         let coredns_pods_result = (bounded_dependency_kubectl $deadline -- --request-timeout=10s get pods -n kube-system -l k8s-app=kube-dns -o json)
         let controller_pods_result = (bounded_dependency_kubectl $deadline -- --request-timeout=10s get pods -n argocd -l app.kubernetes.io/name=argocd-application-controller -o json)
         let repo_pods_result = (bounded_dependency_kubectl $deadline -- --request-timeout=10s get pods -n argocd -l app.kubernetes.io/name=argocd-repo-server -o json)
