@@ -201,11 +201,11 @@ class RetryWiringStructureTest(unittest.TestCase):
         # backoff/retry-count bookkeeping, so a retry loops back and reissues
         # a brand-new `kubectl patch` (fresh operation) rather than re-polling
         # the same stale terminal operation.
-        start = self.text.index("def sync_gated_apps_for_local_dev")
+        start = self.text.index("def sync_gated_application_for_local_dev")
         end = self.text.index("\ndef ", start + 10)
         body = self.text[start:end]
         loop_start = body.index("loop {")
-        patch_pos = body.index("kubectl patch application $app", loop_start)
+        patch_pos = body.index("patch application $app", loop_start)
         retry_incr_pos = body.index("$retry_count = $retry_count + 1", loop_start)
         self.assertLess(
             patch_pos, retry_incr_pos,
@@ -218,7 +218,7 @@ class RetryWiringStructureTest(unittest.TestCase):
         self.assertIn("syncResult.resources", self.text)
 
     def test_classification_includes_resource_messages(self):
-        start = self.text.index("def sync_gated_apps_for_local_dev")
+        start = self.text.index("def sync_gated_application_for_local_dev")
         end = self.text.index("\ndef ", start + 10)
         body = self.text[start:end]
         self.assertIn("classification_text", body)
@@ -226,7 +226,7 @@ class RetryWiringStructureTest(unittest.TestCase):
         self.assertIn("is_retryable_sync_error $classification_text", body)
 
     def test_uses_started_at_as_fresh_operation_identity(self):
-        start = self.text.index("def sync_gated_apps_for_local_dev")
+        start = self.text.index("def sync_gated_application_for_local_dev")
         end = self.text.index("\ndef ", start + 10)
         body = self.text[start:end]
         self.assertIn("previous_started", body)
@@ -469,21 +469,25 @@ class FreshGatedOperationWiringTest(unittest.TestCase):
     def setUpClass(cls):
         with open(SETUP, encoding="utf-8") as fh:
             cls.text = fh.read()
-        start = cls.text.index("def sync_gated_apps_for_local_dev")
-        end = cls.text.index("\ndef ", start + 10)
-        cls.loop = cls.text[start:end]
+        operation_start = cls.text.index("def sync_gated_application_for_local_dev")
+        operation_end = cls.text.index("\ndef ", operation_start + 10)
+        cls.operation = cls.text[operation_start:operation_end]
+        parent_start = cls.text.index("def sync_gated_apps_for_local_dev")
+        parent_end = cls.text.index("\ndef ", parent_start + 10)
+        cls.parent = cls.text[parent_start:parent_end]
 
     def test_decision_is_wired_before_the_post_sync_credential_gate(self):
-        self.assertIn("gated_sync_operation_succeeded", self.loop)
+        self.assertIn("gated_sync_operation_succeeded", self.operation)
+        self.assertIn("sync_gated_application_for_local_dev", self.parent)
         self.assertLess(
-            self.loop.index("gated_sync_operation_succeeded"),
-            self.loop.index("ensure_crossplane_harbor_credentials"),
+            self.parent.index("sync_gated_application_for_local_dev"),
+            self.parent.index("ensure_crossplane_harbor_credentials"),
         )
 
     def test_acceptance_prints_only_a_fixed_safe_note(self):
-        self.assertIn("fresh successful operation has no material diff", self.loop)
-        self.assertNotIn("$diff.stdout", self.loop)
-        self.assertNotIn("$diff.stderr", self.loop)
+        self.assertIn("fresh successful operation has no material diff", self.operation)
+        self.assertNotIn("$diff.stdout", self.operation)
+        self.assertNotIn("$diff.stderr", self.operation)
 
 
 class MaterialDiffWindowsPortabilityStructureTest(unittest.TestCase):

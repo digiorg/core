@@ -3398,13 +3398,623 @@ fi
     print $"(ansi green)✓ KinD containerd trusts the digiorg.local public CA(ansi reset)"
 }
 
-def sync_gated_apps_for_local_dev [] {
-    let gated_apps = [
+def gated_apps_for_local_dev [] {
+    [
         "external-secrets", "nats", "grafana", "opencost", "gitea",
         "sonarqube", "crossplane", "crossplane-providers",
         "crossplane-provider-configs", "crossplane-harbor-bootstrap",
         "crossplane-xrds", "core-catalog"
     ]
+}
+
+# A Deployment is usable by this gate only after its complete observed rollout.
+# Parsing is deliberately fail-closed because kubectl output is untrusted.
+def dependency_deployment_ready [deployment_json: string, expected_name: string, expected_namespace: string] {
+    try {
+        let deployment = ($deployment_json | from json)
+        let metadata = ($deployment | get -o metadata)
+        let uid = ($metadata | get -o uid)
+        if (($deployment | describe | str starts-with "record") == false
+            or ($deployment | get -o apiVersion) != "apps/v1"
+            or ($deployment | get -o kind) != "Deployment"
+            or ($metadata | describe | str starts-with "record") == false
+            or ($metadata | get -o name) != $expected_name
+            or ($metadata | get -o namespace) != $expected_namespace
+            or ($uid | describe) != "string" or ($uid | is-empty)
+            or ($metadata | get -o deletionTimestamp) != null) {
+            return false
+        }
+        let desired = ($deployment | get spec.replicas)
+        let generation = ($deployment | get metadata.generation)
+        let observed = ($deployment | get status.observedGeneration)
+        let ready = ($deployment | get status.readyReplicas)
+        let updated = ($deployment | get status.updatedReplicas)
+        let available = ($deployment | get status.availableReplicas)
+        let exact_nonnegative_integers = ([$generation $observed $ready $updated $available] | all {|value|
+            ($value | describe) == "int" and $value >= 0
+        })
+        (($desired | describe) == "int" and $desired > 0
+            and $exact_nonnegative_integers
+            and $observed == $generation
+            and $ready == $desired
+            and $updated == $desired
+            and $available == $desired)
+    } catch { false }
+}
+
+def dependency_deployment_desired_replicas [deployment_json: string, expected_name: string, expected_namespace: string] {
+    try {
+        let deployment = ($deployment_json | from json)
+        let metadata = ($deployment | get -o metadata)
+        let uid = ($metadata | get -o uid)
+        if (($deployment | describe | str starts-with "record") == false
+            or ($deployment | get -o apiVersion) != "apps/v1"
+            or ($deployment | get -o kind) != "Deployment"
+            or ($metadata | describe | str starts-with "record") == false
+            or ($metadata | get -o name) != $expected_name
+            or ($metadata | get -o namespace) != $expected_namespace
+            or ($uid | describe) != "string" or ($uid | is-empty)
+            or ($metadata | get -o deletionTimestamp) != null) {
+            return 0
+        }
+        let desired = ($deployment | get spec.replicas)
+        if ($desired | describe) == "int" and $desired > 0 { $desired } else { 0 }
+    } catch { 0 }
+}
+
+# Return a bounded, deterministic identity/readiness snapshot for every Pod in
+# a selector. Empty, oversized, malformed, or not-Ready sets are invalid.
+def dependency_pod_snapshot [
+    pods_json: string,
+    expected_namespace: string,
+    expected_label_key: string,
+    expected_label_value: string
+] {
+    let parsed = (try { $pods_json | from json } catch { null })
+    if (($parsed | describe | str starts-with "record") == false
+        or ($parsed | get -o apiVersion) != "v1"
+        or ($parsed | get -o kind) != "PodList") {
+        return {valid: false, pods: []}
+    }
+    let items = (try { $parsed | get items } catch { null })
+    let items_type = ($items | describe)
+    let items_are_collection = ($items_type | str starts-with "list") or ($items_type | str starts-with "table")
+    if not $items_are_collection or ($items | is-empty) or ($items | length) > 10 {
+        return {valid: false, pods: []}
+    }
+    if not ($items | all {|pod| $pod | describe | str starts-with "record" }) {
+        return {valid: false, pods: []}
+    }
+    let pods = (
+        $items
+        | each {|pod|
+            let metadata = (try { $pod | get metadata } catch { null })
+            let status_record = (try { $pod | get status } catch { null })
+            let statuses = (try { $pod | get status.containerStatuses } catch { null })
+            let statuses_type = ($statuses | describe)
+            let statuses_are_collection = ($statuses_type | str starts-with "list") or ($statuses_type | str starts-with "table")
+            let statuses_are_records = $statuses_are_collection and not ($statuses | is-empty) and ($statuses | all {|container| $container | describe | str starts-with "record" })
+            let container_names = if $statuses_are_records { $statuses | each {|container| $container | get -o name } } else { [] }
+            let container_names_valid = $statuses_are_records and ($container_names | all {|name|
+                ($name | describe) == "string" and not ($name | is-empty)
+            }) and ($container_names | uniq | length) == ($container_names | length)
+            let statuses_valid = $container_names_valid and ($statuses | all {|container|
+                let ready = ($container | get -o ready)
+                let restart_count = ($container | get -o restartCount)
+                (($ready | describe) == "bool" and $ready == true
+                    and ($restart_count | describe) == "int" and $restart_count >= 0)
+            })
+            let name = (try { $pod | get metadata.name } catch { null })
+            let namespace = (try { $pod | get metadata.namespace } catch { null })
+            let uid = (try { $pod | get metadata.uid } catch { null })
+            let labels = (try { $pod | get metadata.labels } catch { null })
+            let metadata_valid = (($pod | get -o apiVersion) == "v1"
+                and ($pod | get -o kind) == "Pod"
+                and ($metadata | describe | str starts-with "record")
+                and ($name | describe) == "string" and not ($name | is-empty)
+                and ($namespace | describe) == "string" and $namespace == $expected_namespace
+                and ($uid | describe) == "string" and not ($uid | is-empty)
+                and ($labels | describe | str starts-with "record")
+                and ($labels | get -o $expected_label_key) == $expected_label_value
+                and ($metadata | get -o deletionTimestamp) == null)
+            let conditions = (try { $pod | get status.conditions } catch { null })
+            let conditions_type = ($conditions | describe)
+            let conditions_are_collection = (($conditions_type | str starts-with "list") or ($conditions_type | str starts-with "table"))
+            let conditions_are_records = ($conditions_are_collection
+                and not ($conditions | is-empty)
+                and ($conditions | all {|condition| $condition | describe | str starts-with "record" }))
+            let condition_types = if $conditions_are_records { $conditions | each {|condition| $condition | get -o type } } else { [] }
+            let conditions_valid = ($conditions_are_records
+                and ($conditions | all {|condition|
+                    let condition_type = ($condition | get -o type)
+                    let condition_status = ($condition | get -o status)
+                    (($condition_type | describe) == "string" and not ($condition_type | is-empty)
+                        and ($condition_status | describe) == "string"
+                        and $condition_status in ["True" "False" "Unknown"])
+                })
+                and ($condition_types | uniq | length) == ($condition_types | length))
+            let ready_conditions = if $conditions_valid { $conditions | where {|condition| $condition.type == "Ready" } } else { [] }
+            let ready_condition_valid = (($ready_conditions | length) == 1 and ($ready_conditions | first | get status) == "True")
+            let spec = (try { $pod | get spec } catch { null })
+            let spec_valid = ($spec | describe | str starts-with "record")
+            let declared_containers = if $spec_valid { try { $spec | get containers } catch { null } } else { null }
+            let declared_containers_type = ($declared_containers | describe)
+            let declared_containers_are_collection = (($declared_containers_type | str starts-with "list") or ($declared_containers_type | str starts-with "table"))
+            let declared_container_names = if $declared_containers_are_collection { $declared_containers | each {|container| $container | get -o name } } else { [] }
+            let declared_containers_valid = ($declared_containers_are_collection
+                and not ($declared_containers | is-empty)
+                and ($declared_containers | all {|container| $container | describe | str starts-with "record" })
+                and ($declared_container_names | all {|container_name| ($container_name | describe) == "string" and not ($container_name | is-empty) })
+                and ($declared_container_names | uniq | length) == ($declared_container_names | length)
+                and ($declared_container_names | sort) == ($container_names | sort))
+            let readiness_gates_present = ($spec_valid and "readinessGates" in ($spec | columns))
+            let readiness_gates = if $readiness_gates_present { $spec | get readinessGates } else { [] }
+            let readiness_gates_type = ($readiness_gates | describe)
+            let readiness_gates_are_collection = (($readiness_gates_type | str starts-with "list") or ($readiness_gates_type | str starts-with "table"))
+            let readiness_gates_are_records = ($readiness_gates_are_collection and ($readiness_gates | all {|gate| $gate | describe | str starts-with "record" }))
+            let gate_types = if $readiness_gates_are_records { $readiness_gates | each {|gate| $gate | get -o conditionType } } else { [] }
+            let readiness_gates_valid = ($spec_valid and $declared_containers_valid and $readiness_gates_are_records
+                and ($gate_types | all {|condition_type| ($condition_type | describe) == "string" and not ($condition_type | is-empty) })
+                and ($gate_types | uniq | length) == ($gate_types | length)
+                and ($gate_types | all {|condition_type|
+                    ($conditions | where {|condition| $condition.type == $condition_type and $condition.status == "True" } | length) == 1
+                }))
+            let pod_state_valid = (($status_record | describe | str starts-with "record")
+                and ($status_record | get -o phase) == "Running"
+                and $conditions_valid and $ready_condition_valid and $readiness_gates_valid)
+            let restart_values = if $statuses_valid {
+                $statuses | each {|container| $container | get restartCount }
+            } else { [-1] }
+            let restarts = if $statuses_valid { $restart_values | math sum } else { -1 }
+            {scope: $expected_namespace, name: $name, uid: $uid, ready: ($metadata_valid and $pod_state_valid and $statuses_valid), restarts: $restarts}
+        }
+        | sort-by name
+    )
+    let names = ($pods | get name)
+    let uids = ($pods | get uid)
+    let valid = (($pods | all {|pod| $pod.ready })
+        and ($names | uniq | length) == ($names | length)
+        and ($uids | uniq | length) == ($uids | length))
+    {valid: $valid, pods: $pods}
+}
+
+def dependency_endpoint_address_matches_type [address: string, address_type: string] {
+    let ipv4_pattern = '^(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])([.](25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])){3}$'
+    if $address_type == "IPv4" {
+        $address =~ $ipv4_pattern
+    } else if $address_type == "IPv6" {
+        let compressed = ($address | str contains "::")
+        let halves = ($address | split row "::")
+        if $compressed and ($halves | length) == 2 {
+            let left = if ($halves | first | is-empty) { [] } else { $halves | first | split row ":" }
+            let right = if ($halves | last | is-empty) { [] } else { $halves | last | split row ":" }
+            let groups = ($left | append $right)
+            ($groups | length) < 8 and ($groups | all {|group| $group =~ '^[0-9A-Fa-f]{1,4}$' })
+        } else if not $compressed {
+            let groups = ($address | split row ":")
+            ($groups | length) == 8 and ($groups | all {|group| $group =~ '^[0-9A-Fa-f]{1,4}$' })
+        } else {
+            false
+        }
+    } else if $address_type == "FQDN" {
+        let labels = ($address | split row ".")
+        (($address | str length) <= 253
+            and not ($address =~ $ipv4_pattern)
+            and ($labels | all {|label|
+                ($label | str length) <= 63 and ($label =~ '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
+            }))
+    } else {
+        false
+    }
+}
+
+def dependency_endpoints_ready [slices_json: string, expected_service: string, expected_namespace: string] {
+    let parsed = (try { $slices_json | from json } catch { null })
+    if (($parsed | describe | str starts-with "record") == false
+        or ($parsed | get -o apiVersion) != "discovery.k8s.io/v1"
+        or ($parsed | get -o kind) != "EndpointSliceList") {
+        return false
+    }
+    let slices = (try { $parsed | get items } catch { null })
+    let slices_type = ($slices | describe)
+    let slices_are_collection = ($slices_type | str starts-with "list") or ($slices_type | str starts-with "table")
+    if not $slices_are_collection or ($slices | is-empty) or ($slices | length) > 32 or not ($slices | all {|slice| $slice | describe | str starts-with "record" }) {
+        return false
+    }
+    let exact_shape = ($slices | all {|slice|
+        let metadata = ($slice | get -o metadata)
+        let labels = ($metadata | get -o labels)
+        let name = ($metadata | get -o name)
+        let uid = ($metadata | get -o uid)
+        let address_type = ($slice | get -o addressType)
+        let endpoints = (try { $slice | get endpoints } catch { null })
+        let endpoints_type = ($endpoints | describe)
+        let endpoints_are_collection = ($endpoints_type | str starts-with "list") or ($endpoints_type | str starts-with "table")
+        let slice_identity_valid = (($slice | get -o apiVersion) == "discovery.k8s.io/v1"
+            and ($slice | get -o kind) == "EndpointSlice"
+            and ($metadata | describe | str starts-with "record")
+            and ($name | describe) == "string" and not ($name | is-empty)
+            and ($metadata | get -o namespace) == $expected_namespace
+            and ($uid | describe) == "string" and not ($uid | is-empty)
+            and ($labels | describe | str starts-with "record")
+            and ($labels | get -o "kubernetes.io/service-name") == $expected_service
+            and ($metadata | get -o deletionTimestamp) == null
+            and $address_type in ["IPv4" "IPv6" "FQDN"])
+        if (not $slice_identity_valid
+            or not $endpoints_are_collection
+            or ($endpoints | is-empty)
+            or ($endpoints | length) > 100
+            or not ($endpoints | all {|endpoint| $endpoint | describe | str starts-with "record" })) {
+            false
+        } else {
+            $endpoints | all {|endpoint|
+                let addresses = (try { $endpoint | get addresses } catch { null })
+                let conditions = (try { $endpoint | get conditions } catch { null })
+                let addresses_type = ($addresses | describe)
+                let addresses_are_collection = ($addresses_type | str starts-with "list") or ($addresses_type | str starts-with "table")
+                let ready = (try { $endpoint | get conditions.ready } catch { null })
+                ($addresses_are_collection and not ($addresses | is-empty) and ($addresses | length) <= 16
+                    and ($addresses | all {|address|
+                        (($address | describe) == "string" and not ($address | is-empty) and (dependency_endpoint_address_matches_type $address $address_type))
+                    })
+                    and ($conditions | describe | str starts-with "record")
+                    and ($ready | describe) == "bool")
+            }
+        }
+    })
+    if not $exact_shape {
+        return false
+    }
+    $slices | any {|slice| $slice.endpoints | any {|endpoint| $endpoint.conditions.ready == true } }
+}
+
+# Run kubectl in a killable Nushell job. kubectl's request timeout is retained
+# as defense in depth, but this process deadline is authoritative even when a
+# plugin, exec transport, or fake kubectl ignores it.
+def bounded_dependency_kubectl [deadline: datetime, ...arguments: string] {
+    let remaining = $deadline - (date now)
+    if $remaining <= 0ns {
+        return {stdout: "", stderr: "", exit_code: 124}
+    }
+    let command_budget = if $remaining < 10sec { $remaining } else { 10sec }
+    let job_id = (job spawn {
+        let result = (do { ^kubectl ...$arguments } | complete)
+        $result | job send 0
+    })
+    let result = (try { job recv --timeout $command_budget } catch { null })
+    if $result == null {
+        job kill $job_id
+        {stdout: "", stderr: "", exit_code: 124}
+    } else {
+        $result
+    }
+}
+
+# Issue #352: Ready/restart-only gates do not prove the Argo control plane can
+# resolve its live Service dependencies. Before every gated sync operation,
+# require three consecutive functional samples spanning CoreDNS, repo-server,
+# Redis, their EndpointSlices, and both real in-Pod DNS paths. Each subprocess
+# and the enclosing sample budget are bounded. Diagnostics contain only fixed,
+# allowlisted booleans/counts; arbitrary kubectl streams are never surfaced.
+def wait_for_argocd_control_plane_dependencies [
+    poll_interval: duration = 5sec,
+    max_samples: int = 60,
+    required_stable_samples: int = 3,
+    max_wait: duration = 5min,
+    return_snapshot: bool = false
+] {
+    $env.KUBECONFIG = $KUBECONFIG_PATH
+    if $max_samples < 1 or $required_stable_samples < 2 or $required_stable_samples > $max_samples {
+        error make {msg: "Invalid Argo control-plane dependency gate bounds"}
+    }
+
+    mut previous_snapshot = []
+    mut stable_samples = 0
+    mut last_diagnostic = "Argo control-plane dependency state was not observed"
+    let deadline = (date now) + $max_wait
+    for sample in 1..$max_samples {
+        if (date now) >= $deadline {
+            break
+        }
+        let coredns_deployment_result = (bounded_dependency_kubectl $deadline -- --request-timeout=10s get deployment coredns -n kube-system -o json)
+        let repo_deployment_result = (bounded_dependency_kubectl $deadline -- --request-timeout=10s get deployment argocd-repo-server -n argocd -o json)
+        let redis_deployment_result = (bounded_dependency_kubectl $deadline -- --request-timeout=10s get deployment argocd-redis -n argocd -o json)
+        let coredns_slices_result = (bounded_dependency_kubectl $deadline -- --request-timeout=10s get endpointslices.discovery.k8s.io -n kube-system -l kubernetes.io/service-name=kube-dns -o json)
+        let repo_slices_result = (bounded_dependency_kubectl $deadline -- --request-timeout=10s get endpointslices.discovery.k8s.io -n argocd -l kubernetes.io/service-name=argocd-repo-server -o json)
+        let redis_slices_result = (bounded_dependency_kubectl $deadline -- --request-timeout=10s get endpointslices.discovery.k8s.io -n argocd -l kubernetes.io/service-name=argocd-redis -o json)
+        let coredns_pods_result = (bounded_dependency_kubectl $deadline -- --request-timeout=10s get pods -n kube-system -l k8s-app=kube-dns -o json)
+        let controller_pods_result = (bounded_dependency_kubectl $deadline -- --request-timeout=10s get pods -n argocd -l app.kubernetes.io/name=argocd-application-controller -o json)
+        let repo_pods_result = (bounded_dependency_kubectl $deadline -- --request-timeout=10s get pods -n argocd -l app.kubernetes.io/name=argocd-repo-server -o json)
+        let redis_pods_result = (bounded_dependency_kubectl $deadline -- --request-timeout=10s get pods -n argocd -l app.kubernetes.io/name=argocd-redis -o json)
+
+        let coredns_ready = $coredns_deployment_result.exit_code == 0 and (dependency_deployment_ready $coredns_deployment_result.stdout "coredns" "kube-system")
+        let repo_ready = $repo_deployment_result.exit_code == 0 and (dependency_deployment_ready $repo_deployment_result.stdout "argocd-repo-server" "argocd")
+        let redis_ready = $redis_deployment_result.exit_code == 0 and (dependency_deployment_ready $redis_deployment_result.stdout "argocd-redis" "argocd")
+        let coredns_endpoint_ready = $coredns_slices_result.exit_code == 0 and (dependency_endpoints_ready $coredns_slices_result.stdout "kube-dns" "kube-system")
+        let repo_endpoint_ready = $repo_slices_result.exit_code == 0 and (dependency_endpoints_ready $repo_slices_result.stdout "argocd-repo-server" "argocd")
+        let redis_endpoint_ready = $redis_slices_result.exit_code == 0 and (dependency_endpoints_ready $redis_slices_result.stdout "argocd-redis" "argocd")
+        let endpoints_ready = $coredns_endpoint_ready and $repo_endpoint_ready and $redis_endpoint_ready
+        let coredns_pods = if $coredns_pods_result.exit_code == 0 { dependency_pod_snapshot $coredns_pods_result.stdout "kube-system" "k8s-app" "kube-dns" } else { {valid: false, pods: []} }
+        let controller_pods = if $controller_pods_result.exit_code == 0 { dependency_pod_snapshot $controller_pods_result.stdout "argocd" "app.kubernetes.io/name" "argocd-application-controller" } else { {valid: false, pods: []} }
+        let repo_pods = if $repo_pods_result.exit_code == 0 { dependency_pod_snapshot $repo_pods_result.stdout "argocd" "app.kubernetes.io/name" "argocd-repo-server" } else { {valid: false, pods: []} }
+        let redis_pods = if $redis_pods_result.exit_code == 0 { dependency_pod_snapshot $redis_pods_result.stdout "argocd" "app.kubernetes.io/name" "argocd-redis" } else { {valid: false, pods: []} }
+        let pod_sets_ready = (
+            $coredns_pods.valid and ($coredns_pods.pods | length) == (dependency_deployment_desired_replicas $coredns_deployment_result.stdout "coredns" "kube-system")
+            and $controller_pods.valid
+            and $repo_pods.valid and ($repo_pods.pods | length) == (dependency_deployment_desired_replicas $repo_deployment_result.stdout "argocd-repo-server" "argocd")
+            and $redis_pods.valid and ($redis_pods.pods | length) == (dependency_deployment_desired_replicas $redis_deployment_result.stdout "argocd-redis" "argocd")
+        )
+
+        mut controller_dns = $controller_pods.valid
+        if $controller_pods.valid {
+            for pod in $controller_pods.pods {
+                let resolution = (bounded_dependency_kubectl $deadline -- --request-timeout=10s exec -n argocd $"pod/($pod.name)" -- timeout 5s sh -c 'getent hosts "$1" >/dev/null 2>&1 && printf "%s\n" "__ARGO_DEPENDENCY_DNS_OK__"' sh argocd-repo-server.argocd.svc.cluster.local)
+                if $resolution.exit_code != 0 or ($resolution.stdout | str trim) != "__ARGO_DEPENDENCY_DNS_OK__" {
+                    $controller_dns = false
+                }
+            }
+        }
+        mut repo_server_dns = $repo_pods.valid
+        if $repo_pods.valid {
+            for pod in $repo_pods.pods {
+                let resolution = (bounded_dependency_kubectl $deadline -- --request-timeout=10s exec -n argocd $"pod/($pod.name)" -- timeout 5s sh -c 'getent hosts "$1" >/dev/null 2>&1 && printf "%s\n" "__ARGO_DEPENDENCY_DNS_OK__"' sh argocd-redis.argocd.svc.cluster.local)
+                if $resolution.exit_code != 0 or ($resolution.stdout | str trim) != "__ARGO_DEPENDENCY_DNS_OK__" {
+                    $repo_server_dns = false
+                }
+            }
+        }
+
+        # DNS exec crosses a process boundary and can race Pod replacement.
+        # Re-read every set and accept the sample only if exact identities and
+        # aggregate restart counts are unchanged from the pre-probe snapshot.
+        let coredns_pods_after_result = (bounded_dependency_kubectl $deadline -- --request-timeout=10s get pods -n kube-system -l k8s-app=kube-dns -o json)
+        let controller_pods_after_result = (bounded_dependency_kubectl $deadline -- --request-timeout=10s get pods -n argocd -l app.kubernetes.io/name=argocd-application-controller -o json)
+        let repo_pods_after_result = (bounded_dependency_kubectl $deadline -- --request-timeout=10s get pods -n argocd -l app.kubernetes.io/name=argocd-repo-server -o json)
+        let redis_pods_after_result = (bounded_dependency_kubectl $deadline -- --request-timeout=10s get pods -n argocd -l app.kubernetes.io/name=argocd-redis -o json)
+        let coredns_pods_after = if $coredns_pods_after_result.exit_code == 0 { dependency_pod_snapshot $coredns_pods_after_result.stdout "kube-system" "k8s-app" "kube-dns" } else { {valid: false, pods: []} }
+        let controller_pods_after = if $controller_pods_after_result.exit_code == 0 { dependency_pod_snapshot $controller_pods_after_result.stdout "argocd" "app.kubernetes.io/name" "argocd-application-controller" } else { {valid: false, pods: []} }
+        let repo_pods_after = if $repo_pods_after_result.exit_code == 0 { dependency_pod_snapshot $repo_pods_after_result.stdout "argocd" "app.kubernetes.io/name" "argocd-repo-server" } else { {valid: false, pods: []} }
+        let redis_pods_after = if $redis_pods_after_result.exit_code == 0 { dependency_pod_snapshot $redis_pods_after_result.stdout "argocd" "app.kubernetes.io/name" "argocd-redis" } else { {valid: false, pods: []} }
+        let pods_unchanged_after_dns = (
+            $coredns_pods_after.valid and $coredns_pods_after.pods == $coredns_pods.pods
+            and $controller_pods_after.valid and $controller_pods_after.pods == $controller_pods.pods
+            and $repo_pods_after.valid and $repo_pods_after.pods == $repo_pods.pods
+            and $redis_pods_after.valid and $redis_pods_after.pods == $redis_pods.pods
+        )
+        let snapshot = ($coredns_pods.pods | append $controller_pods.pods | append $repo_pods.pods | append $redis_pods.pods)
+        let sample_ready = $coredns_ready and $repo_ready and $redis_ready and $endpoints_ready and $pod_sets_ready and $controller_dns and $repo_server_dns and $pods_unchanged_after_dns
+        if $sample_ready {
+            if ($previous_snapshot | is-empty) or $snapshot != $previous_snapshot {
+                $stable_samples = 1
+            } else {
+                $stable_samples = $stable_samples + 1
+            }
+        } else {
+            $stable_samples = 0
+        }
+        $previous_snapshot = $snapshot
+        $last_diagnostic = $"coredns=($coredns_ready) corednsEndpoint=($coredns_endpoint_ready) repoServer=($repo_ready) repoServerEndpoint=($repo_endpoint_ready) redis=($redis_ready) redisEndpoint=($redis_endpoint_ready) pods=($pod_sets_ready) controllerDNS=($controller_dns) repoServerDNS=($repo_server_dns) stableSamples=($stable_samples)/($required_stable_samples)"
+        print $"  Argo dependency gate: ($last_diagnostic) [sample ($sample)/($max_samples)]"
+        if $stable_samples >= $required_stable_samples {
+            print $"(ansi green)✓ Argo control-plane dependencies are functionally stable(ansi reset)"
+            if $return_snapshot {
+                return $snapshot
+            }
+            return
+        }
+        let remaining = $deadline - (date now)
+        if $remaining > 0ns {
+            sleep (if $poll_interval < $remaining { $poll_interval } else { $remaining })
+        }
+    }
+    error make {msg: $"Argo control plane did not become dependency-stable within the bounded wait: ($last_diagnostic)"}
+}
+
+# Validate the exact Argo Application identity and operation-state shape used by
+# the fresh-operation gate. resourceVersion is treated as an opaque non-empty
+# concurrency token and is never printed.
+def gated_application_snapshot [application_json: string, expected_name: string] {
+    let parsed = (try { $application_json | from json } catch { null })
+    if ($parsed | describe | str starts-with "record") == false {
+        return {valid: false}
+    }
+    let metadata = ($parsed | get -o metadata)
+    let uid = ($metadata | get -o uid)
+    let resource_version = ($metadata | get -o resourceVersion)
+    let identity_valid = (($parsed | get -o apiVersion) == "argoproj.io/v1alpha1"
+        and ($parsed | get -o kind) == "Application"
+        and ($metadata | describe | str starts-with "record")
+        and ($metadata | get -o name) == $expected_name
+        and ($metadata | get -o namespace) == "argocd"
+        and ($uid | describe) == "string" and not ($uid | is-empty)
+        and ($resource_version | describe) == "string" and not ($resource_version | is-empty)
+        and ($metadata | get -o deletionTimestamp) == null)
+    if not $identity_valid {
+        return {valid: false}
+    }
+
+    let requested_operation = ($parsed | get -o operation)
+    if $requested_operation != null and (($requested_operation | describe | str starts-with "record") == false) {
+        return {valid: false}
+    }
+    let operation_requested = ($requested_operation != null)
+
+    let status = ($parsed | get -o status)
+    if $status == null {
+        return {
+            valid: true, uid: $uid, resource_version: $resource_version,
+            operation_requested: $operation_requested,
+            operation_present: false, started: "", finished: "", phase: "",
+            sync: "", health: "", raw: $parsed
+        }
+    }
+    if ($status | describe | str starts-with "record") == false {
+        return {valid: false}
+    }
+    let operation = ($status | get -o operationState)
+    if $operation == null {
+        return {
+            valid: true, uid: $uid, resource_version: $resource_version,
+            operation_requested: $operation_requested,
+            operation_present: false, started: "", finished: "", phase: "",
+            sync: ($status | get -o sync.status | default ""),
+            health: ($status | get -o health.status | default ""), raw: $parsed
+        }
+    }
+    if ($operation | describe | str starts-with "record") == false {
+        return {valid: false}
+    }
+    let started = ($operation | get -o startedAt)
+    let finished = ($operation | get -o finishedAt | default "")
+    let phase = ($operation | get -o phase)
+    let sync = ($status | get -o sync.status)
+    let health = ($status | get -o health.status)
+    let operation_valid = (($started | describe) == "string" and not ($started | is-empty)
+        and ($finished | describe) == "string"
+        and ($phase | describe) == "string" and not ($phase | is-empty)
+        and ($sync | describe) == "string" and not ($sync | is-empty)
+        and ($health | describe) == "string" and not ($health | is-empty))
+    if not $operation_valid {
+        return {valid: false}
+    }
+    {
+        valid: true, uid: $uid, resource_version: $resource_version,
+        operation_requested: $operation_requested,
+        operation_present: true, started: $started, finished: $finished,
+        phase: $phase, sync: $sync, health: $health, raw: $parsed
+    }
+}
+
+def sync_gated_application_for_local_dev [
+    app: string,
+    sync_payload: string,
+    max_operation_retries: int = 3,
+    dependency_poll_interval: duration = 5sec,
+    dependency_max_samples: int = 60,
+    operation_poll_interval: duration = 10sec,
+    retry_backoff_base: duration = 10sec
+] {
+    mut retry_count = 0
+    loop {
+        let previous_result = (bounded_dependency_kubectl ((date now) + 10sec) -- --request-timeout=10s get application $app -n argocd -o json)
+        let previous_snapshot = if $previous_result.exit_code == 0 {
+            gated_application_snapshot $previous_result.stdout $app
+        } else { {valid: false} }
+        if not ($previous_snapshot | get -o valid | default false) {
+            error make {msg: $"Could not read current sync identity for gated Application ($app)"}
+        }
+        if ($previous_snapshot | get -o operation_requested | default false) {
+            error make {msg: $"Gated Application ($app) already has a pending operation"}
+        }
+        let previous_started = $previous_snapshot.started
+        let previous_finished = $previous_snapshot.finished
+        let previous_uid = $previous_snapshot.uid
+        let previous_resource_version = $previous_snapshot.resource_version
+
+        let sync_payload_record = (try { $sync_payload | from json } catch { null })
+        if ($sync_payload_record | describe | str starts-with "record") == false {
+            error make {msg: $"Invalid sync payload for gated Application ($app)"}
+        }
+        let guarded_sync_payload = (
+            $sync_payload_record
+            | upsert metadata.resourceVersion $previous_resource_version
+            | to json --raw
+        )
+
+        # Capture the prior operation identity before the complete functional
+        # gate. Its final post-DNS Pod closure is therefore the last Kubernetes
+        # read before mutation, while the timestamps still identify only a
+        # genuinely fresh operation started by the patch below.
+        wait_for_argocd_control_plane_dependencies $dependency_poll_interval $dependency_max_samples 3 5min
+        print $"  Syncing gated Application: ($app) \(attempt ($retry_count + 1)/($max_operation_retries + 1)\)"
+        let sync_result = (bounded_dependency_kubectl ((date now) + 10sec) -- --request-timeout=10s patch application $app -n argocd --type merge -p $guarded_sync_payload)
+        if $sync_result.exit_code != 0 {
+            error make {msg: $"Could not start sync for gated Application ($app)"}
+        }
+
+        mut completed = false
+        mut saw_new_operation = false
+        mut succeeded = false
+        mut accepted_zero_diff = false
+        mut last_state = {}
+        let operation_deadline = (date now) + 15min
+        for attempt in 1..90 {
+            if (date now) >= $operation_deadline {
+                break
+            }
+            let state_result = (bounded_dependency_kubectl $operation_deadline -- --request-timeout=10s get application $app -n argocd -o json)
+            if $state_result.exit_code == 0 {
+                let state_snapshot = (gated_application_snapshot $state_result.stdout $app)
+                if (($state_snapshot | get -o valid | default false)
+                    and $state_snapshot.uid == $previous_uid
+                    and $state_snapshot.resource_version != $previous_resource_version) {
+                    $last_state = $state_snapshot.raw
+                    let phase = $state_snapshot.phase
+                    let started = $state_snapshot.started
+                    let sync = $state_snapshot.sync
+                    let health = $state_snapshot.health
+                    if $state_snapshot.operation_present and $started != $previous_started {
+                        $saw_new_operation = true
+                    }
+                    if $saw_new_operation and $phase in ["Failed" "Error"] {
+                        $completed = true
+                        break
+                    }
+                    if (gated_sync_operation_succeeded $app $saw_new_operation $phase $sync $health) {
+                        if $sync == "OutOfSync" {
+                            print $"  ($app): fresh successful operation has no material diff"
+                            $accepted_zero_diff = true
+                        }
+                        $completed = true
+                        $succeeded = true
+                        break
+                    }
+                }
+            }
+            sleep $operation_poll_interval
+        }
+        if not $completed {
+            if not ($last_state | is-empty) {
+                print_sync_diagnostics $last_state
+            }
+            let observed_started = ($last_state | get -o status.operationState.startedAt | default "")
+            let observed_finished = ($last_state | get -o status.operationState.finishedAt | default "")
+            error make {msg: $"Gated Application ($app) did not complete a fresh successful Synced+Healthy operation within the bounded wait; previousStarted=($previous_started) previousFinished=($previous_finished) observedStarted=($observed_started) observedFinished=($observed_finished)"}
+        }
+        if $succeeded {
+            if $accepted_zero_diff {
+                print $"(ansi green)  ✓ ($app) sync Succeeded and Healthy with no material diff(ansi reset)"
+            } else {
+                print $"(ansi green)  ✓ ($app) sync Succeeded, Synced and Healthy(ansi reset)"
+            }
+            return
+        }
+
+        let message = ($last_state | get -o status.operationState.message | default "")
+        let resource_messages = (
+            $last_state
+            | get -o status.operationState.syncResult.resources
+            | default []
+            | each {|resource| $resource | get -o message | default "" }
+            | where {|resource_message| not ($resource_message | is-empty) }
+        )
+        let classification_text = ([$message] | append $resource_messages | str join "\n")
+        print $"(ansi red)  ✗ ($app) sync failed(ansi reset)"
+        print_sync_diagnostics $last_state
+        if (is_retryable_sync_error $classification_text) and $retry_count < $max_operation_retries {
+            let backoff = ($retry_backoff_base * (2 ** $retry_count))
+            print $"(ansi yellow)  Transient error detected; retrying ($app) in ($backoff) with a fresh sync operation...(ansi reset)"
+            sleep $backoff
+            $retry_count = $retry_count + 1
+        } else {
+            let safe_message = (redact_sync_diagnostic $message)
+            error make {msg: $"Gated Application ($app) sync failed with phase Error/Failed - not retryable or retries exhausted: ($safe_message)"}
+        }
+    }
+}
+
+def sync_gated_apps_for_local_dev [] {
+    let gated_apps = (gated_apps_for_local_dev)
     let sync_payload = '{"operation":{"sync":{"prune":true,"syncOptions":["CreateNamespace=true","ServerSideApply=true"]}}}'
     let max_operation_retries = 3
 
@@ -3449,9 +4059,7 @@ def sync_gated_apps_for_local_dev [] {
         }
         mut exists = false
         for attempt in 1..60 {
-            let get_result = (do {
-                kubectl get application $app -n argocd -o name
-            } | complete)
+            let get_result = (bounded_dependency_kubectl ((date now) + 10sec) -- --request-timeout=10s get application $app -n argocd -o name)
             if $get_result.exit_code == 0 {
                 $exists = true
                 break
@@ -3462,99 +4070,7 @@ def sync_gated_apps_for_local_dev [] {
             error make {msg: $"ArgoCD Application ($app) was not created by the root app"}
         }
 
-        mut retry_count = 0
-        loop {
-            let previous_state = (kubectl get application $app -n argocd -o json | from json)
-            let previous_started = ($previous_state | get -o status.operationState.startedAt | default "")
-            let previous_finished = ($previous_state | get -o status.operationState.finishedAt | default "")
-            print $"  Syncing gated Application: ($app) \(attempt ($retry_count + 1)/($max_operation_retries + 1)\)"
-            let sync_result = (do {
-                kubectl patch application $app -n argocd --type merge -p $sync_payload
-            } | complete)
-            if $sync_result.exit_code != 0 {
-                error make {msg: $"Could not start sync for ($app): ($sync_result.stderr | str trim)"}
-            }
-
-            mut completed = false
-            mut saw_new_operation = false
-            mut succeeded = false
-            mut accepted_zero_diff = false
-            mut last_state = {}
-            for attempt in 1..90 {
-                let state_result = (do {
-                    kubectl get application $app -n argocd -o json
-                } | complete)
-                if $state_result.exit_code == 0 {
-                    let state = ($state_result.stdout | from json)
-                    $last_state = $state
-                    let phase = ($state | get -o status.operationState.phase | default "")
-                    let started = ($state | get -o status.operationState.startedAt | default "")
-                    let finished = ($state | get -o status.operationState.finishedAt | default "")
-                    let sync = ($state | get -o status.sync.status | default "")
-                    let health = ($state | get -o status.health.status | default "")
-                    if not ($started | is-empty) and $started != $previous_started {
-                        $saw_new_operation = true
-                    }
-                    if $saw_new_operation and $phase in ["Failed" "Error"] {
-                        $completed = true
-                        break
-                    }
-                    if (gated_sync_operation_succeeded $app $saw_new_operation $phase $sync $health) {
-                        if $sync == "OutOfSync" {
-                            # Fixed text only: the captured diff streams may
-                            # contain credentials and must never be printed.
-                            print $"  ($app): fresh successful operation has no material diff"
-                            $accepted_zero_diff = true
-                        }
-                        $completed = true
-                        $succeeded = true
-                        break
-                    }
-                }
-                sleep 10sec
-            }
-            if not $completed {
-                if not ($last_state | is-empty) {
-                    print_sync_diagnostics $last_state
-                }
-                let observed_started = ($last_state | get -o status.operationState.startedAt | default "")
-                let observed_finished = ($last_state | get -o status.operationState.finishedAt | default "")
-                error make {msg: $"Gated Application ($app) did not complete a fresh successful Synced+Healthy operation within 15 minutes; previousStarted=($previous_started) previousFinished=($previous_finished) observedStarted=($observed_started) observedFinished=($observed_finished)"}
-            }
-
-            if $succeeded {
-                if $accepted_zero_diff {
-                    print $"(ansi green)  ✓ ($app) sync Succeeded and Healthy with no material diff(ansi reset)"
-                } else {
-                    print $"(ansi green)  ✓ ($app) sync Succeeded, Synced and Healthy(ansi reset)"
-                }
-                break
-            }
-
-            # Operation reached Failed/Error: surface full diagnostics before
-            # deciding whether this is retryable.
-            let message = ($last_state | get -o status.operationState.message | default "")
-            let resource_messages = (
-                $last_state
-                | get -o status.operationState.syncResult.resources
-                | default []
-                | each {|resource| $resource | get -o message | default "" }
-                | where {|resource_message| not ($resource_message | is-empty) }
-            )
-            let classification_text = ([$message] | append $resource_messages | str join "\n")
-            print $"(ansi red)  ✗ ($app) sync failed(ansi reset)"
-            print_sync_diagnostics $last_state
-
-            if (is_retryable_sync_error $classification_text) and $retry_count < $max_operation_retries {
-                let backoff = (10 * (2 ** $retry_count)) * 1sec
-                print $"(ansi yellow)  Transient error detected; retrying ($app) in ($backoff) with a fresh sync operation...(ansi reset)"
-                sleep $backoff
-                $retry_count = $retry_count + 1
-            } else {
-                let safe_message = (redact_sync_diagnostic $message)
-                error make {msg: $"Gated Application ($app) sync failed with phase Error/Failed - not retryable or retries exhausted: ($safe_message)"}
-            }
-        }
+        sync_gated_application_for_local_dev $app $sync_payload $max_operation_retries
 
         # Issue #285 stdout12: Argo's own Synced/Healthy verdict above proved
         # insufficient for this one Application -- the credential Secret its
