@@ -165,6 +165,10 @@ if (len(args) == 4
         and args[3] in typed_endpoint_paths):
     service, namespace = typed_endpoint_paths[args[3]]
     value = endpoints_ready(service, namespace)
+    # Real Kubernetes raw typed collection responses omit TypeMeta on items;
+    # the fixed EndpointSliceList endpoint itself supplies the item type.
+    value["items"][0].pop("apiVersion")
+    value["items"][0].pop("kind")
     if scenario == "endpoint_slice_identity_missing" and service == "argocd-repo-server":
         value["items"][0].pop("metadata")
     emit(value)
@@ -358,6 +362,14 @@ class ArgoDependencyGateBehaviorTest(unittest.TestCase):
             ]},
         }]}
 
+    def test_typed_raw_endpoint_slice_list_accepts_items_without_type_meta(self):
+        value = self.valid_endpoint_slices()
+        value["items"][0].pop("apiVersion")
+        value["items"][0].pop("kind")
+        self.assertTrue(self.evaluate_json_helper(
+            "dependency_endpoints_ready", value, "service-a", "trusted"
+        ))
+
     def test_endpoint_slice_parser_rejects_every_malformed_shape(self):
         valid = self.valid_endpoint_slices()
         self.assertTrue(self.evaluate_json_helper(
@@ -370,6 +382,7 @@ class ArgoDependencyGateBehaviorTest(unittest.TestCase):
             {**valid, "kind": "List"},
             {**valid, "items": [*valid["items"], "malformed-sibling"]},
             {**valid, "items": [{key: value for key, value in base_slice.items() if key != "apiVersion"}]},
+            {**valid, "items": [{key: value for key, value in base_slice.items() if key != "kind"}]},
             {**valid, "items": [{**base_slice, "kind": "Endpoints"}]},
             {**valid, "items": [{**base_slice, "metadata": {**base_slice["metadata"], "name": ""}}]},
             {**valid, "items": [{**base_slice, "metadata": {**base_slice["metadata"], "uid": ""}}]},

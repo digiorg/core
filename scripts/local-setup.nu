@@ -3627,11 +3627,19 @@ def dependency_endpoints_ready [slices_json: string, expected_service: string, e
         let name = ($metadata | get -o name)
         let uid = ($metadata | get -o uid)
         let address_type = ($slice | get -o addressType)
+        let item_api_version = ($slice | get -o apiVersion)
+        let item_kind = ($slice | get -o kind)
+        # Kubernetes' typed raw EndpointSliceList endpoint omits TypeMeta on
+        # each item. Accept either both fields absent or both exact; reject
+        # partial and contradictory item TypeMeta.
+        let item_type_valid = (
+            ($item_api_version == null and $item_kind == null)
+            or ($item_api_version == "discovery.k8s.io/v1" and $item_kind == "EndpointSlice")
+        )
         let endpoints = (try { $slice | get endpoints } catch { null })
         let endpoints_type = ($endpoints | describe)
         let endpoints_are_collection = ($endpoints_type | str starts-with "list") or ($endpoints_type | str starts-with "table")
-        let slice_identity_valid = (($slice | get -o apiVersion) == "discovery.k8s.io/v1"
-            and ($slice | get -o kind) == "EndpointSlice"
+        let slice_identity_valid = ($item_type_valid
             and ($metadata | describe | str starts-with "record")
             and ($name | describe) == "string" and not ($name | is-empty)
             and ($metadata | get -o namespace) == $expected_namespace
