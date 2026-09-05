@@ -63,6 +63,13 @@ class KyvernoCleanInstallTest(unittest.TestCase):
             {"app.kubernetes.io/managed-by": "kyverno"},
         )
 
+    def test_policy_v2_crds_render_with_stable_annotations(self):
+        values = _kyverno_values()
+        self.assertEqual(
+            values["kyverno-api"].get("annotations"),
+            {"platform.digiorg.io/component": "kyverno-api"},
+        )
+
     def test_policy_api_defaults_are_declared(self):
         policies = []
         for root, _, files in os.walk(POLICIES_DIR):
