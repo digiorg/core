@@ -3508,8 +3508,16 @@ def dependency_pod_snapshot [
             let namespace = (try { $pod | get metadata.namespace } catch { null })
             let uid = (try { $pod | get metadata.uid } catch { null })
             let labels = (try { $pod | get metadata.labels } catch { null })
-            let metadata_valid = (($pod | get -o apiVersion) == "v1"
-                and ($pod | get -o kind) == "Pod"
+            let item_api_version = ($pod | get -o apiVersion)
+            let item_kind = ($pod | get -o kind)
+            # Kubernetes' typed raw PodList endpoint omits TypeMeta on each
+            # item. The exact typed collection authenticates absent item
+            # TypeMeta; partial or contradictory fields remain invalid.
+            let item_type_valid = (
+                ($item_api_version == null and $item_kind == null)
+                or ($item_api_version == "v1" and $item_kind == "Pod")
+            )
+            let metadata_valid = ($item_type_valid
                 and ($metadata | describe | str starts-with "record")
                 and ($name | describe) == "string" and not ($name | is-empty)
                 and ($namespace | describe) == "string" and $namespace == $expected_namespace
@@ -3737,10 +3745,10 @@ def wait_for_argocd_control_plane_dependencies [
         let coredns_slices_result = (bounded_dependency_kubectl $deadline -- --request-timeout=10s get --raw '/apis/discovery.k8s.io/v1/namespaces/kube-system/endpointslices?labelSelector=kubernetes.io%2Fservice-name%3Dkube-dns')
         let repo_slices_result = (bounded_dependency_kubectl $deadline -- --request-timeout=10s get --raw '/apis/discovery.k8s.io/v1/namespaces/argocd/endpointslices?labelSelector=kubernetes.io%2Fservice-name%3Dargocd-repo-server')
         let redis_slices_result = (bounded_dependency_kubectl $deadline -- --request-timeout=10s get --raw '/apis/discovery.k8s.io/v1/namespaces/argocd/endpointslices?labelSelector=kubernetes.io%2Fservice-name%3Dargocd-redis')
-        let coredns_pods_result = (bounded_dependency_kubectl $deadline -- --request-timeout=10s get pods -n kube-system -l k8s-app=kube-dns -o json)
-        let controller_pods_result = (bounded_dependency_kubectl $deadline -- --request-timeout=10s get pods -n argocd -l app.kubernetes.io/name=argocd-application-controller -o json)
-        let repo_pods_result = (bounded_dependency_kubectl $deadline -- --request-timeout=10s get pods -n argocd -l app.kubernetes.io/name=argocd-repo-server -o json)
-        let redis_pods_result = (bounded_dependency_kubectl $deadline -- --request-timeout=10s get pods -n argocd -l app.kubernetes.io/name=argocd-redis -o json)
+        let coredns_pods_result = (bounded_dependency_kubectl $deadline -- --request-timeout=10s get --raw '/api/v1/namespaces/kube-system/pods?labelSelector=k8s-app%3Dkube-dns')
+        let controller_pods_result = (bounded_dependency_kubectl $deadline -- --request-timeout=10s get --raw '/api/v1/namespaces/argocd/pods?labelSelector=app.kubernetes.io%2Fname%3Dargocd-application-controller')
+        let repo_pods_result = (bounded_dependency_kubectl $deadline -- --request-timeout=10s get --raw '/api/v1/namespaces/argocd/pods?labelSelector=app.kubernetes.io%2Fname%3Dargocd-repo-server')
+        let redis_pods_result = (bounded_dependency_kubectl $deadline -- --request-timeout=10s get --raw '/api/v1/namespaces/argocd/pods?labelSelector=app.kubernetes.io%2Fname%3Dargocd-redis')
 
         let coredns_ready = $coredns_deployment_result.exit_code == 0 and (dependency_deployment_ready $coredns_deployment_result.stdout "coredns" "kube-system")
         let repo_ready = $repo_deployment_result.exit_code == 0 and (dependency_deployment_ready $repo_deployment_result.stdout "argocd-repo-server" "argocd")
@@ -3782,10 +3790,10 @@ def wait_for_argocd_control_plane_dependencies [
         # DNS exec crosses a process boundary and can race Pod replacement.
         # Re-read every set and accept the sample only if exact identities and
         # aggregate restart counts are unchanged from the pre-probe snapshot.
-        let coredns_pods_after_result = (bounded_dependency_kubectl $deadline -- --request-timeout=10s get pods -n kube-system -l k8s-app=kube-dns -o json)
-        let controller_pods_after_result = (bounded_dependency_kubectl $deadline -- --request-timeout=10s get pods -n argocd -l app.kubernetes.io/name=argocd-application-controller -o json)
-        let repo_pods_after_result = (bounded_dependency_kubectl $deadline -- --request-timeout=10s get pods -n argocd -l app.kubernetes.io/name=argocd-repo-server -o json)
-        let redis_pods_after_result = (bounded_dependency_kubectl $deadline -- --request-timeout=10s get pods -n argocd -l app.kubernetes.io/name=argocd-redis -o json)
+        let coredns_pods_after_result = (bounded_dependency_kubectl $deadline -- --request-timeout=10s get --raw '/api/v1/namespaces/kube-system/pods?labelSelector=k8s-app%3Dkube-dns')
+        let controller_pods_after_result = (bounded_dependency_kubectl $deadline -- --request-timeout=10s get --raw '/api/v1/namespaces/argocd/pods?labelSelector=app.kubernetes.io%2Fname%3Dargocd-application-controller')
+        let repo_pods_after_result = (bounded_dependency_kubectl $deadline -- --request-timeout=10s get --raw '/api/v1/namespaces/argocd/pods?labelSelector=app.kubernetes.io%2Fname%3Dargocd-repo-server')
+        let redis_pods_after_result = (bounded_dependency_kubectl $deadline -- --request-timeout=10s get --raw '/api/v1/namespaces/argocd/pods?labelSelector=app.kubernetes.io%2Fname%3Dargocd-redis')
         let coredns_pods_after = if $coredns_pods_after_result.exit_code == 0 { dependency_pod_snapshot $coredns_pods_after_result.stdout "kube-system" "k8s-app" "kube-dns" } else { {valid: false, pods: []} }
         let controller_pods_after = if $controller_pods_after_result.exit_code == 0 { dependency_pod_snapshot $controller_pods_after_result.stdout "argocd" "app.kubernetes.io/name" "argocd-application-controller" } else { {valid: false, pods: []} }
         let repo_pods_after = if $repo_pods_after_result.exit_code == 0 { dependency_pod_snapshot $repo_pods_after_result.stdout "argocd" "app.kubernetes.io/name" "argocd-repo-server" } else { {valid: false, pods: []} }
@@ -4147,27 +4155,6 @@ def cnpg_operator_available [deployment_json: string] {
     }
 }
 
-# Issue #281: does the CNPG admission webhook have a ready, addressed endpoint?
-# Parses a discovery.k8s.io/v1 EndpointSliceList (NOT the deprecated core
-# Endpoints API). Ready iff some slice has an endpoint with conditions.ready ==
-# true AND at least one address. Fail closed on unparseable input.
-def cnpg_webhook_endpoint_ready [endpointslices_json: string] {
-    let parsed = (try { $endpointslices_json | from json } catch { null })
-    # `from json` accepts a bare scalar as a JSON string, so guard on the type:
-    # only a record is a real EndpointSliceList object. Fail closed otherwise.
-    if ($parsed | describe | str starts-with "record") == false {
-        return false
-    }
-    let slices = ($parsed | get -o items | default [])
-    $slices | any {|slice|
-        ($slice | get -o endpoints | default []) | any {|ep|
-            let ready = ($ep | get -o conditions.ready | default false)
-            let addresses = ($ep | get -o addresses | default [])
-            $ready and (($addresses | length) > 0)
-        }
-    }
-}
-
 # Issue #281: block the CNPG Cluster apply until the operator Deployment is
 # Available AND its admission webhook endpoint is serving. On a clean bootstrap
 # the Cluster otherwise raced the webhook and hit `connection refused`, leaving a
@@ -4177,7 +4164,6 @@ def wait_for_cnpg_webhook_ready [] {
     $env.KUBECONFIG = $KUBECONFIG_PATH
 
     let operator_ns = "cnpg-system"
-    let webhook_service = "cnpg-webhook-service"
     mut last_diagnostic = "cnpg operator/webhook readiness was not observed"
     for attempt in 1..60 {
         let dep_result = (do {
@@ -4186,12 +4172,12 @@ def wait_for_cnpg_webhook_ready [] {
         # discovery.k8s.io/v1 EndpointSlices for the webhook Service — the core
         # Endpoints API is deprecated and must not be used here.
         let slice_result = (do {
-            kubectl get endpointslices.discovery.k8s.io -n $operator_ns -l $"kubernetes.io/service-name=($webhook_service)" -o json
+            kubectl --request-timeout=10s get --raw '/apis/discovery.k8s.io/v1/namespaces/cnpg-system/endpointslices?labelSelector=kubernetes.io%2Fservice-name%3Dcnpg-webhook-service'
         } | complete)
 
         if $dep_result.exit_code == 0 and $slice_result.exit_code == 0 {
             let operator_ok = (cnpg_operator_available $dep_result.stdout)
-            let webhook_ok = (cnpg_webhook_endpoint_ready $slice_result.stdout)
+            let webhook_ok = (dependency_endpoints_ready $slice_result.stdout "cnpg-webhook-service" "cnpg-system")
             $last_diagnostic = $"operatorAvailable=($operator_ok) webhookEndpointReady=($webhook_ok)"
             print $"  cnpg readiness: ($last_diagnostic) [attempt ($attempt)/60]"
             if $operator_ok and $webhook_ok {

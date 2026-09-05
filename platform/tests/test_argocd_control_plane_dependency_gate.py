@@ -74,14 +74,14 @@ def pod(name, uid, namespace, restarts=0):
                 {"name": "main", "ready": True, "restartCount": restarts}
             ]}}
 
-def pods_for(selector):
+def pods_for(path):
     round_no = state["round"]
-    if "application-controller" in selector:
+    if "application-controller" in path:
         pods = [pod("argocd-application-controller-0", "controller-a", "argocd")]
         if scenario == "every_controller_pod":
             pods.append(pod("argocd-application-controller-1", "controller-b", "argocd"))
         return pods
-    if "repo-server" in selector:
+    if "repo-server" in path:
         uid = "repo-b" if scenario == "uid_reset" and round_no >= 2 else "repo-a"
         restarts = 1 if scenario == "restart_reset" and round_no >= 2 else 0
         pods = [pod("argocd-repo-server-0", uid, "argocd", restarts)]
@@ -94,10 +94,13 @@ def pods_for(selector):
         if scenario == "every_repo_pod":
             pods.append(pod("argocd-repo-server-1", "repo-second", "argocd"))
         return pods
-    if "argocd-redis" in selector:
+    if "argocd-redis" in path:
         return [pod("argocd-redis-0", "redis-a", "argocd")]
-    if "kube-dns" in selector:
-        return [pod("coredns-0", "coredns-a", "kube-system")]
+    if "kube-dns" in path:
+        return [
+            pod("coredns-0", "coredns-a", "kube-system"),
+            pod("coredns-1", "coredns-b", "kube-system"),
+        ]
     return []
 
 def endpoints_ready(service, namespace):
@@ -136,7 +139,9 @@ if "get" in args and "deployment" in args:
             state["resource_version"] += 1
             state["external_operation"] = True
         save()
-    replicas = 2 if scenario == "every_repo_pod" and "argocd-repo-server" in args else 1
+    replicas = (2 if "coredns" in args
+                or scenario == "every_repo_pod" and "argocd-repo-server" in args
+                else 1)
     name = next((value for value in ("coredns", "argocd-repo-server", "argocd-redis") if value in args), "")
     namespace = args[args.index("-n") + 1]
     value = deployment(name, namespace, replicas)
@@ -145,13 +150,30 @@ if "get" in args and "deployment" in args:
     emit(value)
     sys.exit(0)
 
-if "get" in args and "pods" in args:
-    selector = next((a for a in args if a.startswith("app.") or a.startswith("k8s-app=")), "")
-    pods = pods_for(selector)
+typed_pod_paths = {
+    "/api/v1/namespaces/kube-system/pods?labelSelector=k8s-app%3Dkube-dns",
+    "/api/v1/namespaces/argocd/pods?labelSelector=app.kubernetes.io%2Fname%3Dargocd-application-controller",
+    "/api/v1/namespaces/argocd/pods?labelSelector=app.kubernetes.io%2Fname%3Dargocd-repo-server",
+    "/api/v1/namespaces/argocd/pods?labelSelector=app.kubernetes.io%2Fname%3Dargocd-redis",
+}
+if (len(args) == 4
+        and args[:3] == ["--request-timeout=10s", "get", "--raw"]
+        and args[3] in typed_pod_paths):
+    path = args[3]
+    pods = pods_for(path)
     if (scenario == "uid_swap_during_final_probes"
             and state.get("dns_calls_this_round", 0) > 0
-            and "repo-server" in selector):
+            and "repo-server" in path):
         pods[0]["metadata"]["uid"] = "repo-swapped"
+    # Raw typed PodList responses omit item TypeMeta.
+    for item in pods:
+        item.pop("apiVersion")
+        item.pop("kind")
+    if scenario == "pod_item_partial_typemeta" and "repo-server" in path:
+        pods[0]["apiVersion"] = "v1"
+    if scenario == "pod_item_mismatched_typemeta" and "repo-server" in path:
+        pods[0]["apiVersion"] = "v1"
+        pods[0]["kind"] = "Deployment"
     emit({"apiVersion": "v1", "kind": "PodList", "items": pods})
     sys.exit(0)
 
@@ -525,6 +547,24 @@ class ArgoDependencyGateBehaviorTest(unittest.TestCase):
                 )
                 self.assertFalse(snapshot["valid"])
 
+    def test_typed_raw_pod_list_accepts_items_without_type_meta(self):
+        valid = self.valid_pod_list()
+        valid["items"][0].pop("apiVersion")
+        valid["items"][0].pop("kind")
+        snapshot = self.evaluate_json_helper(
+            "dependency_pod_snapshot", valid, "trusted", "app", "expected"
+        )
+        self.assertTrue(snapshot["valid"])
+
+    def test_partial_or_mismatched_pod_item_type_meta_never_patches(self):
+        for scenario in ("pod_item_partial_typemeta", "pod_item_mismatched_typemeta"):
+            with self.subTest(scenario=scenario):
+                self.state.unlink(missing_ok=True)
+                self.log.unlink(missing_ok=True)
+                result = self.run_nu(scenario, self.sync_expression(3))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(self.patch_indexes(), [])
+
     def test_pod_ready_condition_and_readiness_gate_failure_never_patch(self):
         result = self.run_nu("pod_ready_condition_false", self.sync_expression(3))
         self.assertNotEqual(result.returncode, 0)
@@ -669,7 +709,8 @@ class ArgoDependencyGateBehaviorTest(unittest.TestCase):
             self.assertTrue(dns_execs)
             final_closure = calls[dns_execs[-1] + 1:patch_index]
             self.assertEqual(len(final_closure), 4)
-            self.assertTrue(all("get" in call and "pods" in call
+            self.assertTrue(all(call[:3] == ["--request-timeout=10s", "get", "--raw"]
+                                and "/pods?labelSelector=" in call[-1]
                                 for call in final_closure))
             previous_patch = patch_index
 
@@ -709,13 +750,36 @@ class ArgoDependencyGateBehaviorTest(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = self.calls()
-        raw_calls = [call for call in calls if "--raw" in call]
+        raw_calls = [call for call in calls if "--raw" in call and "endpointslices?" in call[-1]]
         self.assertEqual(len(raw_calls), 9)
         self.assertEqual({call[-1] for call in raw_calls}, expected_paths)
         self.assertTrue(all(call == ["--request-timeout=10s", "get", "--raw", call[-1]]
                             for call in raw_calls))
         self.assertFalse(any("endpointslices.discovery.k8s.io" in call
                              for call in calls))
+
+    def test_gate_uses_exact_typed_pod_raw_paths_before_and_after_dns(self):
+        expected_paths = {
+            "/api/v1/namespaces/kube-system/pods?labelSelector=k8s-app%3Dkube-dns",
+            "/api/v1/namespaces/argocd/pods?labelSelector=app.kubernetes.io%2Fname%3Dargocd-application-controller",
+            "/api/v1/namespaces/argocd/pods?labelSelector=app.kubernetes.io%2Fname%3Dargocd-repo-server",
+            "/api/v1/namespaces/argocd/pods?labelSelector=app.kubernetes.io%2Fname%3Dargocd-redis",
+        }
+        result = self.run_nu(
+            "ready", "wait_for_argocd_control_plane_dependencies 0sec 3 3"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.calls()
+        pod_calls = [call for call in calls if "--raw" in call and "/pods?" in call[-1]]
+        self.assertEqual(len(pod_calls), 24)
+        self.assertEqual({call[-1] for call in pod_calls}, expected_paths)
+        self.assertEqual(
+            {path: sum(call[-1] == path for call in pod_calls) for path in expected_paths},
+            {path: 6 for path in expected_paths},
+        )
+        self.assertTrue(all(call == ["--request-timeout=10s", "get", "--raw", call[-1]]
+                            for call in pod_calls))
+        self.assertFalse(any("pods" in call and "--raw" not in call for call in calls))
 
     def test_hung_kubectl_is_killed_at_the_total_gate_deadline(self):
         started = time.monotonic()
