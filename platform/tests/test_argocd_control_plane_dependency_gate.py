@@ -135,9 +135,12 @@ if "get" in args and "deployment" in args:
     if "coredns" in args:
         state["round"] += 1
         state["dns_calls_this_round"] = 0
-        if scenario == "operation_race_during_gate" and state["round"] == 1:
+        if scenario in {"benign_application_reconcile_during_gate",
+                        "operation_race_during_gate"} and state["round"] == 1:
             state["resource_version"] += 1
-            state["external_operation"] = True
+            state["generation"] = 8
+            if scenario == "operation_race_during_gate":
+                state["external_operation"] = True
         save()
     replicas = (2 if "coredns" in args
                 or scenario == "every_repo_pod" and "argocd-repo-server" in args
@@ -244,10 +247,18 @@ if "patch" in args and "application" in args:
     sys.exit(0)
 
 if "get" in args and "application" in args:
-    if scenario == "malformed_application_pre" and state["patch_calls"] == 0:
+    state["application_reads"] = state.get("application_reads", 0) + 1
+    application_read = state["application_reads"]
+    save()
+    if scenario == "post_gate_application_read_failure" and application_read == 2:
+        sys.exit(98)
+    if scenario == "post_gate_malformed_application" and application_read == 2:
+        emit({"status": {"sync": {"status": "OutOfSync"}}})
+        sys.exit(0)
+    if scenario == "malformed_application_pre" and application_read == 1:
         emit({"status": {"sync": {"status": "Synced"}}})
         sys.exit(0)
-    if scenario == "pending_operation_without_status" and state["patch_calls"] == 0:
+    if scenario == "pending_operation_without_status" and application_read == 1:
         emit({"apiVersion": "argoproj.io/v1alpha1", "kind": "Application",
               "metadata": {"name": "test-app", "namespace": "argocd",
                            "uid": "test-app-uid",
@@ -273,14 +284,22 @@ if "get" in args and "application" in args:
         message = "rpc error: code = Unavailable desc = EOF"
     started = (("external-operation" if state.get("external_operation") else "old-operation")
                if patches == 0 else f"operation-{patches}")
-    emit({"apiVersion": "argoproj.io/v1alpha1", "kind": "Application",
-          "metadata": {"name": "test-app", "namespace": "argocd",
-                       "uid": "test-app-uid",
-                       "resourceVersion": str(state["resource_version"])},
-          "status": {"operationState": {
+    application = {"apiVersion": "argoproj.io/v1alpha1", "kind": "Application",
+        "metadata": {"name": "test-app", "namespace": "argocd",
+                     "uid": ("replacement-uid" if scenario == "post_gate_uid_change"
+                             and application_read == 2 else "test-app-uid"),
+                     "resourceVersion": str(state["resource_version"]),
+                     "generation": state.get("generation", 7)},
+        "status": {"operationState": {
         "phase": phase, "startedAt": started, "finishedAt": started,
         "message": message, "syncResult": {"resources": []}},
-        "sync": {"status": "Synced"}, "health": {"status": "Healthy"}}})
+        "sync": {"status": ("OutOfSync" if scenario == "benign_application_reconcile_during_gate"
+                            and application_read == 2 else "Synced")},
+        "health": {"status": ("Missing" if scenario == "benign_application_reconcile_during_gate"
+                              and application_read == 2 else "Healthy")}}}
+    if scenario == "post_gate_pending_operation" and application_read == 2:
+        application["operation"] = {"sync": {"prune": True}}
+    emit(application)
     sys.exit(0)
 
 print("token=unexpected-command-secret", file=sys.stderr)
@@ -338,6 +357,29 @@ class ArgoDependencyGateBehaviorTest(unittest.TestCase):
         combined = result.stdout + result.stderr
         for secret in ("must-not-leak", "unexpected-command-secret", "unbounded-command-secret"):
             self.assertNotIn(secret, combined)
+
+    def assert_post_gate_refresh_failed_closed(self, scenario):
+        result = self.run_nu(scenario, self.sync_expression(3))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.patch_indexes(), [])
+        calls = self.calls()
+        application_reads = [
+            i for i, call in enumerate(calls)
+            if "get" in call and "application" in call
+        ]
+        self.assertEqual(len(application_reads), 2)
+        refresh_index = application_reads[1]
+        final_closure = calls[refresh_index - 4:refresh_index]
+        self.assertEqual(len(final_closure), 4)
+        self.assertTrue(all(
+            call[:3] == ["--request-timeout=10s", "get", "--raw"]
+            and "/pods?labelSelector=" in call[-1]
+            for call in final_closure
+        ))
+        self.assertFalse(any(
+            "deployment" in call or "--raw" in call or "exec" in call
+            for call in calls[refresh_index + 1:]
+        ))
 
     def evaluate_json_helper(self, helper, value, *args):
         encoded = json.dumps(value, separators=(",", ":"))
@@ -631,11 +673,47 @@ class ArgoDependencyGateBehaviorTest(unittest.TestCase):
         self.assertEqual(state.get("patch_calls", 0), 0)
 
     def test_operation_started_during_gate_invalidates_guarded_patch(self):
-        result = self.run_nu("operation_race_during_gate", self.sync_expression(3))
-        self.assertNotEqual(result.returncode, 0)
+        self.assert_post_gate_refresh_failed_closed("operation_race_during_gate")
         state = json.loads(self.state.read_text(encoding="utf-8"))
         self.assertEqual(state.get("patch_calls", 0), 0)
         self.assertEqual(state.get("patches", 0), 0)
+
+    def test_pending_operation_observed_by_post_gate_refresh_never_patches(self):
+        self.assert_post_gate_refresh_failed_closed("post_gate_pending_operation")
+
+    def test_application_uid_change_observed_by_post_gate_refresh_never_patches(self):
+        self.assert_post_gate_refresh_failed_closed("post_gate_uid_change")
+
+    def test_malformed_post_gate_application_snapshot_never_patches(self):
+        self.assert_post_gate_refresh_failed_closed("post_gate_malformed_application")
+
+    def test_failed_post_gate_application_read_never_patches(self):
+        self.assert_post_gate_refresh_failed_closed("post_gate_application_read_failure")
+
+    def test_benign_application_reconcile_refreshes_guard_before_one_patch(self):
+        result = self.run_nu(
+            "benign_application_reconcile_during_gate", self.sync_expression(3)
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.calls()
+        patches = self.patch_indexes()
+        self.assertEqual(len(patches), 1)
+        patch_index = patches[0]
+        refresh_index = patch_index - 1
+        self.assertEqual(
+            calls[refresh_index],
+            ["--request-timeout=10s", "get", "application", "test-app",
+             "-n", "argocd", "-o", "json"],
+        )
+        final_closure = calls[refresh_index - 4:refresh_index]
+        self.assertEqual(len(final_closure), 4)
+        self.assertTrue(all(
+            call[:3] == ["--request-timeout=10s", "get", "--raw"]
+            and "/pods?labelSelector=" in call[-1]
+            for call in final_closure
+        ))
+        payload = json.loads(calls[patch_index][calls[patch_index].index("-p") + 1])
+        self.assertEqual(payload["metadata"]["resourceVersion"], "101")
 
     def test_every_current_dns_client_pod_must_resolve(self):
         for scenario, pod_name in (
@@ -707,11 +785,18 @@ class ArgoDependencyGateBehaviorTest(unittest.TestCase):
                 if "exec" in calls[i]
             ]
             self.assertTrue(dns_execs)
-            final_closure = calls[dns_execs[-1] + 1:patch_index]
+            post_dns_calls = calls[dns_execs[-1] + 1:patch_index]
+            self.assertEqual(len(post_dns_calls), 5)
+            final_closure = post_dns_calls[:4]
             self.assertEqual(len(final_closure), 4)
             self.assertTrue(all(call[:3] == ["--request-timeout=10s", "get", "--raw"]
                                 and "/pods?labelSelector=" in call[-1]
                                 for call in final_closure))
+            self.assertEqual(
+                post_dns_calls[4],
+                ["--request-timeout=10s", "get", "application", "test-app",
+                 "-n", "argocd", "-o", "json"],
+            )
             previous_patch = patch_index
 
     def test_deterministic_failure_does_not_retry(self):
