@@ -34,12 +34,15 @@ spec:
         crds:
           migration:
             enabled: false
-        # The kyverno-api subchart otherwise emits labels: {} on policy-v2
-        # CRDs, which kube-apiserver normalizes away and Argo CD reports as
-        # perpetual drift. Render one stable label instead of ignoring metadata.
+        # The kyverno-api subchart otherwise emits labels: {} and annotations: {}
+        # on policy-v2 CRDs. Kube-apiserver normalizes those empty maps away,
+        # which Argo CD reports as perpetual drift. Render stable metadata instead
+        # of ignoring labels or annotations.
         kyverno-api:
           labels:
             app.kubernetes.io/managed-by: kyverno
+          annotations:
+            platform.digiorg.io/component: kyverno-api
         admissionController:
           replicas: 1
           container:
