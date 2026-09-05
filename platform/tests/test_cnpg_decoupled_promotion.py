@@ -209,8 +209,8 @@ case "$args" in
   *"get deployment"*"-l app.kubernetes.io/name=cloudnative-pg"*)
     printf '%s\n' '{"kind":"DeploymentList","items":[{"spec":{"replicas":1},"status":{"availableReplicas":1}}]}'
     ;;
-  *"get endpointslices"*)
-    printf '%s\n' '{"items":[{"endpoints":[{"conditions":{"ready":true},"addresses":["10.0.0.1"]}]}]}'
+  *"--request-timeout=10s get --raw /apis/discovery.k8s.io/v1/namespaces/cnpg-system/endpointslices?labelSelector=kubernetes.io%2Fservice-name%3Dcnpg-webhook-service"*)
+    printf '%s\n' '{"apiVersion":"discovery.k8s.io/v1","kind":"EndpointSliceList","items":[{"metadata":{"name":"cnpg-webhook-service-abc","namespace":"cnpg-system","uid":"slice-uid","labels":{"kubernetes.io/service-name":"cnpg-webhook-service"}},"addressType":"IPv4","endpoints":[{"conditions":{"ready":true},"addresses":["10.0.0.1"]}]}]}'
     ;;
   *"get application cnpg-cluster"*"-o json"*)
     printf '{"status":{"operationState":{"phase":"Failed","startedAt":"old"},"sync":{"status":"OutOfSync"},"health":{"status":"Healthy"}}}\n'
@@ -234,8 +234,8 @@ case "$args" in
   *"get deployment"*"-l app.kubernetes.io/name=cloudnative-pg"*)
     printf '%s\n' '{"kind":"DeploymentList","items":[{"spec":{"replicas":1},"status":{"availableReplicas":1}}]}'
     ;;
-  *"get endpointslices"*)
-    printf '%s\n' '{"items":[{"endpoints":[{"conditions":{"ready":true},"addresses":["10.0.0.1"]}]}]}'
+  *"--request-timeout=10s get --raw /apis/discovery.k8s.io/v1/namespaces/cnpg-system/endpointslices?labelSelector=kubernetes.io%2Fservice-name%3Dcnpg-webhook-service"*)
+    printf '%s\n' '{"apiVersion":"discovery.k8s.io/v1","kind":"EndpointSliceList","items":[{"metadata":{"name":"cnpg-webhook-service-abc","namespace":"cnpg-system","uid":"slice-uid","labels":{"kubernetes.io/service-name":"cnpg-webhook-service"}},"addressType":"IPv4","endpoints":[{"conditions":{"ready":true},"addresses":["10.0.0.1"]}]}]}'
     ;;
   *"get application cnpg-cluster"*"-o json"*)
     printf '{"status":{"operationState":{"phase":"Succeeded","startedAt":"old"},"sync":{"status":"Synced"},"health":{"status":"Healthy"}}}\n'

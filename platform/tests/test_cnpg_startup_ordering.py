@@ -76,37 +76,46 @@ def _run_nu(expr: str) -> str:
 
 
 class WebhookEndpointPredicateTest(unittest.TestCase):
-    """cnpg_webhook_endpoint_ready parses discovery.k8s.io/v1 EndpointSlices."""
+    """The CNPG gate reuses the strict typed EndpointSliceList parser."""
 
     READY = (
-        '{"kind":"EndpointSliceList","items":[{"endpoints":['
+        '{"apiVersion":"discovery.k8s.io/v1","kind":"EndpointSliceList",'
+        '"items":[{"metadata":{"name":"cnpg-webhook-service-abc",'
+        '"namespace":"cnpg-system","uid":"slice-uid","labels":{'
+        '"kubernetes.io/service-name":"cnpg-webhook-service"}},'
+        '"addressType":"IPv4","endpoints":['
         '{"addresses":["10.244.0.20"],"conditions":{"ready":true}}]}]}'
-    )
-    NOT_READY = (
-        '{"kind":"EndpointSliceList","items":[{"endpoints":['
-        '{"addresses":["10.244.0.20"],"conditions":{"ready":false}}]}]}'
-    )
-    EMPTY = '{"kind":"EndpointSliceList","items":[]}'
-    NO_ADDRS = (
-        '{"kind":"EndpointSliceList","items":[{"endpoints":['
-        '{"addresses":[],"conditions":{"ready":true}}]}]}'
     )
 
     def _call(self, payload):
         escaped = payload.replace("\\", "\\\\").replace("'", "\\'")
-        return _run_nu(f"cnpg_webhook_endpoint_ready '{escaped}'")
+        return _run_nu(
+            "dependency_endpoints_ready "
+            f"'{escaped}' cnpg-webhook-service cnpg-system"
+        )
 
     def test_ready_endpoint_is_true(self):
         self.assertEqual(self._call(self.READY), "true")
 
-    def test_not_ready_endpoint_is_false(self):
-        self.assertEqual(self._call(self.NOT_READY), "false")
+    def test_generic_or_malformed_collection_is_false(self):
+        for payload in (
+            self.READY.replace('"kind":"EndpointSliceList"', '"kind":"List"'),
+            '{"apiVersion":"discovery.k8s.io/v1","kind":"EndpointSliceList",'
+            '"items":{"not":"a collection"}}',
+        ):
+            with self.subTest(payload=payload):
+                self.assertEqual(self._call(payload), "false")
 
-    def test_no_endpoints_is_false(self):
-        self.assertEqual(self._call(self.EMPTY), "false")
-
-    def test_ready_but_no_address_is_false(self):
-        self.assertEqual(self._call(self.NO_ADDRS), "false")
+    def test_wrong_identity_deletion_type_or_readiness_is_false(self):
+        for payload in (
+            self.READY.replace('"namespace":"cnpg-system"', '"namespace":"other"'),
+            self.READY.replace('"cnpg-webhook-service"}},', '"other-service"}},'),
+            self.READY.replace('"uid":"slice-uid"', '"uid":"slice-uid","deletionTimestamp":"now"'),
+            self.READY.replace('"addressType":"IPv4"', '"addressType":"Unknown"'),
+            self.READY.replace('"ready":true', '"ready":false'),
+        ):
+            with self.subTest(payload=payload):
+                self.assertEqual(self._call(payload), "false")
 
     def test_garbage_is_false(self):
         # Fail closed on unparseable input.
@@ -150,14 +159,24 @@ class WebhookWaitStructureTest(unittest.TestCase):
         cls.wait = _func_body(cls.text, "wait_for_cnpg_webhook_ready")
 
     def test_uses_endpointslice_not_deprecated_endpoints(self):
-        self.assertIn("endpointslices.discovery.k8s.io", self.wait,
-                      "must query discovery.k8s.io/v1 EndpointSlices")
+        self.assertIn(
+            "get --raw '/apis/discovery.k8s.io/v1/namespaces/cnpg-system/"
+            "endpointslices?labelSelector=kubernetes.io%2Fservice-name%3D"
+            "cnpg-webhook-service'",
+            self.wait,
+        )
+        self.assertIn("--request-timeout=10s", self.wait)
+        self.assertNotIn("endpointslices.discovery.k8s.io", self.wait)
         # The deprecated core Endpoints API must not be used for this check.
         self.assertNotRegex(self.wait, r"kubectl get endpoints\b")
 
     def test_checks_operator_deployment_and_webhook_endpoint(self):
         self.assertIn("cnpg_operator_available", self.wait)
-        self.assertIn("cnpg_webhook_endpoint_ready", self.wait)
+        self.assertIn(
+            'dependency_endpoints_ready $slice_result.stdout "cnpg-webhook-service" "cnpg-system"',
+            self.wait,
+        )
+        self.assertNotIn("cnpg_webhook_endpoint_ready", self.wait)
 
     def test_fails_closed_with_bounded_redacted_diagnostic(self):
         self.assertIn("error make", self.wait)
@@ -224,8 +243,11 @@ case "$args" in
   *"get deployment"*"-l app.kubernetes.io/name=cloudnative-pg"*)
     printf '%s\n' '{"kind":"DeploymentList","items":[{"spec":{"replicas":1},"status":{"availableReplicas":1}}]}'
     ;;
-  *"get endpointslices"*)
-    printf '%s\n' '{"items":[{"endpoints":[{"conditions":{"ready":true},"addresses":["10.0.0.1"]}]}]}'
+  *"--request-timeout=10s get --raw /apis/discovery.k8s.io/v1/namespaces/cnpg-system/endpointslices?labelSelector=kubernetes.io%2Fservice-name%3Dcnpg-webhook-service"*)
+    printf '%s\n' '{"apiVersion":"discovery.k8s.io/v1","kind":"EndpointSliceList","items":[{"metadata":{"name":"cnpg-webhook-service-abc","namespace":"cnpg-system","uid":"slice-uid","labels":{"kubernetes.io/service-name":"cnpg-webhook-service"}},"addressType":"IPv4","endpoints":[{"conditions":{"ready":true},"addresses":["10.0.0.1"]}]}]}'
+    ;;
+  *"get endpointslices.discovery.k8s.io"*)
+    printf '%s\n' '{"apiVersion":"discovery.k8s.io/v1","kind":"EndpointSliceList","items":[{"metadata":{"name":"cnpg-webhook-service-abc","namespace":"cnpg-system","uid":"slice-uid","labels":{"kubernetes.io/service-name":"cnpg-webhook-service"}},"addressType":"IPv4","endpoints":[{"conditions":{"ready":true},"addresses":["10.0.0.1"]}]}]}'
     ;;
   *"get application cnpg-cluster"*"-o json"*)
     count=$(cat "$FAKE_STATE" 2>/dev/null || echo 0)
@@ -300,10 +322,17 @@ esac
         return result, patch_marker, call_log
 
     def test_running_operation_is_observed_not_patched(self):
-        result, patch_marker, _ = self._run_scenario("running_success")
+        result, patch_marker, call_log = self._run_scenario("running_success")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(os.path.exists(patch_marker), result.stdout)
         self.assertIn("Resuming observation", result.stdout)
+        calls = _read(call_log).splitlines()
+        raw_path = (
+            "--request-timeout=10s get --raw /apis/discovery.k8s.io/v1/"
+            "namespaces/cnpg-system/endpointslices?labelSelector="
+            "kubernetes.io%2Fservice-name%3Dcnpg-webhook-service"
+        )
+        self.assertEqual([call for call in calls if "endpointslice" in call], [raw_path])
 
     def test_already_ready_is_a_noop(self):
         result, patch_marker, _ = self._run_scenario("already_ready")
