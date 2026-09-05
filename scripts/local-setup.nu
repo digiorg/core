@@ -3932,23 +3932,40 @@ def sync_gated_application_for_local_dev [
         let previous_started = $previous_snapshot.started
         let previous_finished = $previous_snapshot.finished
         let previous_uid = $previous_snapshot.uid
-        let previous_resource_version = $previous_snapshot.resource_version
 
         let sync_payload_record = (try { $sync_payload | from json } catch { null })
         if ($sync_payload_record | describe | str starts-with "record") == false {
             error make {msg: $"Invalid sync payload for gated Application ($app)"}
         }
-        let guarded_sync_payload = (
-            $sync_payload_record
-            | upsert metadata.resourceVersion $previous_resource_version
-            | to json --raw
-        )
 
         # Capture the prior operation identity before the complete functional
-        # gate. Its final post-DNS Pod closure is therefore the last Kubernetes
-        # read before mutation, while the timestamps still identify only a
-        # genuinely fresh operation started by the patch below.
+        # gate. Its final post-DNS Pod closure is the last dependency-state read;
+        # only the guarded Application identity is refreshed before mutation.
         wait_for_argocd_control_plane_dependencies $dependency_poll_interval $dependency_max_samples 3 5min
+        let refreshed_result = (bounded_dependency_kubectl ((date now) + 10sec) -- --request-timeout=10s get application $app -n argocd -o json)
+        let refreshed_snapshot = if $refreshed_result.exit_code == 0 {
+            gated_application_snapshot $refreshed_result.stdout $app
+        } else { {valid: false} }
+        if not ($refreshed_snapshot | get -o valid | default false) {
+            error make {msg: $"Could not refresh current sync identity for gated Application ($app)"}
+        }
+        let operation_identity_unchanged = (
+            $refreshed_snapshot.uid == $previous_uid
+            and not $refreshed_snapshot.operation_requested
+            and $refreshed_snapshot.operation_present == $previous_snapshot.operation_present
+            and $refreshed_snapshot.started == $previous_snapshot.started
+            and $refreshed_snapshot.finished == $previous_snapshot.finished
+            and $refreshed_snapshot.phase == $previous_snapshot.phase
+        )
+        if not $operation_identity_unchanged {
+            error make {msg: $"Gated Application ($app) identity or operation changed during dependency validation"}
+        }
+        let refreshed_resource_version = $refreshed_snapshot.resource_version
+        let guarded_sync_payload = (
+            $sync_payload_record
+            | upsert metadata.resourceVersion $refreshed_resource_version
+            | to json --raw
+        )
         print $"  Syncing gated Application: ($app) \(attempt ($retry_count + 1)/($max_operation_retries + 1)\)"
         let sync_result = (bounded_dependency_kubectl ((date now) + 10sec) -- --request-timeout=10s patch application $app -n argocd --type merge -p $guarded_sync_payload)
         if $sync_result.exit_code != 0 {
@@ -3970,7 +3987,7 @@ def sync_gated_application_for_local_dev [
                 let state_snapshot = (gated_application_snapshot $state_result.stdout $app)
                 if (($state_snapshot | get -o valid | default false)
                     and $state_snapshot.uid == $previous_uid
-                    and $state_snapshot.resource_version != $previous_resource_version) {
+                    and $state_snapshot.resource_version != $refreshed_resource_version) {
                     $last_state = $state_snapshot.raw
                     let phase = $state_snapshot.phase
                     let started = $state_snapshot.started
