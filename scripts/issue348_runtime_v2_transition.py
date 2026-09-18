@@ -617,21 +617,35 @@ class Protocol:
             if sync != "OutOfSync":
                 raise TransitionError("Kyverno must be the exact retained OutOfSync exception")
             resources = status.get("resources")
-            if not isinstance(resources, list) or len(resources) != len(KYVERNO_SAFE_OUT_OF_SYNC_CRDS):
+            if not isinstance(resources, list):
                 raise TransitionError("Kyverno non-synced resource inventory mismatch")
             actual = set()
+            out_of_sync_count = 0
             for resource in resources:
                 if (not isinstance(resource, dict) or
                         set(resource) - {"group", "version", "kind", "namespace", "name", "status", "health"} or
-                        resource.get("group") != "apiextensions.k8s.io" or
+                        not isinstance(resource.get("group"), str) or
+                        not all(isinstance(resource.get(key), str) and resource[key]
+                                for key in ("version", "kind", "name")) or
+                        resource.get("namespace") is not None and
+                        not isinstance(resource.get("namespace"), str) or
+                        resource.get("status") not in ("Synced", "OutOfSync") or
+                        resource.get("health") is not None and
+                        not isinstance(resource.get("health"), dict)):
+                    raise TransitionError("Kyverno resource identity/status mismatch")
+                if resource["status"] == "Synced":
+                    continue
+                if (resource.get("group") != "apiextensions.k8s.io" or
                         resource.get("version") != "v1" or
                         resource.get("kind") != "CustomResourceDefinition" or
                         resource.get("namespace") not in {None, ""} or
                         resource.get("status") != "OutOfSync" or
                         resource.get("health") not in (None, {})):
                     raise TransitionError("Kyverno non-synced resource identity/status mismatch")
+                out_of_sync_count += 1
                 actual.add(resource.get("name"))
-            if actual != KYVERNO_SAFE_OUT_OF_SYNC_CRDS:
+            if (out_of_sync_count != len(KYVERNO_SAFE_OUT_OF_SYNC_CRDS) or
+                    actual != KYVERNO_SAFE_OUT_OF_SYNC_CRDS):
                 raise TransitionError("Kyverno non-synced CRD set mismatch")
 
     def require_preflight_graph(self, applications):

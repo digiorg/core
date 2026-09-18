@@ -56,6 +56,70 @@ def operation(started, revisions, phase="Succeeded", result_revisions=None):
     return value
 
 
+def kyverno_synced_resources():
+    """Return the 58 non-hook resources in the reviewed Kyverno 3.8.1 inventory."""
+    resources = []
+
+    def add(group, kind, names, namespace=None):
+        resources.extend({
+            "group": group, "version": "v1", "kind": kind,
+            "namespace": namespace, "name": name, "status": "Synced",
+        } for name in names)
+
+    add("", "ServiceAccount", (
+        "kyverno-admission-controller", "kyverno-background-controller",
+        "kyverno-cleanup-controller", "kyverno-reports-controller",
+    ), "kyverno")
+    add("", "ConfigMap", ("kyverno", "kyverno-metrics"), "kyverno")
+    add("apiextensions.k8s.io", "CustomResourceDefinition", (
+        "cleanuppolicies.kyverno.io", "clustercleanuppolicies.kyverno.io",
+        "clusterpolicies.kyverno.io", "globalcontextentries.kyverno.io",
+        "policies.kyverno.io", "policyexceptions.kyverno.io",
+        "updaterequests.kyverno.io", "clusterephemeralreports.reports.kyverno.io",
+        "ephemeralreports.reports.kyverno.io", "clusterpolicyreports.wgpolicyk8s.io",
+        "policyreports.wgpolicyk8s.io",
+    ))
+    add("rbac.authorization.k8s.io", "ClusterRole", (
+        "kyverno:admission-controller", "kyverno:admission-controller:core",
+        "kyverno:background-controller", "kyverno:background-controller:core",
+        "kyverno:cleanup-controller", "kyverno:cleanup-controller:core",
+        "kyverno:rbac:admin:policies", "kyverno:rbac:view:policies",
+        "kyverno:rbac:admin:policyreports", "kyverno:rbac:view:policyreports",
+        "kyverno:rbac:admin:reports", "kyverno:rbac:view:reports",
+        "kyverno:rbac:admin:updaterequests", "kyverno:rbac:view:updaterequests",
+        "kyverno:reports-controller", "kyverno:reports-controller:core",
+    ))
+    add("rbac.authorization.k8s.io", "ClusterRoleBinding", (
+        "kyverno:admission-controller", "kyverno:admission-controller:view",
+        "kyverno:background-controller", "kyverno:background-controller:view",
+        "kyverno:cleanup-controller", "kyverno:reports-controller",
+        "kyverno:reports-controller:view",
+    ))
+    controller_names = (
+        "kyverno-admission-controller", "kyverno-background-controller",
+        "kyverno-cleanup-controller", "kyverno-reports-controller",
+    )
+    add("rbac.authorization.k8s.io", "Role", controller_names, "kyverno")
+    add("rbac.authorization.k8s.io", "RoleBinding", controller_names, "kyverno")
+    add("", "Service", (
+        "kyverno-svc", "kyverno-svc-metrics",
+        "kyverno-background-controller-metrics", "kyverno-cleanup-controller",
+        "kyverno-cleanup-controller-metrics", "kyverno-reports-controller-metrics",
+    ), "kyverno")
+    add("apps", "Deployment", controller_names, "kyverno")
+    assert len(resources) == 58
+    return resources
+
+
+def kyverno_full_resource_inventory(application):
+    """Return the reviewed 69-entry Kyverno status inventory."""
+    reviewed = deepcopy(application["status"]["resources"])
+    synced = kyverno_synced_resources()
+    resources = synced[:29] + reviewed + synced[29:]
+    assert len(resources) == 69
+    return resources
+
+
 def canonical_ism_policy():
     return {
         "_id": "digiorg-logs-retention-7d", "_version": 1,
@@ -568,6 +632,11 @@ class SourceContractTest(unittest.TestCase):
 
 
 class RunbookContractTest(unittest.TestCase):
+    def test_runbook_documents_complete_kyverno_resource_inventory_contract(self):
+        text = RUNBOOK.read_text(encoding="utf-8")
+        self.assertIn("Additional well-formed Synced resources are allowed", text)
+        self.assertIn("OutOfSync subset must be exactly", text)
+
     def test_runbook_documents_v345_kubeconfig_and_namespace_isolation(self):
         text = RUNBOOK.read_text(encoding="utf-8")
         self.assertIn("`KUBECONFIG`", text)
@@ -1221,6 +1290,84 @@ class TransitionBehaviorTest(Harness):
         self.assertEqual(transition.target(fake.apps["argocd"]), NEW_TAG)
         app_patches = [entry for entry in fake.patch_payloads if entry[0] == "applications.argoproj.io"]
         self.assertEqual(len(app_patches), 2)
+
+    def test_kyverno_preflight_accepts_full_69_resource_inventory(self):
+        fake = StatefulFakeKubectl()
+        fake.apps["kyverno"]["status"]["resources"] = (
+            kyverno_full_resource_inventory(fake.apps["kyverno"])
+        )
+        self.assertEqual(len(fake.apps["kyverno"]["status"]["resources"]), 69)
+
+        self.execute(fake)
+
+        self.assertTrue(fake.patch_payloads)
+
+    def test_duplicate_reviewed_out_of_sync_resource_fails_closed(self):
+        fake = StatefulFakeKubectl()
+        resources = kyverno_full_resource_inventory(fake.apps["kyverno"])
+        reviewed = next(item for item in resources if item["status"] == "OutOfSync")
+        resources.append(deepcopy(reviewed))
+        fake.apps["kyverno"]["status"]["resources"] = resources
+        self.assertEqual(sum(item["status"] == "OutOfSync" for item in resources), 12)
+
+        with self.assertRaisesRegex(
+                transition.TransitionError, "^Kyverno non-synced CRD set mismatch$"):
+            self.execute(fake)
+
+        self.assertFalse(fake.patch_payloads)
+
+    def test_extra_unreviewed_out_of_sync_resources_fail_closed(self):
+        unexpected = (
+            {"group": "apps", "version": "v1", "kind": "Deployment",
+             "namespace": "kyverno", "name": "unexpected", "status": "OutOfSync"},
+            {"group": "apiextensions.k8s.io", "version": "v1",
+             "kind": "CustomResourceDefinition", "namespace": None,
+             "name": "unexpected.example.io", "status": "OutOfSync"},
+        )
+        for resource in unexpected:
+            with self.subTest(resource=resource):
+                if self.evidence.exists():
+                    self.evidence.unlink()
+                fake = StatefulFakeKubectl()
+                resources = kyverno_full_resource_inventory(fake.apps["kyverno"])
+                resources.append(resource)
+                fake.apps["kyverno"]["status"]["resources"] = resources
+
+                with self.assertRaises(transition.TransitionError):
+                    self.execute(fake)
+
+                self.assertFalse(fake.patch_payloads)
+
+    def test_unhashable_kyverno_resource_status_fails_with_transition_error(self):
+        statuses = ([], {}, ["Synced"], {"a": 1})
+        for status in statuses:
+            for existing_status in ("OutOfSync", "Synced"):
+                with self.subTest(status=status, existing_status=existing_status):
+                    fake = StatefulFakeKubectl()
+                    resources = kyverno_full_resource_inventory(fake.apps["kyverno"])
+                    resource = next(
+                        item for item in resources if item["status"] == existing_status
+                    )
+                    resource["status"] = status
+                    fake.apps["kyverno"]["status"]["resources"] = resources
+
+                    with self.assertRaisesRegex(
+                            transition.TransitionError,
+                            "^Kyverno resource identity/status mismatch$"):
+                        transition.Protocol.require_preflight_status(fake.apps)
+
+                    self.assertFalse(fake.patch_payloads)
+
+    def test_malformed_synced_kyverno_resource_fails_closed(self):
+        fake = StatefulFakeKubectl()
+        fake.apps["kyverno"]["status"]["resources"].append({"status": "Synced"})
+
+        with self.assertRaisesRegex(
+                transition.TransitionError,
+                "^Kyverno resource identity/status mismatch$"):
+            self.execute(fake)
+
+        self.assertFalse(fake.patch_payloads)
 
     def test_exact_kyverno_preflight_exception_is_required(self):
         cases = (
