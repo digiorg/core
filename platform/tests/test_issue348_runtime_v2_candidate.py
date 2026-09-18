@@ -10,7 +10,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 CORE_REPO = "https://github.com/digiorg/core.git"
-CANDIDATE_TAG = "issue348-runtime-v3-20260918T080337Z"
+CANDIDATE_TAG = "issue348-runtime-v5-20260918T181846Z"
 OLD_TAG = "issue301-runtime-v16-20260817T130820Z"
 CATALOG_REVISION = "d531180b322dc0128477ecb9bb0fc9071b41d631"
 TRANSITION = ROOT / "scripts/issue348_runtime_v2_transition.py"
@@ -104,6 +104,15 @@ class RuntimeSourceGraphTest(unittest.TestCase):
 
 
 class TransitionModuleContractTest(unittest.TestCase):
+    def test_transition_binds_reserved_v5_runtime_tag(self):
+        self.assertTrue(TRANSITION.exists(), "Issue #348 transition module is missing")
+        spec = spec_from_file_location("issue348_transition_v5", TRANSITION)
+        assert spec and spec.loader
+        module = module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        self.assertEqual(module.RUNTIME_TAG, CANDIDATE_TAG)
+
     def test_transition_binds_current_candidate_and_retained_runtime(self):
         self.assertTrue(TRANSITION.exists(), "Issue #348 transition module is missing")
         spec = spec_from_file_location("issue348_transition", TRANSITION)
@@ -113,7 +122,7 @@ class TransitionModuleContractTest(unittest.TestCase):
 
         self.assertEqual(module.RUNTIME_TAG, CANDIDATE_TAG)
         self.assertEqual(module.PRODUCT_BASE_COMMIT, "ff25a5083059412f82525ace73e7c20b322fddbf")
-        self.assertEqual(module.CANDIDATE_BASE_COMMIT, "86ddf1484c79cbf49233787a5a023009f3577181")
+        self.assertEqual(module.CANDIDATE_BASE_COMMIT, "b32d1c18eb0d1048d8e38743f5fdd1c68a72936d")
         self.assertEqual(module.PREVIOUS_TAG, "issue350-352-runtime-v3-20260904T195619Z")
         self.assertEqual(module.PREVIOUS_COMMIT, "f6e7d58c0b03ee6a3ec6ed9e1e22e5023f861549")
         self.assertEqual(module.OLD_TAG, OLD_TAG)

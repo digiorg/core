@@ -23,9 +23,9 @@ SPEC.loader.exec_module(transition)
 
 OLD_TAG = "issue301-runtime-v16-20260817T130820Z"
 OLD_COMMIT = "8e6b8908f99ebf76db47c15613eff523644c23f6"
-NEW_TAG = "issue348-runtime-v3-20260918T080337Z"
+NEW_TAG = "issue348-runtime-v5-20260918T181846Z"
 NEW_COMMIT = "0123456789abcdef0123456789abcdef01234567"
-CANDIDATE_BASE_COMMIT = "86ddf1484c79cbf49233787a5a023009f3577181"
+CANDIDATE_BASE_COMMIT = "b32d1c18eb0d1048d8e38743f5fdd1c68a72936d"
 PREVIOUS_TAG = "issue350-352-runtime-v3-20260904T195619Z"
 PREVIOUS_COMMIT = "f6e7d58c0b03ee6a3ec6ed9e1e22e5023f861549"
 CORE = "https://github.com/digiorg/core.git"
@@ -579,7 +579,7 @@ class Harness(unittest.TestCase):
 
 
 class SourceContractTest(unittest.TestCase):
-    def test_v3_identity_is_bound_to_reviewed_v2_candidate_and_previous_runtime(self):
+    def test_v5_identity_is_bound_to_reviewed_candidate_and_previous_runtime(self):
         self.assertEqual(transition.RUNTIME_TAG, NEW_TAG)
         self.assertEqual(transition.CANDIDATE_BASE_COMMIT, CANDIDATE_BASE_COMMIT)
         self.assertEqual(transition.PREVIOUS_TAG, PREVIOUS_TAG)
@@ -737,7 +737,7 @@ class SecurityTest(Harness):
                 return super().run(argv, timeout, env=env)
 
         fake = WrongParent()
-        with self.assertRaisesRegex(transition.TransitionError, "v2 candidate"):
+        with self.assertRaisesRegex(transition.TransitionError, "authorized Issue #348 v5 base"):
             self.execute(fake)
         self.assertFalse(any(argv[0] == "kubectl" for argv, _ in fake.commands))
 

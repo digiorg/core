@@ -9,9 +9,9 @@ The executable may mutate only the Argo CD application-controller replica count 
 ## Immutable identities and source freeze
 
 - product parent: `ff25a5083059412f82525ace73e7c20b322fddbf`
-- correction base (published v2 candidate): `86ddf1484c79cbf49233787a5a023009f3577181`
-- candidate tag literal: `issue348-runtime-v3-20260918T080337Z`
-- immutable predecessor tag (not moved): `issue348-runtime-v2-20260917T194005Z`
+- correction base (published v4 candidate): `b32d1c18eb0d1048d8e38743f5fdd1c68a72936d`
+- candidate tag literal: `issue348-runtime-v5-20260918T181846Z`
+- immutable predecessor tag (not moved): `issue348-runtime-v4-20260918T162845Z`
 - previous runtime tag: `issue350-352-runtime-v3-20260904T195619Z`
 - previous peeled commit: `f6e7d58c0b03ee6a3ec6ed9e1e22e5023f861549`
 - retained sibling tag: `issue301-runtime-v16-20260817T130820Z`
@@ -39,7 +39,7 @@ python3 scripts/issue348_runtime_v2_transition.py \
   --expected-server https://api.retained.example:6443 \
   --expected-kube-system-uid <exact-uid> \
   --remote-url https://github.com/digiorg/core.git \
-  --runtime-tag issue348-runtime-v3-20260918T080337Z \
+  --runtime-tag issue348-runtime-v5-20260918T181846Z \
   --runtime-commit <exact-published-runtime-commit> \
   --previous-tag issue350-352-runtime-v3-20260904T195619Z \
   --previous-commit f6e7d58c0b03ee6a3ec6ed9e1e22e5023f861549 \

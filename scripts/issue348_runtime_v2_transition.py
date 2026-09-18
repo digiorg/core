@@ -36,9 +36,9 @@ FLUENTD_NAMESPACE = "logging"
 CONTROLLER_LABEL = "app.kubernetes.io/name=argocd-application-controller"
 CONTROLLER_NAME = "argocd-application-controller"
 CORE_REPO = "https://github.com/digiorg/core.git"
-RUNTIME_TAG = "issue348-runtime-v3-20260918T080337Z"
+RUNTIME_TAG = "issue348-runtime-v5-20260918T181846Z"
 PRODUCT_BASE_COMMIT = "ff25a5083059412f82525ace73e7c20b322fddbf"
-CANDIDATE_BASE_COMMIT = "86ddf1484c79cbf49233787a5a023009f3577181"
+CANDIDATE_BASE_COMMIT = "b32d1c18eb0d1048d8e38743f5fdd1c68a72936d"
 PREVIOUS_TAG = "issue350-352-runtime-v3-20260904T195619Z"
 PREVIOUS_COMMIT = "f6e7d58c0b03ee6a3ec6ed9e1e22e5023f861549"
 OLD_TAG = "issue301-runtime-v16-20260817T130820Z"
@@ -553,7 +553,7 @@ class Protocol:
             raise TransitionError("local checkout HEAD is not the runtime commit")
         parent = self.run_command(["git", "rev-parse", "HEAD^"], deadline)
         if parent not in {CANDIDATE_BASE_COMMIT, CANDIDATE_BASE_COMMIT + "\n"}:
-            raise TransitionError("runtime commit is not based directly on the reviewed Issue #348 v2 candidate")
+            raise TransitionError("runtime commit is not based directly on the authorized Issue #348 v5 base")
         dirty = self.run_command(
             ["git", "status", "--porcelain=v1", "--untracked-files=all"], deadline)
         if dirty != "":
