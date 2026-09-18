@@ -10,7 +10,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 CORE_REPO = "https://github.com/digiorg/core.git"
-CANDIDATE_TAG = "issue348-runtime-v2-20260917T194005Z"
+CANDIDATE_TAG = "issue348-runtime-v3-20260918T080337Z"
 OLD_TAG = "issue301-runtime-v16-20260817T130820Z"
 CATALOG_REVISION = "d531180b322dc0128477ecb9bb0fc9071b41d631"
 TRANSITION = ROOT / "scripts/issue348_runtime_v2_transition.py"
@@ -113,6 +113,7 @@ class TransitionModuleContractTest(unittest.TestCase):
 
         self.assertEqual(module.RUNTIME_TAG, CANDIDATE_TAG)
         self.assertEqual(module.PRODUCT_BASE_COMMIT, "ff25a5083059412f82525ace73e7c20b322fddbf")
+        self.assertEqual(module.CANDIDATE_BASE_COMMIT, "86ddf1484c79cbf49233787a5a023009f3577181")
         self.assertEqual(module.PREVIOUS_TAG, "issue350-352-runtime-v3-20260904T195619Z")
         self.assertEqual(module.PREVIOUS_COMMIT, "f6e7d58c0b03ee6a3ec6ed9e1e22e5023f861549")
         self.assertEqual(module.OLD_TAG, OLD_TAG)

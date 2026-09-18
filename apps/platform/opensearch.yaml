@@ -32,12 +32,12 @@ spec:
 
     # Reference to values file in Git repo
     - repoURL: https://github.com/digiorg/core.git
-      targetRevision: issue348-runtime-v2-20260917T194005Z
+      targetRevision: issue348-runtime-v3-20260918T080337Z
       ref: values
 
     # ServiceMonitor and supplementary resources via Kustomize
     - repoURL: https://github.com/digiorg/core.git
-      targetRevision: issue348-runtime-v2-20260917T194005Z
+      targetRevision: issue348-runtime-v3-20260918T080337Z
       path: platform/base/opensearch
 
   destination:

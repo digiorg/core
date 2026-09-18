@@ -13,10 +13,12 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import signal
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from typing import NamedTuple
@@ -34,8 +36,9 @@ FLUENTD_NAMESPACE = "logging"
 CONTROLLER_LABEL = "app.kubernetes.io/name=argocd-application-controller"
 CONTROLLER_NAME = "argocd-application-controller"
 CORE_REPO = "https://github.com/digiorg/core.git"
-RUNTIME_TAG = "issue348-runtime-v2-20260917T194005Z"
+RUNTIME_TAG = "issue348-runtime-v3-20260918T080337Z"
 PRODUCT_BASE_COMMIT = "ff25a5083059412f82525ace73e7c20b322fddbf"
+CANDIDATE_BASE_COMMIT = "86ddf1484c79cbf49233787a5a023009f3577181"
 PREVIOUS_TAG = "issue350-352-runtime-v3-20260904T195619Z"
 PREVIOUS_COMMIT = "f6e7d58c0b03ee6a3ec6ed9e1e22e5023f861549"
 OLD_TAG = "issue301-runtime-v16-20260817T130820Z"
@@ -190,7 +193,7 @@ class Config:
 
 
 class RealRunner:
-    def run(self, argv, timeout):
+    def run(self, argv, timeout, env=None):
         try:
             completed = subprocess.run(
                 argv,
@@ -198,6 +201,7 @@ class RealRunner:
                 capture_output=True,
                 text=True,
                 timeout=timeout,
+                env=env,
             )
         except subprocess.TimeoutExpired as error:
             raise TimeoutError("command exceeded outer timeout") from error
@@ -548,8 +552,8 @@ class Protocol:
         if head not in {self.config.runtime_commit, self.config.runtime_commit + "\n"}:
             raise TransitionError("local checkout HEAD is not the runtime commit")
         parent = self.run_command(["git", "rev-parse", "HEAD^"], deadline)
-        if parent not in {PRODUCT_BASE_COMMIT, PRODUCT_BASE_COMMIT + "\n"}:
-            raise TransitionError("runtime commit is not based directly on the reviewed Issue #348 product base")
+        if parent not in {CANDIDATE_BASE_COMMIT, CANDIDATE_BASE_COMMIT + "\n"}:
+            raise TransitionError("runtime commit is not based directly on the reviewed Issue #348 v2 candidate")
         dirty = self.run_command(
             ["git", "status", "--porcelain=v1", "--untracked-files=all"], deadline)
         if dirty != "":
@@ -719,6 +723,57 @@ class Protocol:
         listing = self.get_json(["get", "pods", "-l", CONTROLLER_LABEL], deadline, ARGOCD_NAMESPACE)
         return listing.get("items", [])
 
+    def kyverno_material_diff(self, deadline):
+        isolated_path = None
+        try:
+            fd, raw_path = tempfile.mkstemp(
+                prefix="issue348-argocd-kubeconfig-", suffix=".yaml"
+            )
+            os.close(fd)
+            isolated_path = Path(raw_path)
+            checkout_root = Path(__file__).resolve().parents[1]
+            if not checkout_path_allowed(
+                    "isolated kubeconfig", isolated_path, checkout_root, self.config.mode):
+                raise TransitionError("isolated kubeconfig path must be outside repository root")
+            shutil.copyfile(self.config.kubeconfig, isolated_path)
+            isolated_path.chmod(0o600)
+
+            request_seconds = max(
+                1, min(CALL_SECONDS, int(max(1, deadline.remaining())))
+            )
+            kubectl_prefix = [
+                "kubectl", "--kubeconfig", str(isolated_path),
+                f"--request-timeout={request_seconds}s", "config",
+            ]
+            self.run_command(
+                [*kubectl_prefix, "use-context", self.config.context], deadline
+            )
+            self.run_command(
+                [*kubectl_prefix, "set-context", "--current", "--namespace=argocd"],
+                deadline,
+            )
+
+            env = os.environ.copy()
+            env["KUBECONFIG"] = str(isolated_path)
+            try:
+                return self.runner.run(
+                    ["argocd", "app", "diff", "kyverno", "--core", "--refresh"],
+                    timeout=deadline.call_timeout(),
+                    env=env,
+                )
+            except (TimeoutError, OSError) as error:
+                raise TransitionError(redact(error)) from error
+        except OSError as error:
+            raise TransitionError("unable to prepare isolated Argo CD kubeconfig") from error
+        finally:
+            if isolated_path is not None:
+                try:
+                    isolated_path.unlink(missing_ok=True)
+                except OSError as error:
+                    raise TransitionError(
+                        "unable to remove isolated Argo CD kubeconfig"
+                    ) from error
+
     def preflight(self, deadline):
         self.validate_remote(deadline)
         view = self.get_json(["config", "view", "--minify"], deadline)
@@ -732,14 +787,7 @@ class Protocol:
         self.require_no_active(applications)
         self.require_preflight_status(applications)
         self.require_preflight_graph(applications)
-        try:
-            diff = self.runner.run([
-                "argocd", "--kubeconfig", str(self.config.kubeconfig),
-                "--kube-context", self.config.context, "--namespace", ARGOCD_NAMESPACE,
-                "--core", "app", "diff", "kyverno", "--refresh",
-            ], timeout=deadline.call_timeout())
-        except (TimeoutError, OSError) as error:
-            raise TransitionError(redact(error)) from error
+        diff = self.kyverno_material_diff(deadline)
         if diff.returncode != 0:
             raise TransitionError(f"Kyverno material diff command failed: {redact(diff.stderr)}")
         if diff.stdout != "" or diff.stderr != "":

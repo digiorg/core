@@ -10,6 +10,7 @@ import stat
 import tempfile
 import types
 import unittest
+from unittest import mock
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -22,9 +23,9 @@ SPEC.loader.exec_module(transition)
 
 OLD_TAG = "issue301-runtime-v16-20260817T130820Z"
 OLD_COMMIT = "8e6b8908f99ebf76db47c15613eff523644c23f6"
-NEW_TAG = "issue348-runtime-v2-20260917T194005Z"
+NEW_TAG = "issue348-runtime-v3-20260918T080337Z"
 NEW_COMMIT = "0123456789abcdef0123456789abcdef01234567"
-PRODUCT_BASE_COMMIT = "ff25a5083059412f82525ace73e7c20b322fddbf"
+CANDIDATE_BASE_COMMIT = "86ddf1484c79cbf49233787a5a023009f3577181"
 PREVIOUS_TAG = "issue350-352-runtime-v3-20260904T195619Z"
 PREVIOUS_COMMIT = "f6e7d58c0b03ee6a3ec6ed9e1e22e5023f861549"
 CORE = "https://github.com/digiorg/core.git"
@@ -253,6 +254,9 @@ class StatefulFakeKubectl:
         self.unstable_final_reconciled = False
         self.previous_remote_commit = PREVIOUS_COMMIT
         self.old_remote_commit = OLD_COMMIT
+        self.configured_kubeconfig: Path | None = None
+        self.argocd_environments = []
+        self.argocd_kubeconfig_snapshots = []
 
     def _pod(self, uid):
         return {"metadata": {"name": uid, "uid": uid, "namespace": "argocd", "ownerReferences": [{"uid": "sts-uid", "controller": True}]}, "status": {"phase": "Running", "conditions": [{"type": "Ready", "status": "True"}]}}
@@ -307,7 +311,7 @@ class StatefulFakeKubectl:
         if self.app_config_drift_after_barrier:
             self.apps["app-config"]["status"]["sync"]["revision"] = "drifted"
 
-    def run(self, argv, timeout):
+    def run(self, argv, timeout, env=None):
         self.commands.append((list(argv), timeout))
         if argv[0] == "git":
             if argv[1:] == ["rev-parse", "--show-toplevel"]:
@@ -315,7 +319,7 @@ class StatefulFakeKubectl:
             if argv[1:] == ["rev-parse", "HEAD"]:
                 return self._result(stdout=NEW_COMMIT + "\n")
             if argv[1:] == ["rev-parse", "HEAD^"]:
-                return self._result(stdout=PRODUCT_BASE_COMMIT + "\n")
+                return self._result(stdout=CANDIDATE_BASE_COMMIT + "\n")
             if argv[1:] == ["status", "--porcelain=v1", "--untracked-files=all"]:
                 return self._result(stdout="")
             if argv[1:3] == ["ls-tree", "--name-only"]:
@@ -331,15 +335,25 @@ class StatefulFakeKubectl:
                 stdout=f"{'e' * 40}\t{requested_ref}\n{peeled}\t{requested_ref}^{{}}\n"
             )
         if argv[0] == "argocd":
-            assert "--kubeconfig" in argv and "--kube-context" in argv
-            assert argv[-4:] == ["app", "diff", "kyverno", "--refresh"]
-            assert "--core" in argv and "--namespace" in argv
+            assert argv == ["argocd", "app", "diff", "kyverno", "--core", "--refresh"]
+            assert env is not None and env.get("KUBECONFIG")
+            isolated = Path(env["KUBECONFIG"])
+            assert self.configured_kubeconfig is not None
+            assert isolated != self.configured_kubeconfig
+            assert isolated.is_file()
+            assert stat.S_IMODE(isolated.stat().st_mode) == 0o600
+            self.argocd_environments.append(dict(env))
+            self.argocd_kubeconfig_snapshots.append(isolated.read_text(encoding="utf-8"))
             return self._result(stdout=self.kyverno_diff_output, stderr=self.kyverno_diff_stderr)
         self.assert_safe_kubectl(argv, timeout)
         verb_index = argv.index("config") if "config" in argv else next(i for i, x in enumerate(argv) if x in {"get", "patch"})
         verb = argv[verb_index]
         tail = argv[verb_index + 1:]
         if verb == "config":
+            if tail == ["use-context", "retained"]:
+                return self._result(stdout='Switched to context "retained".\n')
+            if tail == ["set-context", "--current", "--namespace=argocd"]:
+                return self._result(stdout='Context "retained" modified.\n')
             return self._json({"clusters": [{"cluster": {"server": self.server}}], "current-context": "retained"})
         if self.timeout_on_get and verb == "get":
             raise TimeoutError("sentinel Bearer TOPSECRET")
@@ -456,7 +470,12 @@ class StatefulFakeKubectl:
 
     def assert_safe_kubectl(self, argv, timeout):
         assert argv[0] == "kubectl"
-        assert "--kubeconfig" in argv and "--context" in argv
+        assert "--kubeconfig" in argv
+        is_local_context_edit = (
+            "config" in argv
+            and any(item in argv for item in ("use-context", "set-context"))
+        )
+        assert "--context" in argv or is_local_context_edit
         assert any(x.startswith("--request-timeout=") for x in argv)
         assert 0 < timeout <= transition.CALL_SECONDS
         forbidden = {"delete", "apply", "replace", "rollout", "restart", "exec"}
@@ -490,14 +509,15 @@ class Harness(unittest.TestCase):
 
     def execute(self, fake=None):
         fake = fake or StatefulFakeKubectl()
+        fake.configured_kubeconfig = self.kubeconfig
         transition.execute(self.config, runner=fake, clock=self.clock)
         return fake
 
 
 class SourceContractTest(unittest.TestCase):
-    def test_v2_identity_is_bound_to_reviewed_main_and_previous_runtime(self):
+    def test_v3_identity_is_bound_to_reviewed_v2_candidate_and_previous_runtime(self):
         self.assertEqual(transition.RUNTIME_TAG, NEW_TAG)
-        self.assertEqual(transition.PRODUCT_BASE_COMMIT, PRODUCT_BASE_COMMIT)
+        self.assertEqual(transition.CANDIDATE_BASE_COMMIT, CANDIDATE_BASE_COMMIT)
         self.assertEqual(transition.PREVIOUS_TAG, PREVIOUS_TAG)
         self.assertEqual(transition.PREVIOUS_COMMIT, PREVIOUS_COMMIT)
 
@@ -548,6 +568,14 @@ class SourceContractTest(unittest.TestCase):
 
 
 class RunbookContractTest(unittest.TestCase):
+    def test_runbook_documents_v345_kubeconfig_and_namespace_isolation(self):
+        text = RUNBOOK.read_text(encoding="utf-8")
+        self.assertIn("`KUBECONFIG`", text)
+        self.assertIn("`argocd app diff kyverno --core --refresh`", text)
+        self.assertIn("current context to the selected `--context`", text)
+        self.assertIn("namespace to `argocd`", text)
+        self.assertNotIn("`argocd --core app diff kyverno --refresh`", text)
+
     def test_runbook_declares_transition_only_non_acceptance_boundary(self):
         text = RUNBOOK.read_text(encoding="utf-8")
         for phrase in ("retained-convergence", "convergence-only", "not acceptance",
@@ -609,11 +637,11 @@ class SecurityTest(Harness):
 
     def test_dirty_checkout_fails_before_kubernetes(self):
         class BadGit(StatefulFakeKubectl):
-            def run(self, argv, timeout):
+            def run(self, argv, timeout, env=None):
                 if argv[0] == "git" and argv[1:3] == ["status", "--porcelain=v1"]:
                     self.commands.append((list(argv), timeout))
                     return self._result(stdout=" M changed\n")
-                return super().run(argv, timeout)
+                return super().run(argv, timeout, env=env)
         fake = BadGit()
         with self.assertRaisesRegex(transition.TransitionError, "checkout"):
             self.execute(fake)
@@ -621,11 +649,11 @@ class SecurityTest(Harness):
 
     def test_wrong_checkout_head_fails_before_kubernetes(self):
         class WrongHead(StatefulFakeKubectl):
-            def run(self, argv, timeout):
+            def run(self, argv, timeout, env=None):
                 if argv == ["git", "rev-parse", "HEAD"]:
                     self.commands.append((list(argv), timeout))
                     return self._result(stdout="f" * 40 + "\n")
-                return super().run(argv, timeout)
+                return super().run(argv, timeout, env=env)
         fake = WrongHead()
         with self.assertRaisesRegex(transition.TransitionError, "HEAD"):
             self.execute(fake)
@@ -633,14 +661,14 @@ class SecurityTest(Harness):
 
     def test_wrong_runtime_parent_fails_before_kubernetes(self):
         class WrongParent(StatefulFakeKubectl):
-            def run(self, argv, timeout):
+            def run(self, argv, timeout, env=None):
                 if argv == ["git", "rev-parse", "HEAD^"]:
                     self.commands.append((list(argv), timeout))
                     return self._result(stdout="0" * 40 + "\n")
-                return super().run(argv, timeout)
+                return super().run(argv, timeout, env=env)
 
         fake = WrongParent()
-        with self.assertRaisesRegex(transition.TransitionError, "product base"):
+        with self.assertRaisesRegex(transition.TransitionError, "v2 candidate"):
             self.execute(fake)
         self.assertFalse(any(argv[0] == "kubectl" for argv, _ in fake.commands))
 
@@ -806,6 +834,40 @@ class SecurityTest(Harness):
 
 
 class TransitionBehaviorTest(Harness):
+    def test_kyverno_diff_uses_v345_supported_argv_and_isolated_namespaced_context(self):
+        inherited_default = str(Path.home() / ".kube" / "config")
+        with mock.patch.dict(os.environ, {"KUBECONFIG": inherited_default}):
+            fake = self.execute()
+        argocd_commands = [argv for argv, _ in fake.commands if argv[0] == "argocd"]
+        self.assertEqual(
+            argocd_commands,
+            [["argocd", "app", "diff", "kyverno", "--core", "--refresh"]],
+        )
+        self.assertEqual(fake.argocd_kubeconfig_snapshots, ["safe"])
+        self.assertEqual(len(fake.argocd_environments), 1)
+        isolated = fake.argocd_environments[0]["KUBECONFIG"]
+        self.assertNotEqual(isolated, str(self.kubeconfig))
+        self.assertNotEqual(isolated, inherited_default)
+        self.assertFalse(Path(isolated).exists(), "isolated kubeconfig was not removed")
+        self.assertEqual(self.kubeconfig.read_text(encoding="utf-8"), "safe")
+
+        config_commands = [argv for argv, _ in fake.commands if "config" in argv]
+        self.assertIn(
+            [
+                "kubectl", "--kubeconfig", isolated,
+                "--request-timeout=20s", "config", "use-context", "retained",
+            ],
+            config_commands,
+        )
+        self.assertIn(
+            [
+                "kubectl", "--kubeconfig", isolated,
+                "--request-timeout=20s", "config", "set-context", "--current",
+                "--namespace=argocd",
+            ],
+            config_commands,
+        )
+
     def test_completed_non_target_operation_crossing_stop_is_rejected_before_owner_patches(self):
         fake = StatefulFakeKubectl()
         fake.completed_non_target_operation_before_stop = True

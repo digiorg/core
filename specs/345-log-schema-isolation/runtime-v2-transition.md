@@ -9,7 +9,9 @@ The executable may mutate only the Argo CD application-controller replica count 
 ## Immutable identities and source freeze
 
 - product parent: `ff25a5083059412f82525ace73e7c20b322fddbf`
-- candidate tag literal: `issue348-runtime-v2-20260917T194005Z`
+- correction base (published v2 candidate): `86ddf1484c79cbf49233787a5a023009f3577181`
+- candidate tag literal: `issue348-runtime-v3-20260918T080337Z`
+- immutable predecessor tag (not moved): `issue348-runtime-v2-20260917T194005Z`
 - previous runtime tag: `issue350-352-runtime-v3-20260904T195619Z`
 - previous peeled commit: `f6e7d58c0b03ee6a3ec6ed9e1e22e5023f861549`
 - retained sibling tag: `issue301-runtime-v16-20260817T130820Z`
@@ -37,7 +39,7 @@ python3 scripts/issue348_runtime_v2_transition.py \
   --expected-server https://api.retained.example:6443 \
   --expected-kube-system-uid <exact-uid> \
   --remote-url https://github.com/digiorg/core.git \
-  --runtime-tag issue348-runtime-v2-20260917T194005Z \
+  --runtime-tag issue348-runtime-v3-20260918T080337Z \
   --runtime-commit <exact-published-runtime-commit> \
   --previous-tag issue350-352-runtime-v3-20260904T195619Z \
   --previous-commit f6e7d58c0b03ee6a3ec6ed9e1e22e5023f861549 \
@@ -48,7 +50,7 @@ python3 scripts/issue348_runtime_v2_transition.py \
 
 ## Exact retained preflight
 
-Before mutation, the typed Application endpoint must return exact `argoproj.io/v1alpha1 ApplicationList`, the reviewed 32 unique Applications, immutable UIDs/specs/operation identities, no pending top-level operation, and no active operation. All must be Healthy. Exactly 31 must be Synced. Kyverno alone may be OutOfSync, limited to the reviewed 11 `CustomResourceDefinition` resources. `argocd --core app diff kyverno --refresh` must succeed with stdout and stderr both exactly zero bytes.
+Before mutation, the typed Application endpoint must return exact `argoproj.io/v1alpha1 ApplicationList`, the reviewed 32 unique Applications, immutable UIDs/specs/operation identities, no pending top-level operation, and no active operation. All must be Healthy. Exactly 31 must be Synced. Kyverno alone may be OutOfSync, limited to the reviewed 11 `CustomResourceDefinition` resources. For the pinned Argo CD CLI v3.4.5, the executable copies the explicit kubeconfig to an external mode-`0600` temporary file, switches that copy's current context to the selected `--context`, sets the current context namespace to `argocd`, and supplies the copy only through `KUBECONFIG`. It then runs exactly `argocd app diff kyverno --core --refresh`, without unsupported Argo CD `--kubeconfig`, `--kube-context`, or `--namespace` flags. The command must succeed with stdout and stderr both exactly zero bytes, and the isolated copy is removed before preflight continues or fails.
 
 The candidate, previous, and old annotated remote tags must each peel to their exact supplied commit before Kubernetes is contacted. The preflight Core graph is exactly 3 previous / 29 old: Root, Argo CD, and OpenSearch values use the previous runtime; Fluentd and OpenSearch supplementary resources use the old tag. Their Argo status revisions must resolve to the exact previous and old commits, not merely to matching tag names. Root, Argo CD, OpenSearch, Fluentd, and Kyverno require structurally valid terminal operation identities. Controller identity/readiness, HPA absence, app-config revision, complete Application specs, and operation identities are captured and revalidated.
 
