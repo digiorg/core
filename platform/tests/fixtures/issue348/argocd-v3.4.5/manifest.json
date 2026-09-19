@@ -1,0 +1,22 @@
+{
+  "canonical_inventory_sha256": "245115151425c2016b1711fc5dbb3cc62eec9d26f9fdef7d94d3da92a4f10c68",
+  "canonical_inventory_method": "SHA-256 of the source bundle's sorted canonical (group, version, kind, namespace, name) Kyverno inventory after only core-group and absent-namespace normalization.",
+  "counts": {
+    "applications_projected": 1,
+    "core_group_absent": 12,
+    "kyverno_out_of_sync": 11,
+    "kyverno_resources": 69,
+    "kyverno_synced": 58
+  },
+  "coverage_gap": "The captured Argo CD core diff timed out after 60 seconds with zero-byte stdout/stderr; parser compatibility is covered, but a completed live zero-diff result is not represented.",
+  "projection_method": "Typed ApplicationList envelope plus the Kyverno Application name, health/sync status, and complete status.resources array. Resource keys are copied only when present, preserving absent/null/empty/populated distinctions. Operational metadata, specs, hostnames, UIDs, resourceVersions, timestamps, and identities are omitted.",
+  "schema": "digiorg.issue348.argocd-v3.4.5-fixture/v1",
+  "source_sha256": {
+    "applications.compatibility.json": "9ad1a9adc1f9b6d3daec16956891dd6e9fdc5d67361d0080eb3b01fcd5f3d8f0",
+    "kyverno-status-resources.json": "0e98619b9583c20d22c83ba33e55c564866e2e30a9700d121144a025bf4747f5"
+  },
+  "versions": {
+    "argocd": "v3.4.5+564b949",
+    "kubernetes": "v1.36.1"
+  }
+}
