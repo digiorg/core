@@ -1,0 +1,222 @@
+{
+  "changes": [
+    {
+      "after": "issue348-runtime-v6-20260919T100440Z",
+      "before": "main",
+      "field": "/spec/source/targetRevision",
+      "path": "apps/platform/argocd.yaml"
+    },
+    {
+      "after": "issue301-runtime-v16-20260817T130820Z",
+      "before": "main",
+      "field": "/spec/source/targetRevision",
+      "path": "apps/platform/backstage.yaml"
+    },
+    {
+      "after": "issue301-runtime-v16-20260817T130820Z",
+      "before": "main",
+      "field": "/spec/source/targetRevision",
+      "path": "apps/platform/cert-manager.yaml"
+    },
+    {
+      "after": "issue301-runtime-v16-20260817T130820Z",
+      "before": "main",
+      "field": "/spec/source/targetRevision",
+      "path": "apps/platform/cnpg-cluster.yaml"
+    },
+    {
+      "after": "issue301-runtime-v16-20260817T130820Z",
+      "before": "main",
+      "field": "/spec/source/targetRevision",
+      "path": "apps/platform/crossplane-harbor-bootstrap.yaml"
+    },
+    {
+      "after": "issue301-runtime-v16-20260817T130820Z",
+      "before": "main",
+      "field": "/spec/source/targetRevision",
+      "path": "apps/platform/crossplane-provider-configs.yaml"
+    },
+    {
+      "after": "issue301-runtime-v16-20260817T130820Z",
+      "before": "main",
+      "field": "/spec/source/targetRevision",
+      "path": "apps/platform/crossplane-providers.yaml"
+    },
+    {
+      "after": "issue301-runtime-v16-20260817T130820Z",
+      "before": "main",
+      "field": "/spec/source/targetRevision",
+      "path": "apps/platform/crossplane-xrds.yaml"
+    },
+    {
+      "after": "issue301-runtime-v16-20260817T130820Z",
+      "before": "main",
+      "field": "/spec/sources/1/targetRevision",
+      "path": "apps/platform/external-secrets.yaml"
+    },
+    {
+      "after": "issue348-runtime-v6-20260919T100440Z",
+      "before": "main",
+      "field": "/spec/source/targetRevision",
+      "path": "apps/platform/fluentd.yaml"
+    },
+    {
+      "after": "issue301-runtime-v16-20260817T130820Z",
+      "before": "main",
+      "field": "/spec/source/targetRevision",
+      "path": "apps/platform/gitea-actions-runner.yaml"
+    },
+    {
+      "after": "issue301-runtime-v16-20260817T130820Z",
+      "before": "main",
+      "field": "/spec/sources/1/targetRevision",
+      "path": "apps/platform/gitea.yaml"
+    },
+    {
+      "after": "issue301-runtime-v16-20260817T130820Z",
+      "before": "main",
+      "field": "/spec/sources/1/targetRevision",
+      "path": "apps/platform/grafana.yaml"
+    },
+    {
+      "after": "issue301-runtime-v16-20260817T130820Z",
+      "before": "main",
+      "field": "/spec/sources/1/targetRevision",
+      "path": "apps/platform/harbor.yaml"
+    },
+    {
+      "after": "issue301-runtime-v16-20260817T130820Z",
+      "before": "main",
+      "field": "/spec/sources/2/targetRevision",
+      "path": "apps/platform/harbor.yaml"
+    },
+    {
+      "after": "issue301-runtime-v16-20260817T130820Z",
+      "before": "main",
+      "field": "/spec/sources/1/targetRevision",
+      "path": "apps/platform/jaeger.yaml"
+    },
+    {
+      "after": "issue301-runtime-v16-20260817T130820Z",
+      "before": "main",
+      "field": "/spec/sources/2/targetRevision",
+      "path": "apps/platform/jaeger.yaml"
+    },
+    {
+      "after": "issue301-runtime-v16-20260817T130820Z",
+      "before": "main",
+      "field": "/spec/source/targetRevision",
+      "path": "apps/platform/keycloak.yaml"
+    },
+    {
+      "after": "issue301-runtime-v16-20260817T130820Z",
+      "before": "main",
+      "field": "/spec/source/targetRevision",
+      "path": "apps/platform/kyverno-policies.yaml"
+    },
+    {
+      "after": "issue301-runtime-v16-20260817T130820Z",
+      "before": "main",
+      "field": "/spec/source/targetRevision",
+      "path": "apps/platform/landingpage.yaml"
+    },
+    {
+      "after": "issue301-runtime-v16-20260817T130820Z",
+      "before": "main",
+      "field": "/spec/source/targetRevision",
+      "path": "apps/platform/monitoring-extras.yaml"
+    },
+    {
+      "after": "issue301-runtime-v16-20260817T130820Z",
+      "before": "main",
+      "field": "/spec/source/targetRevision",
+      "path": "apps/platform/namespaces.yaml"
+    },
+    {
+      "after": "issue301-runtime-v16-20260817T130820Z",
+      "before": "main",
+      "field": "/spec/sources/1/targetRevision",
+      "path": "apps/platform/nats.yaml"
+    },
+    {
+      "after": "issue301-runtime-v16-20260817T130820Z",
+      "before": "main",
+      "field": "/spec/sources/2/targetRevision",
+      "path": "apps/platform/nats.yaml"
+    },
+    {
+      "after": "issue301-runtime-v16-20260817T130820Z",
+      "before": "main",
+      "field": "/spec/sources/1/targetRevision",
+      "path": "apps/platform/opencost.yaml"
+    },
+    {
+      "after": "issue301-runtime-v16-20260817T130820Z",
+      "before": "main",
+      "field": "/spec/sources/2/targetRevision",
+      "path": "apps/platform/opencost.yaml"
+    },
+    {
+      "after": "issue348-runtime-v6-20260919T100440Z",
+      "before": "main",
+      "field": "/spec/sources/1/targetRevision",
+      "path": "apps/platform/opensearch.yaml"
+    },
+    {
+      "after": "issue348-runtime-v6-20260919T100440Z",
+      "before": "main",
+      "field": "/spec/sources/2/targetRevision",
+      "path": "apps/platform/opensearch.yaml"
+    },
+    {
+      "after": "issue301-runtime-v16-20260817T130820Z",
+      "before": "main",
+      "field": "/spec/source/targetRevision",
+      "path": "apps/platform/postgresql.yaml"
+    },
+    {
+      "after": "issue301-runtime-v16-20260817T130820Z",
+      "before": "main",
+      "field": "/spec/sources/1/targetRevision",
+      "path": "apps/platform/sonarqube.yaml"
+    },
+    {
+      "after": "issue301-runtime-v16-20260817T130820Z",
+      "before": "main",
+      "field": "/spec/sources/2/targetRevision",
+      "path": "apps/platform/sonarqube.yaml"
+    },
+    {
+      "after": "issue348-runtime-v6-20260919T100440Z",
+      "before": "main",
+      "field": "/spec/source/targetRevision",
+      "path": "platform/base/argocd/applications/root-app.yaml"
+    }
+  ],
+  "descriptor_sha256": "06a050705e771a5c2047cbbf8a938814d75b54d2ffde7cd483decbe3fea4959f",
+  "expected_graph": {
+    "candidate": 5,
+    "other": 0,
+    "previous": 0,
+    "retained": 27
+  },
+  "fixture_digests": {
+    "platform/tests/fixtures/issue348/argocd-v3.4.5/application-list.json": "f7b2aa74bb3d2ae68c0959c8fac518d529c86508e92cbf3738a1ac118360d8ad",
+    "platform/tests/fixtures/issue348/argocd-v3.4.5/manifest.json": "43fb31c68b6dc8c5ccf41702d166d30529630ae245ad649a15a347cc6986c199"
+  },
+  "generator_version": "issue348-runtime-v2-release-closure/1",
+  "predecessor": {
+    "commit": "f6e7d58c0b03ee6a3ec6ed9e1e22e5023f861549",
+    "tag": "issue350-352-runtime-v3-20260904T195619Z"
+  },
+  "reserved_runtime_tag": "issue348-runtime-v6-20260919T100440Z",
+  "retained": {
+    "commit": "8e6b8908f99ebf76db47c15613eff523644c23f6",
+    "tag": "issue301-runtime-v16-20260817T130820Z"
+  },
+  "schema": "issue348-runtime-v2-release-closure/v1",
+  "source": {
+    "commit": "32a49345f3a69e637f39c886777f8106a8df42ab",
+    "tree": "f57437cd688211dfb8dc3091719f8eff4f5de989"
+  }
+}
