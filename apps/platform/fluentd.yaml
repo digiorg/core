@@ -15,7 +15,7 @@ spec:
 
   source:
     repoURL: https://github.com/digiorg/core.git
-    targetRevision: main
+    targetRevision: issue348-runtime-v6-20260919T100440Z
     path: platform/base/fluentd
 
   destination:
