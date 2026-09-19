@@ -30,6 +30,9 @@ RETAINED_TAG = "issue301-runtime-v16-20260817T130820Z"
 RETAINED_COMMIT = "8e6b8908f99ebf76db47c15613eff523644c23f6"
 DESCRIPTOR = Path("specs/345-log-schema-isolation/issue348-runtime-v2-contract.json")
 OUTPUT = Path("issue348-runtime-v2-release-closure.json")
+CANONICAL_SOURCE_COMMIT = "743a1b08435f8a6e613ed8e59ba92fb062452d9f"
+CANONICAL_SOURCE_TREE = "16ec64176d1bdaeb4b450269c9c1a677dede744d"
+SOURCE_BUNDLE = Path("platform/tests/fixtures/issue348/release-closure-source.json")
 FIXTURES = (
     Path("platform/tests/fixtures/issue348/argocd-v3.4.5/application-list.json"),
     Path("platform/tests/fixtures/issue348/argocd-v3.4.5/manifest.json"),
@@ -60,34 +63,157 @@ def commit_all(repo, message):
         raise AssertionError(result.stderr)
 
 
+def _source_bundle():
+    value = json.loads((ROOT / SOURCE_BUNDLE).read_text(encoding="utf-8"))
+    if set(value) != {"schema", "source", "files"}:
+        raise AssertionError("source fixture bundle shape changed")
+    if value["schema"] != "issue348-release-closure-source-fixture/v1":
+        raise AssertionError("source fixture bundle schema changed")
+    if value["source"] != {
+            "commit": CANONICAL_SOURCE_COMMIT, "tree": CANONICAL_SOURCE_TREE}:
+        raise AssertionError("source fixture provenance changed")
+    if set(value["files"]) != set(closure.APPLICATION_PATHS):
+        raise AssertionError("source fixture inventory changed")
+    if set(value["files"]) != set(closure.SOURCE_DIGESTS):
+        raise AssertionError("source digest inventory changed")
+
+    actual_tree = run_git(
+        ROOT, "rev-parse", f"{CANONICAL_SOURCE_COMMIT}^{{tree}}",
+    ).stdout.strip()
+    if actual_tree != CANONICAL_SOURCE_TREE:
+        raise AssertionError("canonical source tree changed")
+
+    files = {}
+    for relative in closure.APPLICATION_PATHS:
+        entry = value["files"][relative]
+        if set(entry) != {"content", "sha256"}:
+            raise AssertionError(f"source fixture entry shape changed: {relative}")
+        data = entry["content"].encode("utf-8")
+        digest = hashlib.sha256(data).hexdigest()
+        if digest != entry["sha256"] or digest != closure.SOURCE_DIGESTS[relative]:
+            raise AssertionError(f"source fixture digest changed: {relative}")
+        result = subprocess.run(
+            ["git", "show", f"{CANONICAL_SOURCE_COMMIT}:{relative}"],
+            cwd=ROOT, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        if result.returncode or result.stdout != data:
+            raise AssertionError(f"source fixture differs from canonical commit: {relative}")
+        files[relative] = data
+    return files
+
+
+def _generated_source(bundle):
+    generated = dict(bundle)
+    rules_by_path = {}
+    for path, pointer in closure.ALLOWED_FIELDS:
+        rules_by_path.setdefault(path, []).append(pointer)
+    for relative, pointers in rules_by_path.items():
+        text = bundle[relative].decode("utf-8")
+        replacements = []
+        for pointer in pointers:
+            node = closure._scalar_node(text, pointer)
+            if text[node.start_mark.index:node.end_mark.index] != "main":
+                raise AssertionError(f"source fixture is not canonical: {relative} {pointer}")
+            replacements.append((
+                node.start_mark.index,
+                node.end_mark.index,
+                closure.expected_target(relative, pointer),
+            ))
+        for start, end, target in sorted(replacements, reverse=True):
+            text = text[:start] + target + text[end:]
+        generated[relative] = text.encode("utf-8")
+    return generated
+
+
+def _expected_changes():
+    return sorted(({
+        "path": path,
+        "field": pointer,
+        "before": "main",
+        "after": closure.expected_target(path, pointer),
+    } for path, pointer in closure.ALLOWED_FIELDS), key=lambda item: (
+        item["path"], item["field"],
+    ))
+
+
+def _validate_checkout_source(root, bundle):
+    actual = {relative: (root / relative).read_bytes()
+              for relative in closure.APPLICATION_PATHS}
+    if actual == bundle:
+        return
+    if actual != _generated_source(bundle):
+        raise AssertionError("checkout is neither canonical source nor exact generated closure")
+
+    manifest = json.loads((root / OUTPUT).read_text(encoding="utf-8"))
+    if set(manifest) != {
+            "schema", "generator_version", "source", "reserved_runtime_tag",
+            "predecessor", "retained", "expected_graph", "changes",
+            "descriptor_sha256", "fixture_digests"}:
+        raise AssertionError("generated closure inventory shape changed")
+    if manifest["schema"] != "issue348-runtime-v2-release-closure/v1":
+        raise AssertionError("generated closure schema changed")
+    if manifest["generator_version"] != closure.GENERATOR_VERSION:
+        raise AssertionError("generated closure version changed")
+    if manifest["source"] != {
+            "commit": run_git(root, "rev-parse", "HEAD").stdout.strip(),
+            "tree": run_git(root, "rev-parse", "HEAD^{tree}").stdout.strip()}:
+        raise AssertionError("generated closure source identity changed")
+    if manifest["reserved_runtime_tag"] != RUNTIME_TAG:
+        raise AssertionError("generated closure runtime tag changed")
+    if manifest["predecessor"] != {
+            "tag": PREVIOUS_TAG, "commit": PREVIOUS_COMMIT}:
+        raise AssertionError("generated closure predecessor changed")
+    if manifest["retained"] != {
+            "tag": RETAINED_TAG, "commit": RETAINED_COMMIT}:
+        raise AssertionError("generated closure retained identity changed")
+    if manifest["expected_graph"] != {
+            "candidate": 5, "retained": 27, "previous": 0, "other": 0}:
+        raise AssertionError("generated closure graph changed")
+    if manifest["changes"] != _expected_changes():
+        raise AssertionError("generated closure changes changed")
+    descriptor_digest = hashlib.sha256((root / DESCRIPTOR).read_bytes()).hexdigest()
+    if manifest["descriptor_sha256"] != descriptor_digest:
+        raise AssertionError("generated closure descriptor digest changed")
+    fixture_digests = {
+        path.as_posix(): hashlib.sha256((root / path).read_bytes()).hexdigest()
+        for path in FIXTURES
+    }
+    if manifest["fixture_digests"] != fixture_digests:
+        raise AssertionError("generated closure live-fixture digests changed")
+
+
+def build_seed(destination, checkout_root):
+    bundle = _source_bundle()
+    _validate_checkout_source(checkout_root, bundle)
+    destination.mkdir()
+    run_git(destination, "init", "-b", "main")
+    run_git(destination, "config", "user.email", "issue348@example.invalid")
+    run_git(destination, "config", "user.name", "Issue 348 Fixture")
+    (destination / "BASE").write_text("canonical base\n", encoding="utf-8")
+    commit_all(destination, "base")
+    base_commit = run_git(destination, "rev-parse", "HEAD").stdout.strip()
+
+    for relative, data in bundle.items():
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+    for relative in (DESCRIPTOR, *FIXTURES):
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(checkout_root / relative, target)
+    protected = destination / "scripts/protected.py"
+    protected.parent.mkdir(parents=True, exist_ok=True)
+    protected.write_text("PROTECTED = True\n", encoding="utf-8")
+    commit_all(destination, "canonical merged source")
+    return base_commit
+
+
 class ClosureHarness(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.seed_temp = tempfile.TemporaryDirectory()
         cls.seed = Path(cls.seed_temp.name) / "seed"
-        cls.seed.mkdir()
-        run_git(cls.seed, "init", "-b", "main")
-        run_git(cls.seed, "config", "user.email", "issue348@example.invalid")
-        run_git(cls.seed, "config", "user.name", "Issue 348 Fixture")
-        (cls.seed / "BASE").write_text("canonical base\n", encoding="utf-8")
-        commit_all(cls.seed, "base")
-        cls.base_commit = run_git(cls.seed, "rev-parse", "HEAD").stdout.strip()
-
-        source_paths = [
-            Path("platform/base/argocd/applications/root-app.yaml"),
-            *sorted(Path("apps/platform").glob("*.yaml")),
-            DESCRIPTOR,
-            *FIXTURES,
-        ]
-        for relative in source_paths:
-            source = ROOT / relative
-            destination = cls.seed / relative
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(source, destination)
-        protected = cls.seed / "scripts/protected.py"
-        protected.parent.mkdir(parents=True, exist_ok=True)
-        protected.write_text("PROTECTED = True\n", encoding="utf-8")
-        commit_all(cls.seed, "canonical merged source")
+        cls.base_commit = build_seed(cls.seed, ROOT)
 
     @classmethod
     def tearDownClass(cls):
@@ -131,6 +257,33 @@ class ClosureHarness(unittest.TestCase):
 
 
 class DeterministicClosureTest(ClosureHarness):
+    def test_generated_checkout_can_build_canonical_harness_seed(self):
+        closure.generate(self.config())
+        rebuilt = Path(self.temp.name) / "rebuilt"
+        rebuilt_base = build_seed(rebuilt, self.repo)
+        source_commit = run_git(rebuilt, "rev-parse", "HEAD").stdout.strip()
+        source_tree = run_git(rebuilt, "rev-parse", "HEAD^{tree}").stdout.strip()
+        manifest = closure.generate(closure.ClosureConfig(
+            worktree=rebuilt,
+            source_commit=source_commit,
+            source_tree=source_tree,
+            expected_branch="main",
+            required_base=rebuilt_base,
+            runtime_tag=RUNTIME_TAG,
+            descriptor=rebuilt / DESCRIPTOR,
+            previous_tag=PREVIOUS_TAG,
+            previous_commit=PREVIOUS_COMMIT,
+            retained_tag=RETAINED_TAG,
+            retained_commit=RETAINED_COMMIT,
+            output=rebuilt / OUTPUT,
+        ))
+
+        self.assertEqual(len(manifest["changes"]), 32)
+        self.assertEqual(
+            {(item["path"], item["field"]) for item in manifest["changes"]},
+            set(closure.ALLOWED_FIELDS),
+        )
+
     def test_output_is_byte_identical_and_exactly_allowlisted(self):
         second = Path(self.temp.name) / "second"
         shutil.copytree(self.seed, second)
