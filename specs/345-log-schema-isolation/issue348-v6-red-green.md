@@ -120,3 +120,75 @@ The runbook describes architecture and invocation semantics without claiming pub
 - Authoritative broad platform command: an isolated `uv` Python 3.12 environment installed `.github/requirements-platform-validation-py312-linux.txt` with hashes, including `lupa==2.6`, then ran `ARGOCD_V345_BINARY=/tmp/t_a4947472-evidence/argocd make test`; observed `Ran 1180 tests ... OK (skipped=1)`.
 - High-confidence secret scan over the fixture and changed Issue #348 production/spec files found zero candidate secrets. The test scan found only three existing synthetic redaction sentinels (`TOPSECRET`, `SUPERSECRET`, `RAWTOKEN`/`RAWPASS`), not credentials.
 - `git diff --check` passed. Exact changed-path inventory and commit identities are recorded from Git after local commit.
+
+# Slice C deterministic release closure RED -> GREEN evidence
+
+Scope: repository-reviewed offline generation, attestation, validation-child documentation, and historical runbook/task reconciliation. Every generator execution used an isolated temporary Git repository copied from the reviewed manifests. The generator was not run against this worktree, and no real closure manifest, tag, attestation, publication, GitHub write, SSH session, cluster contact, preflight, transition, convergence, or acceptance occurred.
+
+## C1 deterministic generated runtime closure
+
+Initial RED command:
+
+    python3 platform/tests/test_issue348_release_closure.py -v
+
+Observed result before production modules existed:
+
+    ModuleNotFoundError: No module named 'issue348_runtime_v2_release_closure'
+
+GREEN uses a fixed 32-field `(path, JSON pointer)` allowlist and reviewed pre-closure byte digests for all 32 Application manifests plus Root. It verifies clean exact worktree/branch/HEAD/tree, required-base ancestry, committed source paths, reserved-tag absence, descriptor identities/shape, exact baseline source graph, and manifest digests before writing. It replaces only scalar `targetRevision: main` values, preserves every other byte and semantic field, compares the tracked-file hash inventory before/after, and permits only one deterministic untracked closure-manifest path.
+
+The generated inventory contains source commit/tree, reserved tag, exact 32 changed paths/fields and before/after values, predecessor/retained identities, **5 candidate / 27 retained / 0 previous / 0 other**, generator version, descriptor SHA-256, and fixture SHA-256 values. It intentionally omits future closure commit/tree. Tests prove byte-identical output and reject dirty input, wrong commit/tree/branch/base, non-ancestor base, existing tag, stale descriptor, v5/v4 source identity, unknown/duplicate sources, malformed YAML, extra manifest fields, and protected output paths.
+
+## C2 release-attestation contract
+
+Schema RED command:
+
+    python3 platform/tests/test_issue348_release_closure.py ReleaseAttestationTest.test_schema_accepts_completed_record_and_rejects_template -v
+
+Observed result:
+
+    ValidationError: Additional properties are not allowed ('manifest_sha256' was unexpected)
+
+GREEN corrected the closure schema to bind commit, tree, and manifest digest as one closed object. A second vertical RED added independently expected closure, CI, and review identities and initially failed with `TypeError: ExpectedAttestation.__new__() got an unexpected keyword argument 'closure_commit'`. GREEN now rejects missing, malformed, inconsistent, moved, or stale source/closure/tag/CI/review/generator/descriptor/fixture identities. The annotated tag object must differ from and peel to the closure commit; exact CI head must equal the closure commit; source and publication review references must be separate. The source template leaves all unknown future identities null and is deliberately schema-invalid until completed.
+
+## C3 stable Issue #348 validation child
+
+RED command:
+
+    python3 platform/tests/test_issue348_release_closure.py ValidationAddendumTest -v
+
+Observed result:
+
+    FileNotFoundError: specs/345-log-schema-isolation/validation-348.md
+
+GREEN adds `validation-348.md` with stable `I348-V01` through `I348-V16` requirements for fixture provenance/raw shape, exact parser, capability separation, non-mutating preflight, deterministic closure, reviews/delivery/publication, separately authorized preflight/convergence/acceptance, attempt ledger/evidence, rollback, and no-retry. Its ordered status marks only offline implementation complete and every review, PR, hosted CI, merge, publication, live preflight, convergence, and acceptance gate pending.
+
+## C4 tasks and runbook reconciliation
+
+Sabotage RED command against the unchanged `HEAD` documentation snapshot:
+
+    ISSUE348_DOC_ROOT=/tmp/t_9f5837c3-c4-red python3 platform/tests/test_issue348_release_closure.py DocumentationReconciliationTest -v
+
+Observed result: `Ran 2 tests ... FAILED (failures=2)` because the starting runbook had no generator/attestation boundary and the task list still claimed PR #349 delivery and merge were pending.
+
+GREEN command against the candidate documentation:
+
+    python3 platform/tests/test_issue348_release_closure.py DocumentationReconciliationTest -v
+
+Observed result: `Ran 2 tests ... OK`. The task list now records PR #349 head `4fa6dbb76f906a3c5727c87adfa10a588221e447`, successful workflow runs `33329044341` and `33329042253`, and human merge commit `d8f93d64811f54a5f3ddb0a4f193b5bc08d3b894`, while explicitly retaining incomplete review/runtime gates. The runbook separates post-merge generation, attestation, publication-closure review, publication, read-only preflight, convergence, and acceptance.
+
+## Slice C and whole-branch GREEN matrix
+
+- Slice C focused: `python3 platform/tests/test_issue348_release_closure.py -v`; `Ran 14 tests ... OK`.
+- All Issue #348 tests: `ARGOCD_V345_BINARY=/tmp/t_a4947472-evidence/argocd python3 -m unittest discover -s platform/tests -p 'test_issue348*.py'`; `Ran 129 tests ... OK`, zero skips.
+- Exact parser gate: `ARGOCD_V345_BINARY=/tmp/t_a4947472-evidence/argocd python3 platform/tests/test_issue348_argocd_v345_parser_smoke.py -v`; `Ran 2 tests ... OK`. Binary SHA-256: `23303f05a58c1e041324d5645b0f9d6ea338b16bbf32f4a24508f388fcf9f9c0`; version: `argocd: v3.4.5+564b949`.
+- Python compilation: pinned Python 3.12.13 `python3 -m py_compile scripts/issue348*.py platform/tests/test_issue348*.py`; passed.
+- JSON/schema/template checks: all three committed JSON documents parse; Draft 2020-12 validation accepts a completed attestation and rejects the null template.
+- Generator sabotage/property coverage: included in the 14 Slice C tests; all temporary repositories, no configured remotes, byte-identical dual generation, exact tracked/untracked inventory, and all required refusal cases passed.
+- Platform render: `python3 scripts/render_platform_charts.py`; `HELM_RENDER_PASS=13; no floating rendered image tags` (existing exact-tag-only image warnings remain).
+- Repository lint: `make lint`; passed available checks. `yamllint` was not installed and was explicitly skipped; `kubeconfig-local.yaml` was absent, so no Kubernetes command ran.
+- High-confidence secret scan over Issue #348 scripts/tests/specs: zero private-key, AWS key, GitHub token, Slack token, or long Bearer-token matches.
+- Authoritative whole branch: isolated Python 3.12.13 environment installed the hash-pinned requirements including `lupa==2.6`; `ARGOCD_V345_BINARY=/tmp/t_a4947472-evidence/argocd make test`; `Ran 1194 tests ... OK (skipped=1)`.
+- `git diff --check` passed. The real closure output path is absent and the reserved v6 tag does not exist locally.
+
+The one full-suite skip is pre-existing and outside Issue #348; the Issue #348 suite has zero skips. No source review, PR, exact-SHA hosted CI, source merge, closure generation, tag, attestation completion, publication review, publication, live preflight, convergence, or acceptance is claimed.

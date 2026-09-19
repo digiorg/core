@@ -35,6 +35,20 @@ Current main also contains the reviewed Kyverno empty-annotation correction requ
 
 The runtime commit cannot contain its own commit or tree identity. After exact-snapshot approval, publication requires a separately recorded annotated tag-object, peeled commit, candidate commit, and tree SHA. This card does not publish them. A separate post-publication launcher and runtime approval are required before rollout.
 
+### Deterministic post-merge closure
+
+`scripts/issue348_runtime_v2_release_closure.py` is the only reviewed closure generator. It is offline and accepts an explicit clean worktree root, exact canonical source commit/tree, expected canonical branch, required ancestor base, reserved runtime tag, committed descriptor, predecessor/retained identities, and the exact closure-manifest output path. It rejects a dirty or detached/wrong-branch source, ancestry or tree mismatch, an existing reserved tag, stale descriptor, unknown or duplicate source, malformed YAML, a source-manifest byte digest mismatch, and any output path or semantic field outside its compiled allowlist.
+
+The allowlist contains exactly 32 `targetRevision` fields across the reviewed Application manifests. Generation changes those fields from `main` to the exact **5 candidate / 27 retained / 0 previous / 0 other** graph while preserving all other bytes and semantics. It never edits scripts, tests, fixtures, workflow, specs, credentials, arbitrary YAML, or data. The only additional output is `issue348-runtime-v2-release-closure.json`, which records source commit/tree, reserved tag, changed paths/JSON pointers, expected graph, predecessor/retained identities, generator version, and descriptor/fixture SHA-256 digests. It intentionally has no future closure commit or tree.
+
+The generator must run only after the source PR has been squash-merged and its canonical `main` commit/tree have been independently read back. It must run in a fresh dedicated worktree; it must not be run in the source-candidate worktree. This source-candidate task exercises it only in temporary repositories and does not create the real closure.
+
+### Release-attestation boundary
+
+`issue348-release-attestation.schema.json` and the null-valued `issue348-release-attestation.template.json` define a separate post-publication record. `scripts/issue348_release_attestation.py` verifies a completed record against independently supplied expected identities. The completed record binds canonical source commit/tree, generated closure commit/tree and manifest digest, annotated tag object and peeled commit, exact CI run/head SHA, source-candidate and publication-closure review references, generator version, descriptor digest, and fixture digests. It rejects missing, malformed, inconsistent, moved, and stale values; the CI head and peeled tag must both equal the closure commit.
+
+The template is deliberately incomplete and must not pass verification. Unknown future commit, tree, tag-object, CI, and review identities remain null in this source candidate. Generation, tagging, attestation completion, publication-closure review, publication, post-publication preflight, convergence, and acceptance are distinct authority gates.
+
 ## Invocation contract
 
 The executable requires explicit `--kubeconfig`, `--context`, `--expected-server`, `--expected-kube-system-uid`, `--remote-url`, `--runtime-tag`, `--runtime-commit`, `--previous-tag`, `--previous-commit`, `--old-tag`, `--old-commit`, and a nonexistent external `--evidence` path. Kubeconfig permissions must be `0600` or stricter; evidence is exclusively created at mode `0600`.
