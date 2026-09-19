@@ -1,0 +1,17 @@
+{
+  "schema": "issue348-release-attestation/v1",
+  "source": {"commit": null, "tree": null},
+  "closure": {"commit": null, "tree": null, "manifest_sha256": null},
+  "tag": {
+    "name": "issue348-runtime-v6-20260919T100440Z",
+    "object": null,
+    "peeled_commit": null
+  },
+  "ci": {"run_url": null, "head_sha": null},
+  "reviews": {"source_candidate": null, "publication_closure": null},
+  "generator": {
+    "version": "issue348-runtime-v2-release-closure/1",
+    "descriptor_sha256": null,
+    "fixture_sha256": {}
+  }
+}

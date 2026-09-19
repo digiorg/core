@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/digiorg/core/specs/345-log-schema-isolation/issue348-release-attestation.schema.json",
+  "title": "Issue #348 immutable release attestation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "source", "closure", "tag", "ci", "reviews", "generator"],
+  "properties": {
+    "schema": {"const": "issue348-release-attestation/v1"},
+    "source": {"$ref": "#/$defs/gitIdentity"},
+    "closure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit", "tree", "manifest_sha256"],
+      "properties": {
+        "commit": {"$ref": "#/$defs/sha1"},
+        "tree": {"$ref": "#/$defs/sha1"},
+        "manifest_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "tag": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "object", "peeled_commit"],
+      "properties": {
+        "name": {"const": "issue348-runtime-v6-20260919T100440Z"},
+        "object": {"$ref": "#/$defs/sha1"},
+        "peeled_commit": {"$ref": "#/$defs/sha1"}
+      }
+    },
+    "ci": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_url", "head_sha"],
+      "properties": {
+        "run_url": {"pattern": "^https://github\\.com/digiorg/core/actions/runs/[1-9][0-9]*$"},
+        "head_sha": {"$ref": "#/$defs/sha1"}
+      }
+    },
+    "reviews": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_candidate", "publication_closure"],
+      "properties": {
+        "source_candidate": {"$ref": "#/$defs/review"},
+        "publication_closure": {"$ref": "#/$defs/review"}
+      }
+    },
+    "generator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "descriptor_sha256", "fixture_sha256"],
+      "properties": {
+        "version": {"const": "issue348-runtime-v2-release-closure/1"},
+        "descriptor_sha256": {"$ref": "#/$defs/sha256"},
+        "fixture_sha256": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {"$ref": "#/$defs/sha256"}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha1": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "review": {"type": "string", "pattern": "^https://github\\.com/digiorg/core/pull/[1-9][0-9]*$"},
+    "gitIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit", "tree"],
+      "properties": {
+        "commit": {"$ref": "#/$defs/sha1"},
+        "tree": {"$ref": "#/$defs/sha1"}
+      }
+    }
+  }
+}

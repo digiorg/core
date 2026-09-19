@@ -44,21 +44,32 @@
 - [x] Fake-OpenSearch clean/resume/failure/retry harness passes.
 - [x] Secret/transport/destructive-operation scans pass.
 - [x] `git diff --check` passes.
-- [ ] Exact-snapshot independent review passes.
+- [ ] A durable exact-snapshot independent-review verdict is recorded. PR #349's
+  GitHub record has no formal review decision; do not infer review from merge.
 
-## Delivery
+## Historical Delivery: PR #349
 
-- [ ] Commit only issue-scoped files.
-- [ ] Push branch and verify remote SHA.
-- [ ] Create PR linking `Closes #345`.
-- [ ] Read back PR title/body/files/head/base.
-- [ ] Verify CI head SHA and all required checks.
-- [ ] Stop before merge.
+- [x] Commit issue-scoped capability source at
+  `4fa6dbb76f906a3c5727c87adfa10a588221e447`.
+- [x] Push `fix/issue-345-log-schema-isolation` and deliver PR #349 against
+  `main`: `https://github.com/digiorg/core/pull/349`.
+- [x] Read back PR #349 title, base, branch, and exact head SHA.
+- [x] Verify both `pin-policy-and-tests` and `render-and-lint` succeeded on the
+  exact PR head (workflow runs `33329044341` and `33329042253`).
+- [x] PR #349 was merged by a human on 2026-08-30 as merge commit
+  `d8f93d64811f54a5f3ddb0a4f193b5bc08d3b894`; its tree equals the reviewed
+  capability commit tree `241dd75bf39b12a73444fea3ff7707070e9c155a`.
+- [ ] Record a formal immutable review reference if one exists outside the
+  GitHub review record. The GitHub API currently reports an empty review decision.
 
-## Post-Merge, Separate Authorization Boundary
+## Runtime Validation: Separate Authorization Boundary
 
-- [ ] Chris merges the reviewed PR.
-- [ ] Verify authoritative merge revision.
+- [x] Verify the historical PR #349 merge revision and capability tree.
+- [ ] Review and deliver the separate Issue #348 source candidate.
+- [ ] Generate and review the deterministic post-merge runtime closure.
+- [ ] Publish the reviewed annotated runtime tag and immutable attestation.
+- [ ] Run the separately authorized post-publication read-only preflight.
+- [ ] Obtain separate retained-convergence authorization.
 - [ ] Perform retained-cluster resume acceptance.
 - [ ] Preserve failed environment and return decisions if acceptance fails.
 - [ ] Perform clean-cluster acceptance only after resume passes.

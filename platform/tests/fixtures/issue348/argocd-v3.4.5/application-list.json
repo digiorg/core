@@ -1,0 +1,519 @@
+{
+  "apiVersion": "argoproj.io/v1alpha1",
+  "items": [
+    {
+      "apiVersion": "argoproj.io/v1alpha1",
+      "kind": "Application",
+      "metadata": {
+        "name": "kyverno"
+      },
+      "status": {
+        "health": {
+          "status": "Healthy"
+        },
+        "resources": [
+          {
+            "kind": "ConfigMap",
+            "name": "kyverno",
+            "namespace": "kyverno",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "kind": "ConfigMap",
+            "name": "kyverno-metrics",
+            "namespace": "kyverno",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "kind": "Service",
+            "name": "kyverno-background-controller-metrics",
+            "namespace": "kyverno",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "kind": "Service",
+            "name": "kyverno-cleanup-controller",
+            "namespace": "kyverno",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "kind": "Service",
+            "name": "kyverno-cleanup-controller-metrics",
+            "namespace": "kyverno",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "kind": "Service",
+            "name": "kyverno-reports-controller-metrics",
+            "namespace": "kyverno",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "kind": "Service",
+            "name": "kyverno-svc",
+            "namespace": "kyverno",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "kind": "Service",
+            "name": "kyverno-svc-metrics",
+            "namespace": "kyverno",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "kind": "ServiceAccount",
+            "name": "kyverno-admission-controller",
+            "namespace": "kyverno",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "kind": "ServiceAccount",
+            "name": "kyverno-background-controller",
+            "namespace": "kyverno",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "kind": "ServiceAccount",
+            "name": "kyverno-cleanup-controller",
+            "namespace": "kyverno",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "kind": "ServiceAccount",
+            "name": "kyverno-reports-controller",
+            "namespace": "kyverno",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "group": "apiextensions.k8s.io",
+            "kind": "CustomResourceDefinition",
+            "name": "cleanuppolicies.kyverno.io",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "group": "apiextensions.k8s.io",
+            "kind": "CustomResourceDefinition",
+            "name": "clustercleanuppolicies.kyverno.io",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "group": "apiextensions.k8s.io",
+            "kind": "CustomResourceDefinition",
+            "name": "clusterephemeralreports.reports.kyverno.io",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "group": "apiextensions.k8s.io",
+            "kind": "CustomResourceDefinition",
+            "name": "clusterpolicies.kyverno.io",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "group": "apiextensions.k8s.io",
+            "kind": "CustomResourceDefinition",
+            "name": "clusterpolicyreports.wgpolicyk8s.io",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "group": "apiextensions.k8s.io",
+            "kind": "CustomResourceDefinition",
+            "name": "deletingpolicies.policies.kyverno.io",
+            "status": "OutOfSync",
+            "version": "v1"
+          },
+          {
+            "group": "apiextensions.k8s.io",
+            "kind": "CustomResourceDefinition",
+            "name": "ephemeralreports.reports.kyverno.io",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "group": "apiextensions.k8s.io",
+            "kind": "CustomResourceDefinition",
+            "name": "generatingpolicies.policies.kyverno.io",
+            "status": "OutOfSync",
+            "version": "v1"
+          },
+          {
+            "group": "apiextensions.k8s.io",
+            "kind": "CustomResourceDefinition",
+            "name": "globalcontextentries.kyverno.io",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "group": "apiextensions.k8s.io",
+            "kind": "CustomResourceDefinition",
+            "name": "imagevalidatingpolicies.policies.kyverno.io",
+            "status": "OutOfSync",
+            "version": "v1"
+          },
+          {
+            "group": "apiextensions.k8s.io",
+            "kind": "CustomResourceDefinition",
+            "name": "mutatingpolicies.policies.kyverno.io",
+            "status": "OutOfSync",
+            "version": "v1"
+          },
+          {
+            "group": "apiextensions.k8s.io",
+            "kind": "CustomResourceDefinition",
+            "name": "namespaceddeletingpolicies.policies.kyverno.io",
+            "status": "OutOfSync",
+            "version": "v1"
+          },
+          {
+            "group": "apiextensions.k8s.io",
+            "kind": "CustomResourceDefinition",
+            "name": "namespacedgeneratingpolicies.policies.kyverno.io",
+            "status": "OutOfSync",
+            "version": "v1"
+          },
+          {
+            "group": "apiextensions.k8s.io",
+            "kind": "CustomResourceDefinition",
+            "name": "namespacedimagevalidatingpolicies.policies.kyverno.io",
+            "status": "OutOfSync",
+            "version": "v1"
+          },
+          {
+            "group": "apiextensions.k8s.io",
+            "kind": "CustomResourceDefinition",
+            "name": "namespacedmutatingpolicies.policies.kyverno.io",
+            "status": "OutOfSync",
+            "version": "v1"
+          },
+          {
+            "group": "apiextensions.k8s.io",
+            "kind": "CustomResourceDefinition",
+            "name": "namespacedvalidatingpolicies.policies.kyverno.io",
+            "status": "OutOfSync",
+            "version": "v1"
+          },
+          {
+            "group": "apiextensions.k8s.io",
+            "kind": "CustomResourceDefinition",
+            "name": "policies.kyverno.io",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "group": "apiextensions.k8s.io",
+            "kind": "CustomResourceDefinition",
+            "name": "policyexceptions.kyverno.io",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "group": "apiextensions.k8s.io",
+            "kind": "CustomResourceDefinition",
+            "name": "policyexceptions.policies.kyverno.io",
+            "status": "OutOfSync",
+            "version": "v1"
+          },
+          {
+            "group": "apiextensions.k8s.io",
+            "kind": "CustomResourceDefinition",
+            "name": "policyreports.wgpolicyk8s.io",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "group": "apiextensions.k8s.io",
+            "kind": "CustomResourceDefinition",
+            "name": "updaterequests.kyverno.io",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "group": "apiextensions.k8s.io",
+            "kind": "CustomResourceDefinition",
+            "name": "validatingpolicies.policies.kyverno.io",
+            "status": "OutOfSync",
+            "version": "v1"
+          },
+          {
+            "group": "apps",
+            "kind": "Deployment",
+            "name": "kyverno-admission-controller",
+            "namespace": "kyverno",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "group": "apps",
+            "kind": "Deployment",
+            "name": "kyverno-background-controller",
+            "namespace": "kyverno",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "group": "apps",
+            "kind": "Deployment",
+            "name": "kyverno-cleanup-controller",
+            "namespace": "kyverno",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "group": "apps",
+            "kind": "Deployment",
+            "name": "kyverno-reports-controller",
+            "namespace": "kyverno",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "group": "rbac.authorization.k8s.io",
+            "kind": "ClusterRole",
+            "name": "kyverno:admission-controller",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "group": "rbac.authorization.k8s.io",
+            "kind": "ClusterRole",
+            "name": "kyverno:admission-controller:core",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "group": "rbac.authorization.k8s.io",
+            "kind": "ClusterRole",
+            "name": "kyverno:background-controller",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "group": "rbac.authorization.k8s.io",
+            "kind": "ClusterRole",
+            "name": "kyverno:background-controller:core",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "group": "rbac.authorization.k8s.io",
+            "kind": "ClusterRole",
+            "name": "kyverno:cleanup-controller",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "group": "rbac.authorization.k8s.io",
+            "kind": "ClusterRole",
+            "name": "kyverno:cleanup-controller:core",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "group": "rbac.authorization.k8s.io",
+            "kind": "ClusterRole",
+            "name": "kyverno:rbac:admin:policies",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "group": "rbac.authorization.k8s.io",
+            "kind": "ClusterRole",
+            "name": "kyverno:rbac:admin:policyreports",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "group": "rbac.authorization.k8s.io",
+            "kind": "ClusterRole",
+            "name": "kyverno:rbac:admin:reports",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "group": "rbac.authorization.k8s.io",
+            "kind": "ClusterRole",
+            "name": "kyverno:rbac:admin:updaterequests",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "group": "rbac.authorization.k8s.io",
+            "kind": "ClusterRole",
+            "name": "kyverno:rbac:view:policies",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "group": "rbac.authorization.k8s.io",
+            "kind": "ClusterRole",
+            "name": "kyverno:rbac:view:policyreports",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "group": "rbac.authorization.k8s.io",
+            "kind": "ClusterRole",
+            "name": "kyverno:rbac:view:reports",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "group": "rbac.authorization.k8s.io",
+            "kind": "ClusterRole",
+            "name": "kyverno:rbac:view:updaterequests",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "group": "rbac.authorization.k8s.io",
+            "kind": "ClusterRole",
+            "name": "kyverno:reports-controller",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "group": "rbac.authorization.k8s.io",
+            "kind": "ClusterRole",
+            "name": "kyverno:reports-controller:core",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "group": "rbac.authorization.k8s.io",
+            "kind": "ClusterRoleBinding",
+            "name": "kyverno:admission-controller",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "group": "rbac.authorization.k8s.io",
+            "kind": "ClusterRoleBinding",
+            "name": "kyverno:admission-controller:view",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "group": "rbac.authorization.k8s.io",
+            "kind": "ClusterRoleBinding",
+            "name": "kyverno:background-controller",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "group": "rbac.authorization.k8s.io",
+            "kind": "ClusterRoleBinding",
+            "name": "kyverno:background-controller:view",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "group": "rbac.authorization.k8s.io",
+            "kind": "ClusterRoleBinding",
+            "name": "kyverno:cleanup-controller",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "group": "rbac.authorization.k8s.io",
+            "kind": "ClusterRoleBinding",
+            "name": "kyverno:reports-controller",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "group": "rbac.authorization.k8s.io",
+            "kind": "ClusterRoleBinding",
+            "name": "kyverno:reports-controller:view",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "group": "rbac.authorization.k8s.io",
+            "kind": "Role",
+            "name": "kyverno:admission-controller",
+            "namespace": "kyverno",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "group": "rbac.authorization.k8s.io",
+            "kind": "Role",
+            "name": "kyverno:background-controller",
+            "namespace": "kyverno",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "group": "rbac.authorization.k8s.io",
+            "kind": "Role",
+            "name": "kyverno:cleanup-controller",
+            "namespace": "kyverno",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "group": "rbac.authorization.k8s.io",
+            "kind": "Role",
+            "name": "kyverno:reports-controller",
+            "namespace": "kyverno",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "group": "rbac.authorization.k8s.io",
+            "kind": "RoleBinding",
+            "name": "kyverno:admission-controller",
+            "namespace": "kyverno",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "group": "rbac.authorization.k8s.io",
+            "kind": "RoleBinding",
+            "name": "kyverno:background-controller",
+            "namespace": "kyverno",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "group": "rbac.authorization.k8s.io",
+            "kind": "RoleBinding",
+            "name": "kyverno:cleanup-controller",
+            "namespace": "kyverno",
+            "status": "Synced",
+            "version": "v1"
+          },
+          {
+            "group": "rbac.authorization.k8s.io",
+            "kind": "RoleBinding",
+            "name": "kyverno:reports-controller",
+            "namespace": "kyverno",
+            "status": "Synced",
+            "version": "v1"
+          }
+        ],
+        "sync": {
+          "status": "OutOfSync"
+        }
+      }
+    }
+  ],
+  "kind": "ApplicationList",
+  "metadata": {}
+}
