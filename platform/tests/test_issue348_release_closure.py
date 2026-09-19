@@ -30,6 +30,9 @@ RETAINED_TAG = "issue301-runtime-v16-20260817T130820Z"
 RETAINED_COMMIT = "8e6b8908f99ebf76db47c15613eff523644c23f6"
 DESCRIPTOR = Path("specs/345-log-schema-isolation/issue348-runtime-v2-contract.json")
 OUTPUT = Path("issue348-runtime-v2-release-closure.json")
+CANONICAL_SOURCE_COMMIT = "743a1b08435f8a6e613ed8e59ba92fb062452d9f"
+CANONICAL_SOURCE_TREE = "16ec64176d1bdaeb4b450269c9c1a677dede744d"
+SOURCE_BUNDLE = Path("platform/tests/fixtures/issue348/release-closure-source.json")
 FIXTURES = (
     Path("platform/tests/fixtures/issue348/argocd-v3.4.5/application-list.json"),
     Path("platform/tests/fixtures/issue348/argocd-v3.4.5/manifest.json"),
@@ -60,34 +63,206 @@ def commit_all(repo, message):
         raise AssertionError(result.stderr)
 
 
+def _source_bundle(provenance_root=ROOT):
+    value = json.loads((ROOT / SOURCE_BUNDLE).read_text(encoding="utf-8"))
+    if set(value) != {"schema", "source", "files"}:
+        raise AssertionError("source fixture bundle shape changed")
+    if value["schema"] != "issue348-release-closure-source-fixture/v1":
+        raise AssertionError("source fixture bundle schema changed")
+    if value["source"] != {
+            "commit": CANONICAL_SOURCE_COMMIT, "tree": CANONICAL_SOURCE_TREE}:
+        raise AssertionError("source fixture provenance changed")
+    if not all(closure.SHA1.fullmatch(identity) for identity in value["source"].values()):
+        raise AssertionError("source fixture provenance is malformed")
+    if set(value["files"]) != set(closure.APPLICATION_PATHS):
+        raise AssertionError("source fixture inventory changed")
+    if set(value["files"]) != set(closure.SOURCE_DIGESTS):
+        raise AssertionError("source digest inventory changed")
+
+    source_exists = not run_git(
+        provenance_root, "cat-file", "-e",
+        f"{CANONICAL_SOURCE_COMMIT}^{{commit}}", check=False,
+    ).returncode
+    if source_exists:
+        actual_tree = run_git(
+            provenance_root, "rev-parse", f"{CANONICAL_SOURCE_COMMIT}^{{tree}}",
+        ).stdout.strip()
+        if actual_tree != CANONICAL_SOURCE_TREE:
+            raise AssertionError("canonical source tree changed")
+    elif run_git(
+            provenance_root, "rev-parse", "--is-shallow-repository",
+    ).stdout.strip() != "true":
+        raise AssertionError("canonical source commit is missing from full checkout")
+
+    files = {}
+    for relative in closure.APPLICATION_PATHS:
+        entry = value["files"][relative]
+        if set(entry) != {"content", "sha256"}:
+            raise AssertionError(f"source fixture entry shape changed: {relative}")
+        data = entry["content"].encode("utf-8")
+        digest = hashlib.sha256(data).hexdigest()
+        if digest != entry["sha256"] or digest != closure.SOURCE_DIGESTS[relative]:
+            raise AssertionError(f"source fixture digest changed: {relative}")
+        if source_exists:
+            result = subprocess.run(
+                ["git", "show", f"{CANONICAL_SOURCE_COMMIT}:{relative}"],
+                cwd=provenance_root, check=False,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            if result.returncode or result.stdout != data:
+                raise AssertionError(
+                    f"source fixture differs from canonical commit: {relative}",
+                )
+        files[relative] = data
+    return files
+
+
+def _generated_source(bundle):
+    generated = dict(bundle)
+    rules_by_path = {}
+    for path, pointer in closure.ALLOWED_FIELDS:
+        rules_by_path.setdefault(path, []).append(pointer)
+    for relative, pointers in rules_by_path.items():
+        text = bundle[relative].decode("utf-8")
+        replacements = []
+        for pointer in pointers:
+            node = closure._scalar_node(text, pointer)
+            if text[node.start_mark.index:node.end_mark.index] != "main":
+                raise AssertionError(f"source fixture is not canonical: {relative} {pointer}")
+            replacements.append((
+                node.start_mark.index,
+                node.end_mark.index,
+                closure.expected_target(relative, pointer),
+            ))
+        for start, end, target in sorted(replacements, reverse=True):
+            text = text[:start] + target + text[end:]
+        generated[relative] = text.encode("utf-8")
+    return generated
+
+
+def _expected_changes():
+    return sorted(({
+        "path": path,
+        "field": pointer,
+        "before": "main",
+        "after": closure.expected_target(path, pointer),
+    } for path, pointer in closure.ALLOWED_FIELDS), key=lambda item: (
+        item["path"], item["field"],
+    ))
+
+
+def _validate_manifest_source(root, source):
+    if (
+            not isinstance(source, dict)
+            or set(source) != {"commit", "tree"}
+            or not all(
+                isinstance(identity, str) and closure.SHA1.fullmatch(identity)
+                for identity in source.values()
+            )):
+        raise AssertionError("generated closure source identity is malformed")
+
+    source_commit = source["commit"]
+    source_tree = source["tree"]
+    source_exists = not run_git(
+        root, "cat-file", "-e", f"{source_commit}^{{commit}}", check=False,
+    ).returncode
+    if source_exists:
+        actual_tree = run_git(
+            root, "rev-parse", f"{source_commit}^{{tree}}",
+        ).stdout.strip()
+        if actual_tree != source_tree:
+            raise AssertionError("generated closure source tree changed")
+    elif run_git(
+            root, "rev-parse", "--is-shallow-repository",
+    ).stdout.strip() != "true":
+        raise AssertionError("generated closure source commit is missing")
+
+    head = run_git(root, "rev-parse", "HEAD").stdout.strip()
+    if head != source_commit:
+        parents = [
+            line.removeprefix("parent ")
+            for line in run_git(root, "cat-file", "-p", head).stdout.splitlines()
+            if line.startswith("parent ")
+        ]
+        if parents != [source_commit]:
+            raise AssertionError("generated closure source is not the direct parent")
+
+
+def _validate_checkout_source(root, bundle):
+    actual = {relative: (root / relative).read_bytes()
+              for relative in closure.APPLICATION_PATHS}
+    if actual == bundle:
+        return
+    if actual != _generated_source(bundle):
+        raise AssertionError("checkout is neither canonical source nor exact generated closure")
+
+    manifest = json.loads((root / OUTPUT).read_text(encoding="utf-8"))
+    if set(manifest) != {
+            "schema", "generator_version", "source", "reserved_runtime_tag",
+            "predecessor", "retained", "expected_graph", "changes",
+            "descriptor_sha256", "fixture_digests"}:
+        raise AssertionError("generated closure inventory shape changed")
+    if manifest["schema"] != "issue348-runtime-v2-release-closure/v1":
+        raise AssertionError("generated closure schema changed")
+    if manifest["generator_version"] != closure.GENERATOR_VERSION:
+        raise AssertionError("generated closure version changed")
+    _validate_manifest_source(root, manifest["source"])
+    if manifest["reserved_runtime_tag"] != RUNTIME_TAG:
+        raise AssertionError("generated closure runtime tag changed")
+    if manifest["predecessor"] != {
+            "tag": PREVIOUS_TAG, "commit": PREVIOUS_COMMIT}:
+        raise AssertionError("generated closure predecessor changed")
+    if manifest["retained"] != {
+            "tag": RETAINED_TAG, "commit": RETAINED_COMMIT}:
+        raise AssertionError("generated closure retained identity changed")
+    if manifest["expected_graph"] != {
+            "candidate": 5, "retained": 27, "previous": 0, "other": 0}:
+        raise AssertionError("generated closure graph changed")
+    if manifest["changes"] != _expected_changes():
+        raise AssertionError("generated closure changes changed")
+    descriptor_digest = hashlib.sha256((root / DESCRIPTOR).read_bytes()).hexdigest()
+    if manifest["descriptor_sha256"] != descriptor_digest:
+        raise AssertionError("generated closure descriptor digest changed")
+    fixture_digests = {
+        path.as_posix(): hashlib.sha256((root / path).read_bytes()).hexdigest()
+        for path in FIXTURES
+    }
+    if manifest["fixture_digests"] != fixture_digests:
+        raise AssertionError("generated closure live-fixture digests changed")
+
+
+def build_seed(destination, checkout_root, provenance_root=ROOT):
+    bundle = _source_bundle(provenance_root)
+    _validate_checkout_source(checkout_root, bundle)
+    destination.mkdir()
+    run_git(destination, "init", "-b", "main")
+    run_git(destination, "config", "user.email", "issue348@example.invalid")
+    run_git(destination, "config", "user.name", "Issue 348 Fixture")
+    (destination / "BASE").write_text("canonical base\n", encoding="utf-8")
+    commit_all(destination, "base")
+    base_commit = run_git(destination, "rev-parse", "HEAD").stdout.strip()
+
+    for relative, data in bundle.items():
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+    for relative in (DESCRIPTOR, *FIXTURES):
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(checkout_root / relative, target)
+    protected = destination / "scripts/protected.py"
+    protected.parent.mkdir(parents=True, exist_ok=True)
+    protected.write_text("PROTECTED = True\n", encoding="utf-8")
+    commit_all(destination, "canonical merged source")
+    return base_commit
+
+
 class ClosureHarness(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.seed_temp = tempfile.TemporaryDirectory()
         cls.seed = Path(cls.seed_temp.name) / "seed"
-        cls.seed.mkdir()
-        run_git(cls.seed, "init", "-b", "main")
-        run_git(cls.seed, "config", "user.email", "issue348@example.invalid")
-        run_git(cls.seed, "config", "user.name", "Issue 348 Fixture")
-        (cls.seed / "BASE").write_text("canonical base\n", encoding="utf-8")
-        commit_all(cls.seed, "base")
-        cls.base_commit = run_git(cls.seed, "rev-parse", "HEAD").stdout.strip()
-
-        source_paths = [
-            Path("platform/base/argocd/applications/root-app.yaml"),
-            *sorted(Path("apps/platform").glob("*.yaml")),
-            DESCRIPTOR,
-            *FIXTURES,
-        ]
-        for relative in source_paths:
-            source = ROOT / relative
-            destination = cls.seed / relative
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(source, destination)
-        protected = cls.seed / "scripts/protected.py"
-        protected.parent.mkdir(parents=True, exist_ok=True)
-        protected.write_text("PROTECTED = True\n", encoding="utf-8")
-        commit_all(cls.seed, "canonical merged source")
+        cls.base_commit = build_seed(cls.seed, ROOT)
 
     @classmethod
     def tearDownClass(cls):
@@ -131,6 +306,125 @@ class ClosureHarness(unittest.TestCase):
 
 
 class DeterministicClosureTest(ClosureHarness):
+    def test_shallow_source_checkout_does_not_require_historical_source_object(self):
+        shallow = Path(self.temp.name) / "shallow-source"
+        run_git(
+            self.temp.name, "clone", "--depth", "1", ROOT.resolve().as_uri(),
+            shallow.as_posix(),
+        )
+
+        self.assertEqual(
+            run_git(shallow, "rev-parse", "--is-shallow-repository").stdout.strip(),
+            "true",
+        )
+        self.assertNotEqual(
+            run_git(
+                shallow, "cat-file", "-e",
+                f"{CANONICAL_SOURCE_COMMIT}^{{commit}}", check=False,
+            ).returncode,
+            0,
+        )
+        rebuilt = Path(self.temp.name) / "rebuilt-shallow-source"
+        build_seed(rebuilt, shallow, provenance_root=shallow)
+
+    def test_generated_checkout_can_build_canonical_harness_seed(self):
+        closure.generate(self.config())
+        rebuilt = Path(self.temp.name) / "rebuilt"
+        rebuilt_base = build_seed(rebuilt, self.repo)
+        source_commit = run_git(rebuilt, "rev-parse", "HEAD").stdout.strip()
+        source_tree = run_git(rebuilt, "rev-parse", "HEAD^{tree}").stdout.strip()
+        manifest = closure.generate(closure.ClosureConfig(
+            worktree=rebuilt,
+            source_commit=source_commit,
+            source_tree=source_tree,
+            expected_branch="main",
+            required_base=rebuilt_base,
+            runtime_tag=RUNTIME_TAG,
+            descriptor=rebuilt / DESCRIPTOR,
+            previous_tag=PREVIOUS_TAG,
+            previous_commit=PREVIOUS_COMMIT,
+            retained_tag=RETAINED_TAG,
+            retained_commit=RETAINED_COMMIT,
+            output=rebuilt / OUTPUT,
+        ))
+
+        self.assertEqual(len(manifest["changes"]), 32)
+        self.assertEqual(
+            {(item["path"], item["field"]) for item in manifest["changes"]},
+            set(closure.ALLOWED_FIELDS),
+        )
+
+    def test_committed_generated_checkout_retains_preclosure_source_identity(self):
+        manifest = closure.generate(self.config())
+        commit_all(self.repo, "generated release closure")
+
+        self.assertNotEqual(
+            run_git(self.repo, "rev-parse", "HEAD").stdout.strip(),
+            manifest["source"]["commit"],
+        )
+        rebuilt = Path(self.temp.name) / "rebuilt-committed"
+        build_seed(rebuilt, self.repo)
+
+    def test_shallow_committed_closure_does_not_require_source_parent_object(self):
+        manifest = closure.generate(self.config())
+        commit_all(self.repo, "generated release closure")
+        shallow = Path(self.temp.name) / "shallow-committed"
+        run_git(
+            self.temp.name, "clone", "--depth", "1", self.repo.resolve().as_uri(),
+            shallow.as_posix(),
+        )
+
+        self.assertEqual(
+            run_git(shallow, "rev-parse", "--is-shallow-repository").stdout.strip(),
+            "true",
+        )
+        self.assertNotEqual(
+            run_git(
+                shallow, "cat-file", "-e",
+                f"{manifest['source']['commit']}^{{commit}}", check=False,
+            ).returncode,
+            0,
+        )
+        rebuilt = Path(self.temp.name) / "rebuilt-shallow-committed"
+        build_seed(rebuilt, shallow)
+
+    def test_generated_manifest_source_identity_is_strictly_validated(self):
+        closure.generate(self.config())
+        output = self.repo / OUTPUT
+        original = json.loads(output.read_text(encoding="utf-8"))
+        cases = (
+            ({"commit": "not-a-sha", "tree": original["source"]["tree"]},
+             "source identity is malformed"),
+            ({"commit": original["source"]["commit"], "tree": "f" * 40},
+             "source tree changed"),
+            ({"commit": "f" * 40, "tree": "f" * 40},
+             "source commit is missing"),
+        )
+        bundle = _source_bundle()
+        for source, message in cases:
+            with self.subTest(message=message):
+                manifest = deepcopy(original)
+                manifest["source"] = source
+                output.write_text(json.dumps(manifest), encoding="utf-8")
+                with self.assertRaisesRegex(AssertionError, message):
+                    _validate_checkout_source(self.repo, bundle)
+
+    def test_committed_closure_source_must_be_the_direct_parent(self):
+        closure.generate(self.config())
+        commit_all(self.repo, "generated release closure")
+        run_git(self.repo, "commit", "--allow-empty", "-m", "post-closure commit")
+
+        with self.assertRaisesRegex(AssertionError, "direct parent"):
+            _validate_checkout_source(self.repo, _source_bundle())
+
+    def test_missing_canonical_source_object_requires_shallow_checkout(self):
+        empty = Path(self.temp.name) / "empty-full-checkout"
+        empty.mkdir()
+        run_git(empty, "init", "-b", "main")
+
+        with self.assertRaisesRegex(AssertionError, "missing from full checkout"):
+            _source_bundle(empty)
+
     def test_output_is_byte_identical_and_exactly_allowlisted(self):
         second = Path(self.temp.name) / "second"
         shutil.copytree(self.seed, second)
