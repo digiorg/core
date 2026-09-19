@@ -63,7 +63,7 @@ def commit_all(repo, message):
         raise AssertionError(result.stderr)
 
 
-def _source_bundle():
+def _source_bundle(provenance_root=ROOT):
     value = json.loads((ROOT / SOURCE_BUNDLE).read_text(encoding="utf-8"))
     if set(value) != {"schema", "source", "files"}:
         raise AssertionError("source fixture bundle shape changed")
@@ -72,16 +72,27 @@ def _source_bundle():
     if value["source"] != {
             "commit": CANONICAL_SOURCE_COMMIT, "tree": CANONICAL_SOURCE_TREE}:
         raise AssertionError("source fixture provenance changed")
+    if not all(closure.SHA1.fullmatch(identity) for identity in value["source"].values()):
+        raise AssertionError("source fixture provenance is malformed")
     if set(value["files"]) != set(closure.APPLICATION_PATHS):
         raise AssertionError("source fixture inventory changed")
     if set(value["files"]) != set(closure.SOURCE_DIGESTS):
         raise AssertionError("source digest inventory changed")
 
-    actual_tree = run_git(
-        ROOT, "rev-parse", f"{CANONICAL_SOURCE_COMMIT}^{{tree}}",
-    ).stdout.strip()
-    if actual_tree != CANONICAL_SOURCE_TREE:
-        raise AssertionError("canonical source tree changed")
+    source_exists = not run_git(
+        provenance_root, "cat-file", "-e",
+        f"{CANONICAL_SOURCE_COMMIT}^{{commit}}", check=False,
+    ).returncode
+    if source_exists:
+        actual_tree = run_git(
+            provenance_root, "rev-parse", f"{CANONICAL_SOURCE_COMMIT}^{{tree}}",
+        ).stdout.strip()
+        if actual_tree != CANONICAL_SOURCE_TREE:
+            raise AssertionError("canonical source tree changed")
+    elif run_git(
+            provenance_root, "rev-parse", "--is-shallow-repository",
+    ).stdout.strip() != "true":
+        raise AssertionError("canonical source commit is missing from full checkout")
 
     files = {}
     for relative in closure.APPLICATION_PATHS:
@@ -92,12 +103,16 @@ def _source_bundle():
         digest = hashlib.sha256(data).hexdigest()
         if digest != entry["sha256"] or digest != closure.SOURCE_DIGESTS[relative]:
             raise AssertionError(f"source fixture digest changed: {relative}")
-        result = subprocess.run(
-            ["git", "show", f"{CANONICAL_SOURCE_COMMIT}:{relative}"],
-            cwd=ROOT, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        )
-        if result.returncode or result.stdout != data:
-            raise AssertionError(f"source fixture differs from canonical commit: {relative}")
+        if source_exists:
+            result = subprocess.run(
+                ["git", "show", f"{CANONICAL_SOURCE_COMMIT}:{relative}"],
+                cwd=provenance_root, check=False,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            if result.returncode or result.stdout != data:
+                raise AssertionError(
+                    f"source fixture differs from canonical commit: {relative}",
+                )
         files[relative] = data
     return files
 
@@ -136,6 +151,43 @@ def _expected_changes():
     ))
 
 
+def _validate_manifest_source(root, source):
+    if (
+            not isinstance(source, dict)
+            or set(source) != {"commit", "tree"}
+            or not all(
+                isinstance(identity, str) and closure.SHA1.fullmatch(identity)
+                for identity in source.values()
+            )):
+        raise AssertionError("generated closure source identity is malformed")
+
+    source_commit = source["commit"]
+    source_tree = source["tree"]
+    source_exists = not run_git(
+        root, "cat-file", "-e", f"{source_commit}^{{commit}}", check=False,
+    ).returncode
+    if source_exists:
+        actual_tree = run_git(
+            root, "rev-parse", f"{source_commit}^{{tree}}",
+        ).stdout.strip()
+        if actual_tree != source_tree:
+            raise AssertionError("generated closure source tree changed")
+    elif run_git(
+            root, "rev-parse", "--is-shallow-repository",
+    ).stdout.strip() != "true":
+        raise AssertionError("generated closure source commit is missing")
+
+    head = run_git(root, "rev-parse", "HEAD").stdout.strip()
+    if head != source_commit:
+        parents = [
+            line.removeprefix("parent ")
+            for line in run_git(root, "cat-file", "-p", head).stdout.splitlines()
+            if line.startswith("parent ")
+        ]
+        if parents != [source_commit]:
+            raise AssertionError("generated closure source is not the direct parent")
+
+
 def _validate_checkout_source(root, bundle):
     actual = {relative: (root / relative).read_bytes()
               for relative in closure.APPLICATION_PATHS}
@@ -154,10 +206,7 @@ def _validate_checkout_source(root, bundle):
         raise AssertionError("generated closure schema changed")
     if manifest["generator_version"] != closure.GENERATOR_VERSION:
         raise AssertionError("generated closure version changed")
-    if manifest["source"] != {
-            "commit": run_git(root, "rev-parse", "HEAD").stdout.strip(),
-            "tree": run_git(root, "rev-parse", "HEAD^{tree}").stdout.strip()}:
-        raise AssertionError("generated closure source identity changed")
+    _validate_manifest_source(root, manifest["source"])
     if manifest["reserved_runtime_tag"] != RUNTIME_TAG:
         raise AssertionError("generated closure runtime tag changed")
     if manifest["predecessor"] != {
@@ -182,8 +231,8 @@ def _validate_checkout_source(root, bundle):
         raise AssertionError("generated closure live-fixture digests changed")
 
 
-def build_seed(destination, checkout_root):
-    bundle = _source_bundle()
+def build_seed(destination, checkout_root, provenance_root=ROOT):
+    bundle = _source_bundle(provenance_root)
     _validate_checkout_source(checkout_root, bundle)
     destination.mkdir()
     run_git(destination, "init", "-b", "main")
@@ -257,6 +306,27 @@ class ClosureHarness(unittest.TestCase):
 
 
 class DeterministicClosureTest(ClosureHarness):
+    def test_shallow_source_checkout_does_not_require_historical_source_object(self):
+        shallow = Path(self.temp.name) / "shallow-source"
+        run_git(
+            self.temp.name, "clone", "--depth", "1", ROOT.resolve().as_uri(),
+            shallow.as_posix(),
+        )
+
+        self.assertEqual(
+            run_git(shallow, "rev-parse", "--is-shallow-repository").stdout.strip(),
+            "true",
+        )
+        self.assertNotEqual(
+            run_git(
+                shallow, "cat-file", "-e",
+                f"{CANONICAL_SOURCE_COMMIT}^{{commit}}", check=False,
+            ).returncode,
+            0,
+        )
+        rebuilt = Path(self.temp.name) / "rebuilt-shallow-source"
+        build_seed(rebuilt, shallow, provenance_root=shallow)
+
     def test_generated_checkout_can_build_canonical_harness_seed(self):
         closure.generate(self.config())
         rebuilt = Path(self.temp.name) / "rebuilt"
@@ -283,6 +353,77 @@ class DeterministicClosureTest(ClosureHarness):
             {(item["path"], item["field"]) for item in manifest["changes"]},
             set(closure.ALLOWED_FIELDS),
         )
+
+    def test_committed_generated_checkout_retains_preclosure_source_identity(self):
+        manifest = closure.generate(self.config())
+        commit_all(self.repo, "generated release closure")
+
+        self.assertNotEqual(
+            run_git(self.repo, "rev-parse", "HEAD").stdout.strip(),
+            manifest["source"]["commit"],
+        )
+        rebuilt = Path(self.temp.name) / "rebuilt-committed"
+        build_seed(rebuilt, self.repo)
+
+    def test_shallow_committed_closure_does_not_require_source_parent_object(self):
+        manifest = closure.generate(self.config())
+        commit_all(self.repo, "generated release closure")
+        shallow = Path(self.temp.name) / "shallow-committed"
+        run_git(
+            self.temp.name, "clone", "--depth", "1", self.repo.resolve().as_uri(),
+            shallow.as_posix(),
+        )
+
+        self.assertEqual(
+            run_git(shallow, "rev-parse", "--is-shallow-repository").stdout.strip(),
+            "true",
+        )
+        self.assertNotEqual(
+            run_git(
+                shallow, "cat-file", "-e",
+                f"{manifest['source']['commit']}^{{commit}}", check=False,
+            ).returncode,
+            0,
+        )
+        rebuilt = Path(self.temp.name) / "rebuilt-shallow-committed"
+        build_seed(rebuilt, shallow)
+
+    def test_generated_manifest_source_identity_is_strictly_validated(self):
+        closure.generate(self.config())
+        output = self.repo / OUTPUT
+        original = json.loads(output.read_text(encoding="utf-8"))
+        cases = (
+            ({"commit": "not-a-sha", "tree": original["source"]["tree"]},
+             "source identity is malformed"),
+            ({"commit": original["source"]["commit"], "tree": "f" * 40},
+             "source tree changed"),
+            ({"commit": "f" * 40, "tree": "f" * 40},
+             "source commit is missing"),
+        )
+        bundle = _source_bundle()
+        for source, message in cases:
+            with self.subTest(message=message):
+                manifest = deepcopy(original)
+                manifest["source"] = source
+                output.write_text(json.dumps(manifest), encoding="utf-8")
+                with self.assertRaisesRegex(AssertionError, message):
+                    _validate_checkout_source(self.repo, bundle)
+
+    def test_committed_closure_source_must_be_the_direct_parent(self):
+        closure.generate(self.config())
+        commit_all(self.repo, "generated release closure")
+        run_git(self.repo, "commit", "--allow-empty", "-m", "post-closure commit")
+
+        with self.assertRaisesRegex(AssertionError, "direct parent"):
+            _validate_checkout_source(self.repo, _source_bundle())
+
+    def test_missing_canonical_source_object_requires_shallow_checkout(self):
+        empty = Path(self.temp.name) / "empty-full-checkout"
+        empty.mkdir()
+        run_git(empty, "init", "-b", "main")
+
+        with self.assertRaisesRegex(AssertionError, "missing from full checkout"):
+            _source_bundle(empty)
 
     def test_output_is_byte_identical_and_exactly_allowlisted(self):
         second = Path(self.temp.name) / "second"
