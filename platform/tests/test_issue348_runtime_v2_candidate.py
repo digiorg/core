@@ -7,6 +7,8 @@ import unittest
 
 import yaml
 
+from test_issue348_release_closure import validate_checkout_contract
+
 
 ROOT = Path(__file__).resolve().parents[2]
 CORE_REPO = "https://github.com/digiorg/core.git"
@@ -42,24 +44,8 @@ class RuntimeSourceGraphTest(unittest.TestCase):
             cls.applications[application["metadata"]["name"]] = application
 
     def test_normal_source_is_main_and_generated_candidate_is_not_imported(self):
-        main_sources = set()
-        other_sources = []
-        for name, application in self.applications.items():
-            for source in source_list(application):
-                if source.get("repoURL") != CORE_REPO:
-                    continue
-                identity = (name, source.get("path"), source.get("ref"))
-                target = source.get("targetRevision")
-                if target == "main":
-                    main_sources.add(identity)
-                else:
-                    other_sources.append((identity, target))
-
-        self.assertEqual(len(main_sources), 32)
-        self.assertEqual(other_sources, [])
+        validate_checkout_contract(ROOT)
         self.assertEqual(QUALIFICATION_DESCRIPTOR, "issue348-runtime-v6-20260919T100440Z")
-        self.assertFalse(any(target == QUALIFICATION_DESCRIPTOR
-                             for _, target in other_sources))
 
     def test_external_consumer_pins_are_unchanged(self):
         app_config = source_list(self.applications["app-config"])[0]

@@ -178,14 +178,45 @@ def _validate_manifest_source(root, source):
         raise AssertionError("generated closure source commit is missing")
 
     head = run_git(root, "rev-parse", "HEAD").stdout.strip()
-    if head != source_commit:
-        parents = [
-            line.removeprefix("parent ")
-            for line in run_git(root, "cat-file", "-p", head).stdout.splitlines()
-            if line.startswith("parent ")
-        ]
-        if parents != [source_commit]:
-            raise AssertionError("generated closure source is not the direct parent")
+    if head == source_commit:
+        return
+
+    parents = [
+        line.removeprefix("parent ")
+        for line in run_git(root, "cat-file", "-p", head).stdout.splitlines()
+        if line.startswith("parent ")
+    ]
+    if parents == [source_commit]:
+        return
+    if len(parents) != 2 or parents[0] != source_commit:
+        raise AssertionError("generated closure source is not the direct parent")
+
+    closure_parent = parents[1]
+    if run_git(
+            root, "cat-file", "-e", f"{closure_parent}^{{commit}}", check=False,
+    ).returncode:
+        if run_git(
+                root, "rev-parse", "--is-shallow-repository",
+        ).stdout.strip() == "true":
+            return
+        raise AssertionError("generated closure parent commit is missing")
+    closure_parents = [
+        line.removeprefix("parent ")
+        for line in run_git(
+            root, "cat-file", "-p", closure_parent,
+        ).stdout.splitlines()
+        if line.startswith("parent ")
+    ]
+    if closure_parents != [source_commit]:
+        raise AssertionError("generated closure parent has wrong source identity")
+
+    head_tree = run_git(root, "rev-parse", f"{head}^{{tree}}").stdout.strip()
+    parent_trees = [
+        run_git(root, "rev-parse", f"{parent}^{{tree}}").stdout.strip()
+        for parent in parents
+    ]
+    if parent_trees != [source_tree, head_tree]:
+        raise AssertionError("generated closure merge tree identity changed")
 
 
 def _validate_checkout_source(root, bundle):
@@ -229,6 +260,11 @@ def _validate_checkout_source(root, bundle):
     }
     if manifest["fixture_digests"] != fixture_digests:
         raise AssertionError("generated closure live-fixture digests changed")
+
+
+def validate_checkout_contract(root=ROOT):
+    """Validate the exact canonical source or complete generated closure checkout."""
+    _validate_checkout_source(root, _source_bundle(root))
 
 
 def build_seed(destination, checkout_root, provenance_root=ROOT):
@@ -304,8 +340,107 @@ class ClosureHarness(unittest.TestCase):
     def recommit(self, message="sabotage"):
         commit_all(self.repo, message)
 
+    def synthetic_merge(self, tree, *parents):
+        result = subprocess.run(
+            ["git", "commit-tree", tree, *sum((["-p", parent] for parent in parents), [])],
+            cwd=self.repo,
+            check=False,
+            text=True,
+            input="synthetic pull request merge\n",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env={
+                **os.environ,
+                "GIT_AUTHOR_NAME": "Issue 348 CI",
+                "GIT_AUTHOR_EMAIL": "issue348@example.invalid",
+                "GIT_COMMITTER_NAME": "Issue 348 CI",
+                "GIT_COMMITTER_EMAIL": "issue348@example.invalid",
+                "GIT_AUTHOR_DATE": "2026-09-19T14:30:00Z",
+                "GIT_COMMITTER_DATE": "2026-09-19T14:30:00Z",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout.strip()
+
 
 class DeterministicClosureTest(ClosureHarness):
+    def test_generated_checkout_accepts_strict_synthetic_pull_request_merge(self):
+        manifest = closure.generate(self.config())
+        commit_all(self.repo, "generated release closure")
+        closure_commit = run_git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        closure_tree = run_git(self.repo, "rev-parse", "HEAD^{tree}").stdout.strip()
+        merge = self.synthetic_merge(
+            closure_tree, manifest["source"]["commit"], closure_commit,
+        )
+        run_git(self.repo, "reset", "--hard", merge)
+
+        _validate_checkout_source(self.repo, _source_bundle())
+
+    def test_shallow_synthetic_pull_request_merge_uses_exact_closure_inventory(self):
+        manifest = closure.generate(self.config())
+        commit_all(self.repo, "generated release closure")
+        closure_commit = run_git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        closure_tree = run_git(self.repo, "rev-parse", "HEAD^{tree}").stdout.strip()
+        merge = self.synthetic_merge(
+            closure_tree, manifest["source"]["commit"], closure_commit,
+        )
+        run_git(self.repo, "update-ref", "refs/heads/pr-merge", merge)
+        shallow = Path(self.temp.name) / "shallow-pr-merge"
+        run_git(
+            self.temp.name, "clone", "--depth", "1", "--branch", "pr-merge",
+            self.repo.resolve().as_uri(), shallow.as_posix(),
+        )
+
+        self.assertEqual(
+            run_git(shallow, "rev-parse", "--is-shallow-repository").stdout.strip(),
+            "true",
+        )
+        self.assertNotEqual(
+            run_git(
+                shallow, "cat-file", "-e", f"{closure_commit}^{{commit}}",
+                check=False,
+            ).returncode,
+            0,
+        )
+        _validate_checkout_source(shallow, _source_bundle())
+
+    def test_synthetic_pull_request_merge_rejects_ambiguous_or_changed_identity(self):
+        manifest = closure.generate(self.config())
+        commit_all(self.repo, "generated release closure")
+        closure_commit = run_git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        closure_tree = run_git(self.repo, "rev-parse", "HEAD^{tree}").stdout.strip()
+        source_commit = manifest["source"]["commit"]
+        (self.repo / "UNRELATED").write_text("not closure content\n", encoding="utf-8")
+        run_git(self.repo, "add", "UNRELATED")
+        changed_tree = run_git(self.repo, "write-tree").stdout.strip()
+        run_git(self.repo, "reset", "--hard", closure_commit)
+
+        cases = (
+            (
+                self.synthetic_merge(closure_tree, closure_commit, source_commit),
+                "direct parent",
+            ),
+            (
+                self.synthetic_merge(
+                    closure_tree, source_commit, closure_commit, self.base_commit,
+                ),
+                "direct parent",
+            ),
+            (
+                self.synthetic_merge(closure_tree, source_commit, self.base_commit),
+                "wrong source identity",
+            ),
+            (
+                self.synthetic_merge(changed_tree, source_commit, closure_commit),
+                "merge tree identity",
+            ),
+        )
+        for merge, message in cases:
+            with self.subTest(message=message):
+                run_git(self.repo, "reset", "--hard", merge)
+                with self.assertRaisesRegex(AssertionError, message):
+                    _validate_checkout_source(self.repo, _source_bundle())
+
     def test_shallow_source_checkout_does_not_require_historical_source_object(self):
         shallow = Path(self.temp.name) / "shallow-source"
         run_git(

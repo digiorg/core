@@ -13,6 +13,8 @@ import unittest
 from unittest import mock
 import yaml
 
+from test_issue348_release_closure import validate_checkout_contract
+
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "issue348_runtime_v2_transition.py"
 RUNBOOK = ROOT / "specs" / "345-log-schema-isolation" / "runtime-v2-transition.md"
@@ -594,17 +596,7 @@ class SourceContractTest(unittest.TestCase):
         self.assertEqual(transition.PREVIOUS_COMMIT, PREVIOUS_COMMIT)
 
     def test_normal_source_graph_stays_on_main_and_generated_closure_is_explicit(self):
-        manifest_paths = [ROOT / "platform/base/argocd/applications/root-app.yaml",
-                          *sorted((ROOT / "apps/platform").glob("*.yaml"))]
-        actual = {}
-        for path in manifest_paths:
-            application = yaml.safe_load(path.read_text(encoding="utf-8"))
-            actual[application["metadata"]["name"]] = [
-                transition.source_identity(item) for item in transition.source_list(application)
-            ]
-        core = [identity for identities in actual.values() for identity in identities if identity[0] == CORE]
-        self.assertEqual(len(core), 32)
-        self.assertTrue(all(identity[-1] == "main" for identity in core))
+        validate_checkout_contract(ROOT)
         generated = [identity for identities in transition.CLEAN_SOURCE_GRAPH.values()
                      for identity in identities if identity[0] == CORE]
         self.assertEqual(sum(identity[-1] == NEW_TAG for identity in generated), 5)
