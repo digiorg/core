@@ -23,6 +23,20 @@ import time
 from datetime import datetime, timezone
 from typing import NamedTuple
 
+_SCRIPT_DIRECTORY = str(Path(__file__).resolve().parent)
+if _SCRIPT_DIRECTORY not in sys.path:
+    sys.path.insert(0, _SCRIPT_DIRECTORY)
+
+from issue348_runtime_v2_mutator import Mutator, MutationRejected
+from issue348_runtime_v2_contract import CONTRACT_PATH, load_contract
+from issue348_runtime_v2_qualification import (
+    MutationPlan,
+    QualificationError,
+    ReadResult,
+    SnapshotDecoder,
+    Validator,
+)
+
 BARRIER_SECONDS = 300
 ROLLBACK_SECONDS = 300
 CONVERGENCE_SECONDS = 1200
@@ -36,7 +50,7 @@ FLUENTD_NAMESPACE = "logging"
 CONTROLLER_LABEL = "app.kubernetes.io/name=argocd-application-controller"
 CONTROLLER_NAME = "argocd-application-controller"
 CORE_REPO = "https://github.com/digiorg/core.git"
-RUNTIME_TAG = "issue348-runtime-v5-20260918T181846Z"
+RUNTIME_TAG = "issue348-runtime-v6-20260919T100440Z"
 PRODUCT_BASE_COMMIT = "ff25a5083059412f82525ace73e7c20b322fddbf"
 CANDIDATE_BASE_COMMIT = "b32d1c18eb0d1048d8e38743f5fdd1c68a72936d"
 PREVIOUS_TAG = "issue350-352-runtime-v3-20260904T195619Z"
@@ -206,6 +220,10 @@ PREFLIGHT_SOURCE_GRAPH["opensearch"][2] = (
 )
 TRACKED_RUNTIME_FILES = (
     "scripts/issue348_runtime_v2_transition.py",
+    "scripts/issue348_runtime_v2_contract.py",
+    "scripts/issue348_runtime_v2_mutator.py",
+    "scripts/issue348_runtime_v2_qualification.py",
+    "specs/345-log-schema-isolation/issue348-runtime-v2-contract.json",
     "specs/345-log-schema-isolation/runtime-v2-transition.md",
 )
 OS_NAMESPACE = "platform-db"
@@ -226,6 +244,8 @@ EVIDENCE_FIELDS = {
     "pod_restart_count", "memory_current", "memory_max", "memory_events_max",
     "last_termination_reason", "last_termination_time",
     "sample", "queue_lengths", "log_count", "jaeger_count", "template_hash",
+    "snapshot_digest", "proposed_mutation_plan", "runtime_mutated", "mutation_trace",
+    "process_invocation_count", "transition_execution_count", "first_mutation_count",
 }
 
 
@@ -566,6 +586,11 @@ def checkout_path_allowed(_label, resolved, root, _mode):
     return resolved != root and root not in resolved.parents
 
 
+def qualification_contract(config):
+    """Return the immutable committed contract consumed by the pure Validator."""
+    return load_contract(CONTRACT_PATH, config)
+
+
 class Protocol:
     def __init__(self, config, runner, clock, evidence):
         self.config = config
@@ -577,8 +602,16 @@ class Protocol:
         self.controller = None
         self.old_pod_uids = set()
         self.final_facts = None
+        self.snapshot = None
+        self.validated_snapshot = None
+        self.mutation_plan = None
+        self.mutator = None
+        self.process_invocation_count = 0
+        self.transition_execution_count = 0
+        self.first_mutation_count = 0
 
     def run_command(self, argv, deadline, *, expect_not_found=None):
+        self.process_invocation_count += 1
         try:
             result = self.runner.run(argv, timeout=deadline.call_timeout())
         except (TimeoutError, OSError) as error:
@@ -613,17 +646,6 @@ class Protocol:
         except (TypeError, json.JSONDecodeError) as error:
             raise TransitionError("command returned invalid JSON") from error
 
-    def patch(self, kind, name, operations, deadline):
-        output = self.kubectl(
-            ["patch", kind, name, "--type=json", "-p", canonical(operations), "-o", "json"],
-            deadline,
-            ARGOCD_NAMESPACE,
-        )
-        try:
-            return json.loads(output)
-        except json.JSONDecodeError as error:
-            raise TransitionError("patch returned invalid JSON") from error
-
     def validate_remote(self, deadline):
         identities = (
             (self.config.runtime_tag, self.config.runtime_commit),
@@ -650,6 +672,7 @@ class Protocol:
                 raise TransitionError(
                     "remote tag is not annotated or does not peel to exact commit"
                 )
+        return identities
 
     def validate_local_checkout(self, deadline):
         root_text = self.run_command(["git", "rev-parse", "--show-toplevel"], deadline)
@@ -823,6 +846,7 @@ class Protocol:
                     api_group == "apps" and ref["kind"].lower() == "statefulset" and
                     ref["name"] == CONTROLLER_NAME):
                 raise TransitionError("HPA targets application controller")
+        return listing
 
     def controller_pods(self, deadline):
         listing = self.get_json(["get", "pods", "-l", CONTROLLER_LABEL], deadline, ARGOCD_NAMESPACE)
@@ -861,6 +885,7 @@ class Protocol:
             env = os.environ.copy()
             env["KUBECONFIG"] = str(isolated_path)
             try:
+                self.process_invocation_count += 1
                 return self.runner.run(
                     argocd_diff_argv("kyverno"),
                     timeout=deadline.call_timeout(),
@@ -880,7 +905,7 @@ class Protocol:
                     ) from error
 
     def preflight(self, deadline):
-        self.validate_remote(deadline)
+        remote_tags = self.validate_remote(deadline)
         view = self.get_json(["config", "view", "--minify"], deadline)
         servers = [item.get("cluster", {}).get("server") for item in view.get("clusters", [])]
         namespace = self.get_json(["get", "namespace", "kube-system"], deadline)
@@ -929,7 +954,34 @@ class Protocol:
         pods = self.controller_pods(deadline)
         if len(pods) != replicas or not all(is_ready_pod(pod, controller["metadata"]["uid"]) for pod in pods):
             raise TransitionError("controller Pod identities/readiness mismatch")
-        self.hpa_absent(deadline)
+        hpa_listing = self.hpa_absent(deadline)
+        try:
+            snapshot = SnapshotDecoder.snapshot(
+                remote_tags=remote_tags,
+                cluster_server=servers[0] if len(servers) == 1 else "",
+                kube_system_uid=namespace.get("metadata", {}).get("uid"),
+                application_list={
+                    "apiVersion": "argoproj.io/v1alpha1",
+                    "kind": "ApplicationList",
+                    "items": list(applications.values()),
+                },
+                controller=controller,
+                controller_pods=pods,
+                hpa_list=hpa_listing,
+                argocd_diff=ReadResult(diff.returncode, diff.stdout, diff.stderr),
+                invocation=(
+                    "issue348_runtime_v2_transition.py", "--mode", self.config.mode,
+                    "--context", self.config.context,
+                ),
+            )
+            validated = Validator.validate(snapshot, qualification_contract(self.config))
+            plan = MutationPlan.build(validated, qualification_contract(self.config))
+        except QualificationError as error:
+            raise TransitionError(str(error)) from error
+        self.snapshot = snapshot
+        self.validated_snapshot = validated
+        self.mutation_plan = plan
+        self.mutator = Mutator(plan, self.kubectl, kubectl_adapter=True)
         self.controller = deepcopy_json(controller)
         self.old_pod_uids = {pod["metadata"]["uid"] for pod in pods}
         app_config_revision = resolved_commit(applications["app-config"])
@@ -954,19 +1006,24 @@ class Protocol:
             revisions={name: value["requestedRevisions"] for name, value in self.baseline["operations"].items()
                        if value is not None},
             current_revision=status["currentRevision"], update_revision=status["updateRevision"],
+            snapshot_digest=snapshot.digest,
+            proposed_mutation_plan=json.loads(plan.render()), runtime_mutated=False,
+            mutation_trace=[], process_invocation_count=self.process_invocation_count,
+            transition_execution_count=self.transition_execution_count,
+            first_mutation_count=self.first_mutation_count,
             deadline_seconds=BARRIER_SECONDS, result="pass",
         )
 
     def stop_controller(self, deadline):
         controller = self.controller
-        operations = [
-            {"op": "test", "path": "/metadata/uid", "value": controller["metadata"]["uid"]},
-            {"op": "test", "path": "/metadata/resourceVersion", "value": controller["metadata"]["resourceVersion"]},
-            {"op": "test", "path": "/spec/replicas", "value": controller["spec"]["replicas"]},
-            {"op": "replace", "path": "/spec/replicas", "value": 0},
-        ]
+        if self.mutator is None:
+            raise TransitionError("mutation is forbidden before validation and plan generation")
         self.phase = "stop-attempted"
-        self.patch("statefulsets.apps", controller["metadata"]["name"], operations, deadline)
+        self.first_mutation_count += 1
+        try:
+            self.mutator.execute("controller-barrier", deadline)
+        except MutationRejected as error:
+            raise TransitionError(str(error)) from error
         self.phase = "stopped"
         wait_deadline = deadline.child(WAIT_SECONDS, "controller stop wait")
         while True:
@@ -979,8 +1036,13 @@ class Protocol:
                     (status.get("replicas") or 0) == 0 and (status.get("readyReplicas") or 0) == 0 and not owned):
                 break
             wait_deadline.sleep()
-        self.evidence.write("controller-stopped", uid=controller["metadata"]["uid"], replicas=0,
-                            deadline_seconds=WAIT_SECONDS, result="pass")
+        self.evidence.write(
+            "controller-stopped", uid=controller["metadata"]["uid"], replicas=0,
+            process_invocation_count=self.process_invocation_count,
+            transition_execution_count=self.transition_execution_count,
+            first_mutation_count=self.first_mutation_count,
+            deadline_seconds=WAIT_SECONDS, result="pass",
+        )
 
     def barrier_recheck(self, deadline):
         self.hpa_absent(deadline)
@@ -1013,16 +1075,23 @@ class Protocol:
         return applications
 
     def app_patch(self, name, old_application, new_revision, deadline):
-        source = source_list(old_application)[0]
-        operations = [
-            {"op": "test", "path": "/metadata/uid", "value": old_application["metadata"]["uid"]},
-            {"op": "test", "path": "/metadata/resourceVersion", "value": old_application["metadata"]["resourceVersion"]},
-            {"op": "test", "path": "/spec/source/repoURL", "value": source["repoURL"]},
-            {"op": "test", "path": "/spec/source/path", "value": source["path"]},
-            {"op": "test", "path": "/spec/source/targetRevision", "value": source["targetRevision"]},
-            {"op": "replace", "path": "/spec/source/targetRevision", "value": new_revision},
-        ]
-        return self.patch("applications.argoproj.io", name, operations, deadline)
+        if self.mutator is None:
+            raise TransitionError("mutation is forbidden before validation and plan generation")
+        try:
+            if new_revision == self.config.runtime_tag:
+                operation_name = "root-owner" if name == "root-app" else "argocd-owner"
+                return self.mutator.execute(operation_name, deadline, old_application)
+            if new_revision == self.config.previous_tag:
+                operation_name = (
+                    "rollback-root-owner" if name == "root-app"
+                    else "rollback-argocd-owner"
+                )
+                return self.mutator.rollback(
+                    operation_name, deadline, old_application
+                )
+        except MutationRejected as error:
+            raise TransitionError(str(error)) from error
+        raise TransitionError("owner revision is absent from the approved plan")
 
     def close_owners(self, applications, deadline):
         for name in ("root-app", "argocd"):
@@ -1077,21 +1146,21 @@ class Protocol:
         if resolved_commit(applications["app-config"]) != self.baseline["app_config_revision"]:
             raise TransitionError("last stopped gate app-config resolved revision changed")
 
-    def restore_controller(self, deadline):
+    def restore_controller(self, deadline, *, rollback=False):
         prior = self.controller
         current = self.get_json(["get", "statefulsets.apps", prior["metadata"]["name"]], deadline, ARGOCD_NAMESPACE)
         if (current["metadata"]["uid"] != prior["metadata"]["uid"] or
                 current.get("spec", {}).get("replicas") != 0 or
                 controller_non_replica_spec(current) != self.baseline["controller_spec"]):
             raise TransitionError("controller changed while stopped")
-        operations = [
-            {"op": "test", "path": "/metadata/uid", "value": current["metadata"]["uid"]},
-            {"op": "test", "path": "/metadata/resourceVersion", "value": current["metadata"]["resourceVersion"]},
-            {"op": "test", "path": "/spec/replicas", "value": 0},
-            {"op": "replace", "path": "/spec/replicas", "value": prior["spec"]["replicas"]},
-        ]
         self.phase = "restore-attempted"
-        self.patch("statefulsets.apps", current["metadata"]["name"], operations, deadline)
+        try:
+            if rollback:
+                self.mutator.rollback("rollback-controller", deadline, current)
+            else:
+                self.mutator.execute("controller-restore", deadline, current)
+        except MutationRejected as error:
+            raise TransitionError(str(error)) from error
         self.phase = "restored"
         wait_deadline = deadline.child(WAIT_SECONDS, "controller restore wait")
         stable_uids = None
@@ -1155,7 +1224,7 @@ class Protocol:
             except BaseException as error:
                 errors.append(redact(error))
         try:
-            self.restore_controller(deadline)
+            self.restore_controller(deadline, rollback=True)
         except BaseException as error:
             errors.append(redact(error))
         self.evidence.write("rollback", result="failed" if errors else "pass", error="; ".join(errors) if errors else "")
@@ -1332,6 +1401,7 @@ class Protocol:
             deadline_seconds=CONVERGENCE_SECONDS, result="pass", **self.final_facts)
 
     def execute(self):
+        self.transition_execution_count += 1
         preflight_deadline = Deadline(self.clock, BARRIER_SECONDS, "preflight")
         self.preflight(preflight_deadline)
         barrier_deadline = Deadline(self.clock, BARRIER_SECONDS, "barrier")

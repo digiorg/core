@@ -10,8 +10,8 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 CORE_REPO = "https://github.com/digiorg/core.git"
-CANDIDATE_TAG = "issue348-runtime-v5-20260918T181846Z"
-QUALIFICATION_DESCRIPTOR = "issue348-runtime-v6-20260919T100440Z"
+CANDIDATE_TAG = "issue348-runtime-v6-20260919T100440Z"
+QUALIFICATION_DESCRIPTOR = CANDIDATE_TAG
 OLD_TAG = "issue301-runtime-v16-20260817T130820Z"
 CATALOG_REVISION = "d531180b322dc0128477ecb9bb0fc9071b41d631"
 TRANSITION = ROOT / "scripts/issue348_runtime_v2_transition.py"
@@ -95,9 +95,9 @@ class RuntimeSourceGraphTest(unittest.TestCase):
 
 
 class TransitionModuleContractTest(unittest.TestCase):
-    def test_transition_binds_reserved_v5_runtime_tag(self):
+    def test_transition_binds_reserved_v6_runtime_tag(self):
         self.assertTrue(TRANSITION.exists(), "Issue #348 transition module is missing")
-        spec = spec_from_file_location("issue348_transition_v5", TRANSITION)
+        spec = spec_from_file_location("issue348_transition_v6", TRANSITION)
         assert spec and spec.loader
         module = module_from_spec(spec)
         spec.loader.exec_module(module)

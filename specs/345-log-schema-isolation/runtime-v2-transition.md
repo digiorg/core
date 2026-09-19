@@ -6,11 +6,19 @@ This candidate does not authorize publication and does not authorize rollout. It
 
 The executable may mutate only the Argo CD application-controller replica count and the Root/Argo source revisions. It never patches Fluentd, OpenSearch, a workload, Pod, PVC, index, document, template, mapping, or shard. Reconciliation performs child changes. There is no automatic rollback after controller restore; evidence is preserved for operator review.
 
+## Capability architecture and offline preflight
+
+The reviewed boundary is `Adapters -> immutable Snapshot -> pure Validator -> MutationPlan -> Mutator`. Read-only adapters canonicalize remote-tag, cluster-identity, typed ApplicationList, controller, Pod, HPA, and Argo CD diff observations into one immutable Snapshot. The pure Validator has no filesystem, subprocess, clock, or mutation capability and consumes only that Snapshot plus the committed `issue348-runtime-v2-contract.json`. MutationPlan rendering is declarative and limits normal and rollback operations to the controller and Root/Argo owners with UID, resourceVersion, and current-value CAS preconditions. Only the dedicated Mutator module can turn an approved plan operation into a patch invocation.
+
+`scripts/issue348_runtime_v2_preflight.py` is a standalone non-mutating entrypoint. Its dependency graph does not import or reference the Mutator. It requires the same explicit runtime identities, uses an enumerated read-only adapter, and writes only an exclusively-created local mode-`0600` evidence file. For Argo CD core diff it requires the supplied kubeconfig already to have the selected context current and namespace `argocd`; it does not edit or copy the kubeconfig. Successful evidence contains the canonical snapshot digest, exact identities and invocation, rendered proposed plan, `runtime_mutated=false`, and an empty mutation trace.
+
+This repository change does not claim preflight success, publication, merge, convergence, runtime acceptance, or cluster validation. Running either entrypoint against live state remains separately authorized work.
+
 ## Immutable identities and source freeze
 
 - product parent: `ff25a5083059412f82525ace73e7c20b322fddbf`
 - correction base (published v4 candidate): `b32d1c18eb0d1048d8e38743f5fdd1c68a72936d`
-- candidate tag literal: `issue348-runtime-v5-20260918T181846Z`
+- candidate tag literal: `issue348-runtime-v6-20260919T100440Z`
 - immutable predecessor tag (not moved): `issue348-runtime-v4-20260918T162845Z`
 - previous runtime tag: `issue350-352-runtime-v3-20260904T195619Z`
 - previous peeled commit: `f6e7d58c0b03ee6a3ec6ed9e1e22e5023f861549`
@@ -39,7 +47,7 @@ python3 scripts/issue348_runtime_v2_transition.py \
   --expected-server https://api.retained.example:6443 \
   --expected-kube-system-uid <exact-uid> \
   --remote-url https://github.com/digiorg/core.git \
-  --runtime-tag issue348-runtime-v5-20260918T181846Z \
+  --runtime-tag issue348-runtime-v6-20260919T100440Z \
   --runtime-commit <exact-published-runtime-commit> \
   --previous-tag issue350-352-runtime-v3-20260904T195619Z \
   --previous-commit f6e7d58c0b03ee6a3ec6ed9e1e22e5023f861549 \

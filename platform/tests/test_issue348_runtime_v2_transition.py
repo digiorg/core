@@ -23,7 +23,7 @@ SPEC.loader.exec_module(transition)
 
 OLD_TAG = "issue301-runtime-v16-20260817T130820Z"
 OLD_COMMIT = "8e6b8908f99ebf76db47c15613eff523644c23f6"
-NEW_TAG = "issue348-runtime-v5-20260918T181846Z"
+NEW_TAG = "issue348-runtime-v6-20260919T100440Z"
 NEW_COMMIT = "0123456789abcdef0123456789abcdef01234567"
 CANDIDATE_BASE_COMMIT = "b32d1c18eb0d1048d8e38743f5fdd1c68a72936d"
 PREVIOUS_TAG = "issue350-352-runtime-v3-20260904T195619Z"
@@ -587,7 +587,7 @@ class Harness(unittest.TestCase):
 
 
 class SourceContractTest(unittest.TestCase):
-    def test_v5_identity_is_bound_to_reviewed_candidate_and_previous_runtime(self):
+    def test_v6_identity_is_bound_to_reviewed_candidate_and_previous_runtime(self):
         self.assertEqual(transition.RUNTIME_TAG, NEW_TAG)
         self.assertEqual(transition.CANDIDATE_BASE_COMMIT, CANDIDATE_BASE_COMMIT)
         self.assertEqual(transition.PREVIOUS_TAG, PREVIOUS_TAG)
@@ -642,6 +642,16 @@ class SourceContractTest(unittest.TestCase):
 
 
 class RunbookContractTest(unittest.TestCase):
+    def test_runbook_documents_snapshot_plan_mutator_and_preflight_boundaries(self):
+        text = RUNBOOK.read_text(encoding="utf-8")
+        for phrase in (
+                "Adapters -> immutable Snapshot -> pure Validator -> MutationPlan -> Mutator",
+                "issue348_runtime_v2_preflight.py",
+                "runtime_mutated=false",
+                "empty mutation trace",
+                "does not claim preflight success"):
+            self.assertIn(phrase, text)
+
     def test_runbook_documents_complete_kyverno_resource_inventory_contract(self):
         text = RUNBOOK.read_text(encoding="utf-8")
         self.assertIn("complete status inventory must equal the reviewed 69", text)
@@ -863,6 +873,20 @@ class SecurityTest(Harness):
         self.assertEqual(by_event["control-plane-closed"]["source_counts"],
                          {"candidate": 5, "old": 27, "other": 0, "previous": 0})
         self.assertIn("operation_hashes", by_event["control-plane-closed"])
+
+    def test_evidence_separates_invocation_execution_and_first_mutation_counters(self):
+        self.execute()
+        records = [json.loads(line) for line in self.evidence.read_text().splitlines()]
+        by_event = {record["event"]: record for record in records}
+        preflight = by_event["preflight"]
+        stopped = by_event["controller-stopped"]
+        self.assertGreater(preflight["process_invocation_count"], 0)
+        self.assertEqual(preflight["transition_execution_count"], 1)
+        self.assertEqual(preflight["first_mutation_count"], 0)
+        self.assertGreater(stopped["process_invocation_count"],
+                           preflight["process_invocation_count"])
+        self.assertEqual(stopped["transition_execution_count"], 1)
+        self.assertEqual(stopped["first_mutation_count"], 1)
 
     def test_evidence_write_always_redacts_error_fields(self):
         path = Path(self.temp.name) / "direct-evidence.jsonl"
