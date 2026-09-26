@@ -13,7 +13,7 @@ spec:
 
   source:
     repoURL: https://github.com/digiorg/core.git
-    targetRevision: main
+    targetRevision: issue348-runtime-v7-20260926T152038Z
     path: platform/base/argocd
 
   destination:

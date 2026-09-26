@@ -21,7 +21,7 @@ spec:
 
   source:
     repoURL: https://github.com/digiorg/core.git
-    targetRevision: main
+    targetRevision: issue301-runtime-v16-20260817T130820Z
     path: platform/base/gitea-actions-runner
 
   destination:
