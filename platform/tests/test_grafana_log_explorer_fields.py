@@ -55,7 +55,8 @@ def schema_fields():
 
 
 def variable_field_inventory(dashboard):
-    inventory = {}
+    fields = {}
+    queries = {}
     for variable in dashboard["templating"]["list"]:
         if variable["type"] != "query":
             continue
@@ -65,8 +66,10 @@ def variable_field_inventory(dashboard):
                 raise AssertionError(
                     f"{variable['name']}.{source} must remain a terms query"
                 )
-            inventory[(variable["name"], source)] = query["field"]
-    return inventory
+            reference = (variable["name"], source)
+            fields[reference] = query["field"]
+            queries[reference] = tuple(QUERY_FIELD.findall(query.get("query", "")))
+    return fields, queries
 
 
 def panel_field_inventory(dashboard):
@@ -97,7 +100,7 @@ class LogExplorerFieldContractTest(unittest.TestCase):
                 "level": "custom",
             },
         )
-        inventory = variable_field_inventory(dashboard)
+        fields, queries = variable_field_inventory(dashboard)
         expected = {
             (name, source): field
             for name, field in zip(
@@ -106,13 +109,31 @@ class LogExplorerFieldContractTest(unittest.TestCase):
             )
             for source in ("definition", "query")
         }
-        self.assertEqual(inventory, expected)
+        self.assertEqual(fields, expected)
+        self.assertEqual(
+            queries,
+            {
+                (name, source): (
+                    () if name == "namespace" else ("kubernetes.namespace_name",)
+                )
+                for name in ("namespace", "pod", "container")
+                for source in ("definition", "query")
+            },
+        )
 
         supported = schema_fields()
-        for reference, field in inventory.items():
+        for reference, field in fields.items():
             with self.subTest(reference=reference, field=field):
                 self.assertEqual(supported.get(field), "keyword")
                 self.assertNotIn(field, {f"{identity}.keyword" for identity in IDENTITY_FIELDS})
+        for reference, query_fields in queries.items():
+            for field in query_fields:
+                with self.subTest(reference=reference, query_field=field):
+                    self.assertIn(field, supported)
+
+        referenced = set(fields.values())
+        referenced.update(field for query_fields in queries.values() for field in query_fields)
+        self.assertTrue(referenced.isdisjoint({f"{field}.keyword" for field in IDENTITY_FIELDS}))
 
     def test_panel_field_inventory_matches_the_schema_contract(self):
         dashboard = log_explorer()
