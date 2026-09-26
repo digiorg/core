@@ -85,6 +85,7 @@ class MutationOperation(NamedTuple):
     current_value: object
     after: object
     extra_preconditions: tuple[tuple[str, object], ...] = ()
+    patch_operation: str = "replace"
 
     def record(self):
         return {
@@ -105,6 +106,7 @@ class MutationOperation(NamedTuple):
                 ],
             },
             "after": self.after,
+            "patch_operation": self.patch_operation,
         }
 
 
@@ -112,6 +114,7 @@ _ALLOWED_TARGETS = {
     ("statefulsets.apps", "argocd", "argocd-application-controller"),
     ("applications.argoproj.io", "argocd", "root-app"),
     ("applications.argoproj.io", "argocd", "argocd"),
+    ("applications.argoproj.io", "argocd", "grafana"),
 }
 
 
@@ -122,17 +125,24 @@ class MutationPlan(NamedTuple):
 
     @staticmethod
     def operation(name, kind, namespace, resource_name, uid, resource_version,
-                  current_value, after, extra_preconditions=()):
+                  current_value, after, extra_preconditions=(), patch_operation=None):
         if (kind, namespace, resource_name) not in _ALLOWED_TARGETS:
             raise QualificationError("operation is not an approved target")
-        path = ("/spec/replicas" if kind == "statefulsets.apps"
-                else "/spec/source/targetRevision")
+        grafana_operation = resource_name == "grafana"
+        path = ("/operation" if grafana_operation else
+                "/spec/replicas" if kind == "statefulsets.apps" else
+                "/spec/source/targetRevision")
+        expected_patch_operation = "add" if grafana_operation else "replace"
+        patch_operation = patch_operation or expected_patch_operation
+        if (patch_operation != expected_patch_operation or
+                grafana_operation and current_value is not None):
+            raise QualificationError("operation patch shape is not approved")
         if not all(isinstance(value, str) and value for value in
                    (name, kind, namespace, resource_name, uid, resource_version)):
             raise QualificationError("operation identity and CAS preconditions are required")
         return MutationOperation(
             name, kind, namespace, resource_name, uid, resource_version,
-            path, current_value, after, tuple(extra_preconditions),
+            path, current_value, after, tuple(extra_preconditions), patch_operation,
         )
 
     @classmethod
@@ -149,6 +159,31 @@ class MutationPlan(NamedTuple):
                 ("/spec/source/repoURL", source.get("repoURL")),
                 ("/spec/source/path", source.get("path")),
             )
+
+        grafana_operations = ()
+        if "grafana" in applications:
+            metadata = applications["grafana"].get("metadata", {})
+            uid = metadata.get("uid")
+            resource_version = metadata.get("resourceVersion")
+            sources = _source_list(applications["grafana"])
+            runtime_commits = [
+                commit for tag, commit in contract.expected_remote_tags
+                if tag == contract.runtime_tag
+            ]
+            if (not isinstance(uid, str) or not uid or
+                    not isinstance(resource_version, str) or not resource_version or
+                    len(sources) != 2 or len(runtime_commits) != 1):
+                raise QualificationError("Grafana operation identity is malformed")
+            candidate_sources = json.loads(json.dumps(sources))
+            candidate_sources[1]["targetRevision"] = contract.runtime_tag
+            grafana_operations = (cls.operation(
+                "grafana-convergence", "applications.argoproj.io", "argocd", "grafana",
+                uid, "$readback-before-grafana-convergence", None,
+                {"sync": {"revisions": [
+                    sources[0].get("targetRevision"), runtime_commits[0],
+                ]}},
+                (("/spec/sources", candidate_sources),), patch_operation="add",
+            ),)
 
         normal = (
             cls.operation(
@@ -173,6 +208,7 @@ class MutationPlan(NamedTuple):
                 "argocd-application-controller", validated.controller_uid,
                 "$readback-after-barrier", 0, validated.controller_replicas,
             ),
+            *grafana_operations,
         )
         rollback = (
             cls.operation(

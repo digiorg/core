@@ -40,6 +40,7 @@ from issue348_runtime_v2_qualification import (
 BARRIER_SECONDS = 300
 ROLLBACK_SECONDS = 300
 CONVERGENCE_SECONDS = 1200
+GRAFANA_OPERATION_SECONDS = 300
 CONVERGENCE_STABLE_SAMPLES = 3
 CONVERGENCE_SAMPLE_SECONDS = 5
 CALL_SECONDS = 20
@@ -50,9 +51,9 @@ FLUENTD_NAMESPACE = "logging"
 CONTROLLER_LABEL = "app.kubernetes.io/name=argocd-application-controller"
 CONTROLLER_NAME = "argocd-application-controller"
 CORE_REPO = "https://github.com/digiorg/core.git"
-RUNTIME_TAG = "issue348-runtime-v6-20260919T100440Z"
-PRODUCT_BASE_COMMIT = "ff25a5083059412f82525ace73e7c20b322fddbf"
-CANDIDATE_BASE_COMMIT = "b32d1c18eb0d1048d8e38743f5fdd1c68a72936d"
+RUNTIME_TAG = "issue348-runtime-v7-20260926T152038Z"
+PRODUCT_BASE_COMMIT = "dbb293c6d2b2c6064928f7b52a116019343cc027"
+CANDIDATE_BASE_COMMIT = "dbb293c6d2b2c6064928f7b52a116019343cc027"
 PREVIOUS_TAG = "issue350-352-runtime-v3-20260904T195619Z"
 PREVIOUS_COMMIT = "f6e7d58c0b03ee6a3ec6ed9e1e22e5023f861549"
 OLD_TAG = "issue301-runtime-v16-20260817T130820Z"
@@ -190,7 +191,7 @@ CLEAN_SOURCE_GRAPH = {
     "fluentd": [(CORE_REPO, None, "platform/base/fluentd", None, RUNTIME_TAG)],
     "gitea": [("https://dl.gitea.com/charts/", "gitea", None, None, "12.6.0"), (CORE_REPO, None, None, "values", OLD_TAG)],
     "gitea-actions-runner": [(CORE_REPO, None, "platform/base/gitea-actions-runner", None, OLD_TAG)],
-    "grafana": [("https://prometheus-community.github.io/helm-charts", "kube-prometheus-stack", None, None, "87.17.0"), (CORE_REPO, None, None, "values", OLD_TAG)],
+    "grafana": [("https://prometheus-community.github.io/helm-charts", "kube-prometheus-stack", None, None, "87.17.0"), (CORE_REPO, None, None, "values", RUNTIME_TAG)],
     "harbor": [("https://helm.goharbor.io", "harbor", None, None, "1.19.1"), (CORE_REPO, None, None, "values", OLD_TAG), (CORE_REPO, None, "platform/base/harbor", None, OLD_TAG)],
     "jaeger": [("https://jaegertracing.github.io/helm-charts", "jaeger", None, None, "4.11.1"), (CORE_REPO, None, None, "values", OLD_TAG), (CORE_REPO, None, "platform/base/jaeger", None, OLD_TAG)],
     "keycloak": [(CORE_REPO, None, "platform/base/keycloak", None, OLD_TAG)],
@@ -214,6 +215,9 @@ PREFLIGHT_SOURCE_GRAPH = {
 }
 PREFLIGHT_SOURCE_GRAPH["fluentd"][0] = (
     CORE_REPO, None, "platform/base/fluentd", None, OLD_TAG,
+)
+PREFLIGHT_SOURCE_GRAPH["grafana"][1] = (
+    CORE_REPO, None, None, "values", OLD_TAG,
 )
 PREFLIGHT_SOURCE_GRAPH["opensearch"][2] = (
     CORE_REPO, None, "platform/base/opensearch", None, OLD_TAG,
@@ -687,7 +691,7 @@ class Protocol:
             raise TransitionError("local checkout HEAD is not the runtime commit")
         parent = self.run_command(["git", "rev-parse", "HEAD^"], deadline)
         if parent not in {CANDIDATE_BASE_COMMIT, CANDIDATE_BASE_COMMIT + "\n"}:
-            raise TransitionError("runtime commit is not based directly on the authorized Issue #348 v5 base")
+            raise TransitionError("runtime commit is not based directly on the authorized Issue #348 v7 base")
         dirty = self.run_command(
             ["git", "status", "--porcelain=v1", "--untracked-files=all"], deadline)
         if dirty != "":
@@ -763,7 +767,10 @@ class Protocol:
                 raise TransitionError("Kyverno complete resource inventory mismatch")
 
     def require_preflight_graph(self, applications):
-        required = {"root-app", "argocd", "opensearch", "fluentd", "app-config", "core-catalog"}
+        required = {
+            "root-app", "argocd", "opensearch", "fluentd", "grafana",
+            "app-config", "core-catalog",
+        }
         if not required <= set(applications):
             raise TransitionError("required retained Applications are missing")
         actual_graph = {
@@ -800,6 +807,7 @@ class Protocol:
             "argocd": [self.config.previous_commit],
             "opensearch": ["3.7.0", self.config.previous_commit, self.config.old_commit],
             "fluentd": [self.config.old_commit],
+            "grafana": ["87.17.0", self.config.old_commit],
         }
         if any(status_revisions(applications[name]) != revisions
                for name, revisions in expected_revisions.items()):
@@ -932,7 +940,9 @@ class Protocol:
                          valid_revision_list(identity["resultRevisions"]))
             except (KeyError, TypeError, ValueError):
                 valid = False
-            required = name in {"root-app", "argocd", "opensearch", "kyverno", "fluentd"}
+            required = name in {
+                "root-app", "argocd", "opensearch", "kyverno", "fluentd", "grafana",
+            }
             has_marker = "operationState" in application.get("status", {})
             if (required or has_marker) and not valid:
                 raise TransitionError(f"{name} prior operation identity is required")
@@ -1274,11 +1284,60 @@ class Protocol:
         expected["root-app"]["source"]["targetRevision"] = self.config.runtime_tag
         expected["argocd"]["source"]["targetRevision"] = self.config.runtime_tag
         expected["fluentd"]["source"]["targetRevision"] = self.config.runtime_tag
+        expected["grafana"]["sources"][1]["targetRevision"] = self.config.runtime_tag
         expected["opensearch"]["sources"][1]["targetRevision"] = self.config.runtime_tag
         expected["opensearch"]["sources"][2]["targetRevision"] = self.config.runtime_tag
         values = expected["kyverno"]["source"]["helm"]["values"]
         expected["kyverno"]["source"]["helm"]["values"] = kyverno_candidate_values(values)
         return expected
+
+    def start_grafana_convergence(self, deadline):
+        """Start one exact manual Grafana sync after Root exposes the v7 source."""
+        baseline = self.baseline["specs"]["grafana"]
+        expected = self.expected_final_specs()["grafana"]
+        while True:
+            current = self.get_json(
+                ["get", "applications.argoproj.io", "grafana"],
+                deadline,
+                ARGOCD_NAMESPACE,
+            )
+            if current.get("metadata", {}).get("uid") != self.baseline["uids"]["grafana"]:
+                raise TransitionError("Grafana UID changed before explicit convergence")
+            spec = current.get("spec")
+            if spec == baseline:
+                deadline.sleep()
+                continue
+            if spec != expected:
+                raise TransitionError("Grafana spec changed beyond the exact candidate source")
+            if (current.get("operation") is not None or
+                    "operation" in current.get("spec", {}) or
+                    current.get("status", {}).get("operationState", {}).get("phase") in ACTIVE_PHASES):
+                raise TransitionError("Grafana has a pending or active operation")
+            if (current.get("status", {}).get("health", {}).get("status") != "Healthy" or
+                    current.get("status", {}).get("sync", {}).get("status") != "OutOfSync" or
+                    status_revisions(current) != ["87.17.0", self.config.old_commit] or
+                    operation_identity(current) != self.baseline["operations"]["grafana"]):
+                raise TransitionError("Grafana pre-operation state is not the exact reviewed boundary")
+            try:
+                patched = self.mutator.execute(
+                    "grafana-convergence", deadline, current,
+                )
+            except MutationRejected as error:
+                raise TransitionError(str(error)) from error
+            requested = {
+                "sync": {"revisions": ["87.17.0", self.config.runtime_commit]},
+            }
+            if (patched.get("metadata", {}).get("uid") != self.baseline["uids"]["grafana"] or
+                    patched.get("spec") != expected or patched.get("operation") != requested):
+                raise TransitionError("Grafana operation readback is not exact")
+            self.evidence.write(
+                "grafana-operation-started", name="grafana",
+                revision=self.config.runtime_commit,
+                targets={"grafana-values": self.config.runtime_tag},
+                operation_hashes={"grafana-request": digest(requested)},
+                deadline_seconds=GRAFANA_OPERATION_SECONDS, result="pass",
+            )
+            return
 
     def final_passes(self, applications, deadline):
         try:
@@ -1287,6 +1346,7 @@ class Protocol:
             root = applications["root-app"]
             argo = applications["argocd"]
             fluentd = applications["fluentd"]
+            grafana = applications["grafana"]
             os_app = applications["opensearch"]
             kyverno = applications["kyverno"]
             self.require_application_closure(applications, self.expected_final_specs(), "final")
@@ -1319,8 +1379,15 @@ class Protocol:
                         fluentd, self.baseline["operations"]["fluentd"],
                         [self.config.runtime_commit])):
                 return False
+            grafana_revisions = ["87.17.0", self.config.runtime_commit]
+            if (target(grafana, 1) != self.config.runtime_tag or
+                    status_revisions(grafana) != grafana_revisions or
+                    not self.operation_passes(
+                        grafana, self.baseline["operations"]["grafana"],
+                        grafana_revisions)):
+                return False
             for name, application in applications.items():
-                if name not in {"root-app", "kyverno", "fluentd"} and operation_identity(application) != self.baseline["operations"][name]:
+                if name not in {"root-app", "kyverno", "fluentd", "grafana"} and operation_identity(application) != self.baseline["operations"][name]:
                     return False
             if (target(applications["app-config"]) != "main" or
                     resolved_commit(applications["app-config"]) != self.baseline["app_config_revision"]):
@@ -1338,7 +1405,7 @@ class Protocol:
                                             self.config.previous_tag} for value in core_targets),
             }
             if len(core_targets) != 32 or counts != {
-                    "candidate": 5, "old": 27, "previous": 0, "other": 0}:
+                    "candidate": 6, "old": 26, "previous": 0, "other": 0}:
                 return False
             self.kubectl(
                 ["get", "job.batch", "fluentd-log-schema", "-o", "json"], deadline,
@@ -1350,16 +1417,20 @@ class Protocol:
                 "application_spec_hash": digest({name: item["spec"] for name, item in applications.items()}),
                 "targets": {"root-app": target(root), "argocd": target(argo),
                             "opensearch-values": target(os_app, 1),
-                            "fluentd": target(applications["fluentd"])},
+                            "fluentd": target(applications["fluentd"]),
+                            "grafana-values": target(grafana, 1)},
                 "operation_hashes": {"root-app": digest(operation_identity(root)),
                                      "kyverno": digest(operation_identity(kyverno)),
-                                     "fluentd": digest(operation_identity(fluentd))},
+                                     "fluentd": digest(operation_identity(fluentd)),
+                                     "grafana": digest(operation_identity(grafana))},
                 "revisions": {"root-requested": operation_identity(root)["requestedRevisions"],
                               "root-result": operation_identity(root)["resultRevisions"],
                               "kyverno-requested": operation_identity(kyverno)["requestedRevisions"],
                               "kyverno-result": operation_identity(kyverno)["resultRevisions"],
                               "fluentd-requested": operation_identity(fluentd)["requestedRevisions"],
                               "fluentd-result": operation_identity(fluentd)["resultRevisions"],
+                              "grafana-requested": operation_identity(grafana)["requestedRevisions"],
+                              "grafana-result": operation_identity(grafana)["resultRevisions"],
                               "app-config": status_revisions(applications["app-config"])},
                 "source_counts": counts,
                 "schema_job_absence": "exact-NotFound:logging/fluentd-log-schema",
@@ -1428,6 +1499,9 @@ class Protocol:
             if isinstance(primary, TransitionError):
                 raise
             raise TransitionError(redact(primary)) from primary
+        self.start_grafana_convergence(
+            Deadline(self.clock, GRAFANA_OPERATION_SECONDS, "Grafana operation"),
+        )
         self.converge(Deadline(self.clock, CONVERGENCE_SECONDS, "convergence"))
 
 

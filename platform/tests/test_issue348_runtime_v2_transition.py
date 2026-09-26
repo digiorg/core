@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Behavioral contracts for the offline-testable Issue #348 transition."""
 
+from collections.abc import Callable
 from copy import deepcopy
 from importlib.util import module_from_spec, spec_from_file_location
 import json
@@ -25,9 +26,9 @@ SPEC.loader.exec_module(transition)
 
 OLD_TAG = "issue301-runtime-v16-20260817T130820Z"
 OLD_COMMIT = "8e6b8908f99ebf76db47c15613eff523644c23f6"
-NEW_TAG = "issue348-runtime-v6-20260919T100440Z"
+NEW_TAG = "issue348-runtime-v7-20260926T152038Z"
 NEW_COMMIT = "0123456789abcdef0123456789abcdef01234567"
-CANDIDATE_BASE_COMMIT = "b32d1c18eb0d1048d8e38743f5fdd1c68a72936d"
+CANDIDATE_BASE_COMMIT = "dbb293c6d2b2c6064928f7b52a116019343cc027"
 PREVIOUS_TAG = "issue350-352-runtime-v3-20260904T195619Z"
 PREVIOUS_COMMIT = "f6e7d58c0b03ee6a3ec6ed9e1e22e5023f861549"
 CORE = "https://github.com/digiorg/core.git"
@@ -248,6 +249,13 @@ def make_apps():
     kyverno["status"]["operationState"] = operation(
         "2026-09-02T05:03:00Z", ["3.8.1"]
     )
+    grafana = apps["grafana"]
+    grafana["status"]["sync"] = {
+        "status": "Synced", "revisions": ["87.17.0", OLD_COMMIT],
+    }
+    grafana["status"]["operationState"] = operation(
+        "2026-09-02T05:02:45Z", ["87.17.0", OLD_COMMIT]
+    )
     return apps
 
 
@@ -319,6 +327,13 @@ class StatefulFakeKubectl:
         self.application_inventory_reads = 0
         self.kyverno_stale_operation = False
         self.kyverno_invalid_finished = False
+        self.grafana_stale_operation = False
+        self.grafana_wrong_requested_revision = False
+        self.grafana_wrong_result_revision = False
+        self.grafana_failed_operation = False
+        self.fail_grafana_operation_patch = False
+        self.grafana_pre_operation_mutation: Callable[[dict], object] | None = None
+        self.grafana_patch_readback_mutation: Callable[[dict], object] | None = None
         self.kyverno_diff_output = ""
         self.kyverno_diff_stderr = ""
         self.kyverno_diff_timeout = False
@@ -368,6 +383,13 @@ class StatefulFakeKubectl:
         fluentd["status"]["operationState"] = operation(
             "2026-09-02T06:11:30Z", [NEW_COMMIT]
         )
+        grafana = self.apps["grafana"]
+        grafana["spec"]["sources"][1]["targetRevision"] = NEW_TAG
+        grafana["status"].update({
+            "health": {"status": "Healthy"},
+            "sync": {"status": "OutOfSync", "revisions": ["87.17.0", OLD_COMMIT]},
+            "reconciledAt": "2026-09-02T06:11:45Z",
+        })
         kyverno = self.apps["kyverno"]
         kyverno["spec"]["source"]["helm"]["values"] = transition.kyverno_candidate_values(
             kyverno["spec"]["source"]["helm"]["values"]
@@ -382,6 +404,24 @@ class StatefulFakeKubectl:
             kyverno["status"]["operationState"]["finishedAt"] = "invalid"
         if self.app_config_drift_after_barrier:
             self.apps["app-config"]["status"]["sync"]["revision"] = "drifted"
+
+    def _complete_grafana_operation(self):
+        grafana = self.apps["grafana"]
+        grafana.pop("operation", None)
+        requested_commit = OLD_COMMIT if self.grafana_wrong_requested_revision else NEW_COMMIT
+        result_commit = OLD_COMMIT if self.grafana_wrong_result_revision else NEW_COMMIT
+        started = ("2026-09-02T05:02:45Z" if self.grafana_stale_operation
+                   else "2026-09-02T06:13:00Z")
+        phase = "Failed" if self.grafana_failed_operation else "Succeeded"
+        grafana["status"].update({
+            "health": {"status": "Healthy"},
+            "sync": {"status": "Synced", "revisions": ["87.17.0", NEW_COMMIT]},
+            "reconciledAt": "2026-09-02T06:13:00Z",
+            "operationState": operation(
+                started, ["87.17.0", requested_commit], phase=phase,
+                result_revisions=["87.17.0", result_commit],
+            ),
+        })
 
     def run(self, argv, timeout, env=None):
         self.commands.append((list(argv), timeout))
@@ -458,6 +498,11 @@ class StatefulFakeKubectl:
             self.owner_readbacks += 1
             if self.owner_readback_uid_replacement and tail[1] == "argocd":
                 self.apps["argocd"]["metadata"]["uid"] = "replacement-argocd"
+            if (tail[1] == "grafana" and self.restore_count and
+                    self.grafana_pre_operation_mutation is not None):
+                mutation = self.grafana_pre_operation_mutation
+                self.grafana_pre_operation_mutation = None
+                mutation(self.apps["grafana"])
             return self._json(deepcopy(self.apps[tail[1]]))
         if verb == "get" and tail[0] == "statefulsets.apps":
             if len(tail) > 1 and not tail[1].startswith("-"):
@@ -519,6 +564,8 @@ class StatefulFakeKubectl:
                     raise KeyboardInterrupt("stop accepted")
                 return self._json(deepcopy(self.controller))
             if kind == "applications.argoproj.io":
+                if name == "grafana" and self.fail_grafana_operation_patch:
+                    return self._result(1, stderr="grafana operation patch failed")
                 if (name == "root-app" and self.fail_root_rollback and
                         payload[-1]["value"] == PREVIOUS_TAG):
                     return self._result(1, stderr="root rollback patch failed")
@@ -537,9 +584,14 @@ class StatefulFakeKubectl:
                         return self._result(1, stderr="Conflict")
                 transition.json_pointer_replace(target, payload[-1]["path"], payload[-1]["value"])
                 target["metadata"]["resourceVersion"] += "x"
+                patched = deepcopy(target)
+                if name == "grafana":
+                    if self.grafana_patch_readback_mutation is not None:
+                        self.grafana_patch_readback_mutation(patched)
+                    self._complete_grafana_operation()
                 if self.concurrent_spec_mutation and name == "argocd" and payload[-1]["value"] == NEW_TAG:
                     target["spec"]["project"] = "evil"
-                return self._json(deepcopy(target))
+                return self._json(patched)
         raise AssertionError(f"unhandled command: {argv}")
 
     def assert_safe_kubectl(self, argv, timeout):
@@ -589,7 +641,7 @@ class Harness(unittest.TestCase):
 
 
 class SourceContractTest(unittest.TestCase):
-    def test_v6_identity_is_bound_to_reviewed_candidate_and_previous_runtime(self):
+    def test_v7_identity_is_bound_to_reviewed_candidate_and_previous_runtime(self):
         self.assertEqual(transition.RUNTIME_TAG, NEW_TAG)
         self.assertEqual(transition.CANDIDATE_BASE_COMMIT, CANDIDATE_BASE_COMMIT)
         self.assertEqual(transition.PREVIOUS_TAG, PREVIOUS_TAG)
@@ -599,8 +651,8 @@ class SourceContractTest(unittest.TestCase):
         validate_checkout_contract(ROOT)
         generated = [identity for identities in transition.CLEAN_SOURCE_GRAPH.values()
                      for identity in identities if identity[0] == CORE]
-        self.assertEqual(sum(identity[-1] == NEW_TAG for identity in generated), 5)
-        self.assertEqual(sum(identity[-1] == OLD_TAG for identity in generated), 27)
+        self.assertEqual(sum(identity[-1] == NEW_TAG for identity in generated), 6)
+        self.assertEqual(sum(identity[-1] == OLD_TAG for identity in generated), 26)
         self.assertFalse(any(identity[-1] == PREVIOUS_TAG for identity in generated))
 
     def test_cli_is_explicit_retained_convergence_without_index_arguments(self):
@@ -667,7 +719,7 @@ class RunbookContractTest(unittest.TestCase):
 
     def test_runbook_binds_graph_exception_operations_and_rollback(self):
         text = RUNBOOK.read_text(encoding="utf-8")
-        for phrase in (NEW_TAG, PREVIOUS_TAG, OLD_TAG, "5 candidate / 27 old / 0 previous / 0 other",
+        for phrase in (NEW_TAG, PREVIOUS_TAG, OLD_TAG, "6 candidate / 26 old / 0 previous / 0 other",
                        "11", "CustomResourceDefinition", "zero bytes", "Root fresh",
                        "Kyverno fresh", "Fluentd fresh", "Argo CD", "OpenSearch", "three consecutive",
                        "no automatic rollback", "fluentd-log-schema", "mode `0600`"):
@@ -749,7 +801,7 @@ class SecurityTest(Harness):
                 return super().run(argv, timeout, env=env)
 
         fake = WrongParent()
-        with self.assertRaisesRegex(transition.TransitionError, "authorized Issue #348 v5 base"):
+        with self.assertRaisesRegex(transition.TransitionError, "authorized Issue #348 v7 base"):
             self.execute(fake)
         self.assertFalse(any(argv[0] == "kubectl" for argv, _ in fake.commands))
 
@@ -849,7 +901,8 @@ class SecurityTest(Harness):
         self.execute()
         records = [json.loads(line) for line in self.evidence.read_text(encoding="utf-8").splitlines()]
         by_event = {record["event"]: record for record in records}
-        for event in ("preflight", "controller-stopped", "barrier-verified", "owners-closed", "controller-restored", "control-plane-closed"):
+        for event in ("preflight", "controller-stopped", "barrier-verified", "owners-closed",
+                      "controller-restored", "grafana-operation-started", "control-plane-closed"):
             self.assertIn(event, by_event)
             self.assertTrue(by_event[event]["time"].endswith("Z"))
             self.assertIsInstance(by_event[event]["elapsed_seconds"], (int, float))
@@ -863,7 +916,7 @@ class SecurityTest(Harness):
         self.assertEqual(by_event["owners-closed"]["application_spec_hash"], transition.digest(expected_owner_specs))
         self.assertEqual(by_event["control-plane-closed"]["schema_job_absence"], "exact-NotFound:logging/fluentd-log-schema")
         self.assertEqual(by_event["control-plane-closed"]["source_counts"],
-                         {"candidate": 5, "old": 27, "other": 0, "previous": 0})
+                         {"candidate": 6, "old": 26, "other": 0, "previous": 0})
         self.assertIn("operation_hashes", by_event["control-plane-closed"])
 
     def test_evidence_separates_invocation_execution_and_first_mutation_counters(self):
@@ -1040,11 +1093,14 @@ class TransitionBehaviorTest(Harness):
     def test_success_has_deterministic_call_order_and_exact_cas_payloads(self):
         fake = self.execute()
         mutations = [(kind, name, payload[-1]["value"]) for kind, name, payload in fake.patch_payloads]
-        self.assertEqual(mutations[:4], [
+        self.assertEqual(mutations[:5], [
             ("statefulsets.apps", "argocd-application-controller", 0),
             ("applications.argoproj.io", "root-app", NEW_TAG),
             ("applications.argoproj.io", "argocd", NEW_TAG),
             ("statefulsets.apps", "argocd-application-controller", 1),
+            ("applications.argoproj.io", "grafana", {
+                "sync": {"revisions": ["87.17.0", NEW_COMMIT]},
+            }),
         ])
         stop = fake.patch_payloads[0][2]
         self.assertEqual(stop, [
@@ -1057,6 +1113,205 @@ class TransitionBehaviorTest(Harness):
         self.assertEqual([item["path"] for item in root_patch], ["/metadata/uid", "/metadata/resourceVersion", "/spec/source/repoURL", "/spec/source/path", "/spec/source/targetRevision", "/spec/source/targetRevision"])
         self.assertEqual(fake.restore_count, 1)
         self.assertTrue(any("fluentd-log-schema" in command[0] for command in fake.commands))
+
+    def test_grafana_manual_convergence_is_exact_fresh_and_fail_closed(self):
+        fake = self.execute()
+        grafana_patches = [payload for kind, name, payload in fake.patch_payloads
+                           if kind == "applications.argoproj.io" and name == "grafana"]
+        self.assertEqual(len(grafana_patches), 1)
+        payload = grafana_patches[0]
+        self.assertEqual(payload[-1], {
+            "op": "add", "path": "/operation",
+            "value": {"sync": {"revisions": ["87.17.0", NEW_COMMIT]}},
+        })
+        source_test = next(item for item in payload if item.get("path") == "/spec/sources")
+        self.assertEqual(source_test["op"], "test")
+        self.assertEqual(source_test["value"][1]["targetRevision"], NEW_TAG)
+        identity = transition.operation_identity(fake.apps["grafana"])
+        self.assertEqual(identity["phase"], "Succeeded")
+        self.assertEqual(identity["requestedRevisions"], ["87.17.0", NEW_COMMIT])
+        self.assertEqual(identity["resultRevisions"], ["87.17.0", NEW_COMMIT])
+
+    def test_grafana_uid_change_before_operation_fails_without_operation_patch(self):
+        fake = StatefulFakeKubectl()
+        fake.grafana_pre_operation_mutation = (
+            lambda application: application["metadata"].update({"uid": "replacement-grafana"})
+        )
+
+        with self.assertRaisesRegex(
+                transition.TransitionError, "Grafana UID changed before explicit convergence"):
+            self.execute(fake)
+
+        grafana_patches = [entry for entry in fake.patch_payloads
+                           if entry[0:2] == ("applications.argoproj.io", "grafana")]
+        self.assertEqual(grafana_patches, [])
+
+    def test_grafana_spec_drift_before_operation_fails_without_operation_patch(self):
+        fake = StatefulFakeKubectl()
+        fake.grafana_pre_operation_mutation = (
+            lambda application: application["spec"].update({"project": "unexpected"})
+        )
+
+        with self.assertRaisesRegex(
+                transition.TransitionError,
+                "Grafana spec changed beyond the exact candidate source"):
+            self.execute(fake)
+
+        grafana_patches = [entry for entry in fake.patch_payloads
+                           if entry[0:2] == ("applications.argoproj.io", "grafana")]
+        self.assertEqual(grafana_patches, [])
+
+    def test_grafana_pending_or_active_operation_fails_without_operation_patch(self):
+        mutations = (
+            lambda application: application.update({
+                "operation": {"sync": {"revisions": ["87.17.0", OLD_COMMIT]}},
+            }),
+            lambda application: application["status"].update({
+                "operationState": operation(
+                    "2026-09-02T06:12:30Z", ["87.17.0", OLD_COMMIT], "Running"
+                ),
+            }),
+        )
+        for mutation in mutations:
+            with self.subTest(mutation=mutation):
+                if self.evidence.exists():
+                    self.evidence.unlink()
+                fake = StatefulFakeKubectl()
+                fake.grafana_pre_operation_mutation = mutation
+
+                with self.assertRaisesRegex(
+                        transition.TransitionError,
+                        "Grafana has a pending or active operation"):
+                    self.execute(fake)
+
+                grafana_patches = [entry for entry in fake.patch_payloads
+                                   if entry[0:2] == ("applications.argoproj.io", "grafana")]
+                self.assertEqual(grafana_patches, [])
+
+    def test_grafana_non_boundary_state_fails_without_operation_patch(self):
+        mutations = (
+            lambda application: application["status"]["health"].update(
+                {"status": "Degraded"}
+            ),
+            lambda application: application["status"]["sync"].update(
+                {"status": "Synced"}
+            ),
+            lambda application: application["status"]["sync"].update(
+                {"revisions": ["87.17.0", NEW_COMMIT]}
+            ),
+            lambda application: application["status"].update({
+                "operationState": operation(
+                    "2026-09-02T06:12:30Z", ["87.17.0", OLD_COMMIT]
+                ),
+            }),
+        )
+        for mutation in mutations:
+            with self.subTest(mutation=mutation):
+                if self.evidence.exists():
+                    self.evidence.unlink()
+                fake = StatefulFakeKubectl()
+                fake.grafana_pre_operation_mutation = mutation
+
+                with self.assertRaisesRegex(
+                        transition.TransitionError,
+                        "Grafana pre-operation state is not the exact reviewed boundary"):
+                    self.execute(fake)
+
+                grafana_patches = [entry for entry in fake.patch_payloads
+                                   if entry[0:2] == ("applications.argoproj.io", "grafana")]
+                self.assertEqual(grafana_patches, [])
+
+    def test_grafana_wrong_or_missing_operation_readback_never_reports_success(self):
+        mutations = (
+            lambda application: application.pop("operation"),
+            lambda application: application.update({
+                "operation": {"sync": {"revisions": ["87.17.0", OLD_COMMIT]}},
+            }),
+        )
+        for mutation in mutations:
+            with self.subTest(mutation=mutation):
+                if self.evidence.exists():
+                    self.evidence.unlink()
+                fake = StatefulFakeKubectl()
+                fake.grafana_patch_readback_mutation = mutation
+
+                with self.assertRaisesRegex(
+                        transition.TransitionError,
+                        "Grafana operation readback is not exact"):
+                    self.execute(fake)
+
+                records = [json.loads(line) for line in self.evidence.read_text().splitlines()]
+                self.assertEqual(records[-1]["event"], "failure")
+                self.assertNotIn("grafana-operation-started",
+                                 {record["event"] for record in records})
+                grafana_patches = [entry for entry in fake.patch_payloads
+                                   if entry[0:2] == ("applications.argoproj.io", "grafana")]
+                self.assertEqual(len(grafana_patches), 1)
+
+    def test_rejected_grafana_operation_patch_never_reports_success(self):
+        fake = StatefulFakeKubectl()
+        fake.fail_grafana_operation_patch = True
+
+        with self.assertRaisesRegex(
+                transition.TransitionError, "grafana operation patch failed"):
+            self.execute(fake)
+
+        records = [json.loads(line) for line in self.evidence.read_text().splitlines()]
+        self.assertEqual(records[-1]["event"], "failure")
+        self.assertNotIn("grafana-operation-started", {record["event"] for record in records})
+        grafana_patches = [entry for entry in fake.patch_payloads
+                           if entry[0:2] == ("applications.argoproj.io", "grafana")]
+        self.assertEqual(len(grafana_patches), 1)
+        owner_rollbacks = [entry for entry in fake.patch_payloads
+                           if entry[0] == "applications.argoproj.io"
+                           and entry[1] in {"root-app", "argocd"}
+                           and entry[2][-1]["value"] == PREVIOUS_TAG]
+        self.assertEqual(owner_rollbacks, [])
+
+    def test_grafana_wrong_preflight_resolved_revisions_fail_before_mutation(self):
+        fake = StatefulFakeKubectl()
+        fake.apps["grafana"]["status"]["sync"]["revisions"] = [
+            "87.17.0", "f" * 40,
+        ]
+
+        with self.assertRaisesRegex(
+                transition.TransitionError,
+                "retained status revisions do not match exact commits"):
+            self.execute(fake)
+
+        self.assertEqual(fake.patch_payloads, [])
+
+    def test_grafana_missing_preflight_prior_operation_identity_fails_before_mutation(self):
+        fake = StatefulFakeKubectl()
+        fake.apps["grafana"]["status"].pop("operationState")
+
+        with self.assertRaisesRegex(
+                transition.TransitionError,
+                "grafana prior operation identity is required"):
+            self.execute(fake)
+
+        self.assertEqual(fake.patch_payloads, [])
+
+    def test_grafana_stale_failed_or_wrong_operation_never_converges_without_rollback(self):
+        for attribute in (
+                "grafana_stale_operation", "grafana_wrong_requested_revision",
+                "grafana_wrong_result_revision", "grafana_failed_operation"):
+            with self.subTest(attribute=attribute):
+                if self.evidence.exists():
+                    self.evidence.unlink()
+                fake = StatefulFakeKubectl()
+                setattr(fake, attribute, True)
+                with self.assertRaisesRegex(transition.TransitionError, "convergence deadline"):
+                    self.execute(fake)
+                self.assertEqual(transition.target(fake.apps["root-app"]), NEW_TAG)
+                self.assertEqual(transition.target(fake.apps["argocd"]), NEW_TAG)
+                owner_rollbacks = [
+                    (name, payload[-1]["value"])
+                    for kind, name, payload in fake.patch_payloads
+                    if kind == "applications.argoproj.io" and name in {"root-app", "argocd"}
+                    and payload[-1]["value"] == PREVIOUS_TAG
+                ]
+                self.assertEqual(owner_rollbacks, [])
 
     def test_active_operation_before_barrier_fails_without_mutation(self):
         fake = StatefulFakeKubectl()
@@ -1296,6 +1551,7 @@ class TransitionBehaviorTest(Harness):
             ("statefulsets.apps", "argocd-application-controller"),
             ("applications.argoproj.io", "root-app"),
             ("applications.argoproj.io", "argocd"),
+            ("applications.argoproj.io", "grafana"),
         })
 
     def test_interruption_after_stop_accept_rolls_back_and_restores(self):
@@ -1508,8 +1764,8 @@ class TransitionBehaviorTest(Harness):
         core_targets = [source["targetRevision"] for app in fake.apps.values()
                         for source in transition.source_list(app)
                         if source and source.get("repoURL") == CORE]
-        self.assertEqual(core_targets.count(NEW_TAG), 5)
-        self.assertEqual(core_targets.count(OLD_TAG), 27)
+        self.assertEqual(core_targets.count(NEW_TAG), 6)
+        self.assertEqual(core_targets.count(OLD_TAG), 26)
         self.assertNotIn(PREVIOUS_TAG, core_targets)
 
     def test_any_sibling_source_identity_drift_is_rejected_preflight(self):
