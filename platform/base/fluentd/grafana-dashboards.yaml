@@ -248,7 +248,7 @@ data:
             {
               "bucketAggs": [
                 {
-                  "field": "kubernetes.namespace_name.keyword",
+                  "field": "kubernetes.namespace_name",
                   "id": "1",
                   "settings": {
                     "min_doc_count": "1",
@@ -308,7 +308,7 @@ data:
             {
               "bucketAggs": [
                 {
-                  "field": "kubernetes.pod_name.keyword",
+                  "field": "kubernetes.pod_name",
                   "id": "1",
                   "settings": {
                     "min_doc_count": "1",
@@ -410,14 +410,14 @@ data:
               "type": "elasticsearch",
               "uid": "${logs_ds}"
             },
-            "definition": "{\"find\":\"terms\",\"field\":\"kubernetes.namespace_name.keyword\"}",
+            "definition": "{\"find\":\"terms\",\"field\":\"kubernetes.namespace_name\"}",
             "hide": 0,
             "includeAll": true,
             "label": "Namespace",
             "multi": false,
             "name": "namespace",
             "options": [],
-            "query": "{\"find\":\"terms\",\"field\":\"kubernetes.namespace_name.keyword\"}",
+            "query": "{\"find\":\"terms\",\"field\":\"kubernetes.namespace_name\"}",
             "refresh": 2,
             "regex": "",
             "skipUrlSync": false,
@@ -431,14 +431,14 @@ data:
               "type": "elasticsearch",
               "uid": "${logs_ds}"
             },
-            "definition": "{\"find\":\"terms\",\"field\":\"kubernetes.pod_name.keyword\",\"query\":\"kubernetes.namespace_name:$namespace\"}",
+            "definition": "{\"find\":\"terms\",\"field\":\"kubernetes.pod_name\",\"query\":\"kubernetes.namespace_name:$namespace\"}",
             "hide": 0,
             "includeAll": true,
             "label": "Pod",
             "multi": false,
             "name": "pod",
             "options": [],
-            "query": "{\"find\":\"terms\",\"field\":\"kubernetes.pod_name.keyword\",\"query\":\"kubernetes.namespace_name:$namespace\"}",
+            "query": "{\"find\":\"terms\",\"field\":\"kubernetes.pod_name\",\"query\":\"kubernetes.namespace_name:$namespace\"}",
             "refresh": 2,
             "regex": "",
             "skipUrlSync": false,
@@ -452,14 +452,14 @@ data:
               "type": "elasticsearch",
               "uid": "${logs_ds}"
             },
-            "definition": "{\"find\":\"terms\",\"field\":\"kubernetes.container_name.keyword\",\"query\":\"kubernetes.namespace_name:$namespace\"}",
+            "definition": "{\"find\":\"terms\",\"field\":\"kubernetes.container_name\",\"query\":\"kubernetes.namespace_name:$namespace\"}",
             "hide": 0,
             "includeAll": true,
             "label": "Container",
             "multi": false,
             "name": "container",
             "options": [],
-            "query": "{\"find\":\"terms\",\"field\":\"kubernetes.container_name.keyword\",\"query\":\"kubernetes.namespace_name:$namespace\"}",
+            "query": "{\"find\":\"terms\",\"field\":\"kubernetes.container_name\",\"query\":\"kubernetes.namespace_name:$namespace\"}",
             "refresh": 2,
             "regex": "",
             "skipUrlSync": false,
