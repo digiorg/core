@@ -46,11 +46,16 @@ class Mutator:
             {"op": "test", "path": path, "value": value}
             for path, value in operation.extra_preconditions
         )
-        tests.extend([
-            {"op": "test", "path": operation.path,
-             "value": operation.current_value},
-            {"op": "replace", "path": operation.path, "value": operation.after},
-        ])
+        if operation.patch_operation == "replace":
+            tests.append({
+                "op": "test", "path": operation.path,
+                "value": operation.current_value,
+            })
+        tests.append({
+            "op": operation.patch_operation,
+            "path": operation.path,
+            "value": operation.after,
+        })
         return tests
 
     def _apply(self, operation, deadline, observed=None):

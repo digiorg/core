@@ -12,7 +12,7 @@ from test_issue348_release_closure import validate_checkout_contract
 
 ROOT = Path(__file__).resolve().parents[2]
 CORE_REPO = "https://github.com/digiorg/core.git"
-CANDIDATE_TAG = "issue348-runtime-v6-20260919T100440Z"
+CANDIDATE_TAG = "issue348-runtime-v7-20260926T152038Z"
 QUALIFICATION_DESCRIPTOR = CANDIDATE_TAG
 OLD_TAG = "issue301-runtime-v16-20260817T130820Z"
 CATALOG_REVISION = "d531180b322dc0128477ecb9bb0fc9071b41d631"
@@ -45,7 +45,7 @@ class RuntimeSourceGraphTest(unittest.TestCase):
 
     def test_normal_source_is_main_and_generated_candidate_is_not_imported(self):
         validate_checkout_contract(ROOT)
-        self.assertEqual(QUALIFICATION_DESCRIPTOR, "issue348-runtime-v6-20260919T100440Z")
+        self.assertEqual(QUALIFICATION_DESCRIPTOR, "issue348-runtime-v7-20260926T152038Z")
 
     def test_external_consumer_pins_are_unchanged(self):
         app_config = source_list(self.applications["app-config"])[0]
@@ -81,9 +81,9 @@ class RuntimeSourceGraphTest(unittest.TestCase):
 
 
 class TransitionModuleContractTest(unittest.TestCase):
-    def test_transition_binds_reserved_v6_runtime_tag(self):
+    def test_transition_binds_reserved_v7_runtime_tag(self):
         self.assertTrue(TRANSITION.exists(), "Issue #348 transition module is missing")
-        spec = spec_from_file_location("issue348_transition_v6", TRANSITION)
+        spec = spec_from_file_location("issue348_transition_v7", TRANSITION)
         assert spec and spec.loader
         module = module_from_spec(spec)
         spec.loader.exec_module(module)
@@ -98,25 +98,35 @@ class TransitionModuleContractTest(unittest.TestCase):
         spec.loader.exec_module(module)
 
         self.assertEqual(module.RUNTIME_TAG, CANDIDATE_TAG)
-        self.assertEqual(module.PRODUCT_BASE_COMMIT, "ff25a5083059412f82525ace73e7c20b322fddbf")
-        self.assertEqual(module.CANDIDATE_BASE_COMMIT, "b32d1c18eb0d1048d8e38743f5fdd1c68a72936d")
+        self.assertEqual(module.PRODUCT_BASE_COMMIT, "dbb293c6d2b2c6064928f7b52a116019343cc027")
+        self.assertEqual(module.CANDIDATE_BASE_COMMIT, "dbb293c6d2b2c6064928f7b52a116019343cc027")
         self.assertEqual(module.PREVIOUS_TAG, "issue350-352-runtime-v3-20260904T195619Z")
         self.assertEqual(module.PREVIOUS_COMMIT, "f6e7d58c0b03ee6a3ec6ed9e1e22e5023f861549")
         self.assertEqual(module.OLD_TAG, OLD_TAG)
-        clean_targets = [
-            identity[-1]
-            for identities in module.CLEAN_SOURCE_GRAPH.values()
+        candidate_sources = {
+            (name, identity[2], identity[3])
+            for name, identities in module.CLEAN_SOURCE_GRAPH.items()
             for identity in identities
-            if identity[0] == CORE_REPO
-        ]
+            if identity[0] == CORE_REPO and identity[-1] == CANDIDATE_TAG
+        }
+        clean_targets = [identity[-1] for identities in module.CLEAN_SOURCE_GRAPH.values()
+                         for identity in identities if identity[0] == CORE_REPO]
         preflight_targets = [
             identity[-1]
             for identities in module.PREFLIGHT_SOURCE_GRAPH.values()
             for identity in identities
             if identity[0] == CORE_REPO
         ]
-        self.assertEqual(clean_targets.count(CANDIDATE_TAG), 5)
-        self.assertEqual(clean_targets.count(OLD_TAG), 27)
+        self.assertEqual(candidate_sources, {
+            ("root-app", "apps", None),
+            ("argocd", "platform/base/argocd", None),
+            ("fluentd", "platform/base/fluentd", None),
+            ("opensearch", None, "values"),
+            ("opensearch", "platform/base/opensearch", None),
+            ("grafana", None, "values"),
+        })
+        self.assertEqual(clean_targets.count(CANDIDATE_TAG), 6)
+        self.assertEqual(clean_targets.count(OLD_TAG), 26)
         self.assertEqual(preflight_targets.count(module.PREVIOUS_TAG), 3)
         self.assertEqual(preflight_targets.count(OLD_TAG), 29)
 

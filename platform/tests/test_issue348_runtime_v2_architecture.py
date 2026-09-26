@@ -25,7 +25,7 @@ TRANSITION = SCRIPTS / "issue348_runtime_v2_transition.py"
 PREFLIGHT = SCRIPTS / "issue348_runtime_v2_preflight.py"
 QUALIFICATION = SCRIPTS / "issue348_runtime_v2_qualification.py"
 MUTATOR = SCRIPTS / "issue348_runtime_v2_mutator.py"
-NEW_TAG = "issue348-runtime-v6-20260919T100440Z"
+NEW_TAG = "issue348-runtime-v7-20260926T152038Z"
 PREVIOUS_TAG = "issue350-352-runtime-v3-20260904T195619Z"
 
 
@@ -200,6 +200,46 @@ class SnapshotValidatorTest(unittest.TestCase):
 
 
 class MutationPlanTest(unittest.TestCase):
+    def test_grafana_convergence_operation_is_application_bounded_and_exact(self):
+        requested = {"sync": {"revisions": ["87.17.0", "a" * 40]}}
+        sources = [
+            {"repoURL": "https://prometheus-community.github.io/helm-charts",
+             "chart": "kube-prometheus-stack", "targetRevision": "87.17.0"},
+            {"repoURL": "https://github.com/digiorg/core.git",
+             "ref": "values", "targetRevision": NEW_TAG},
+        ]
+        operation = qualification.MutationPlan.operation(
+            "grafana-convergence", "applications.argoproj.io", "argocd", "grafana",
+            "uid-grafana", "rv-grafana", None, requested,
+            (("/spec/sources", sources),), patch_operation="add",
+        )
+        calls = []
+
+        def adapter(args, _deadline, namespace):
+            calls.append((args, namespace))
+            return json.dumps({"metadata": {"uid": "uid-grafana"},
+                               "operation": requested})
+
+        executor = mutator.Mutator(
+            qualification.MutationPlan("snapshot", (operation,), ()),
+            adapter,
+            kubectl_adapter=True,
+        )
+        executor.execute("grafana-convergence", object())
+
+        self.assertEqual(operation.path, "/operation")
+        self.assertEqual(operation.patch_operation, "add")
+        self.assertEqual(calls[0][1], "argocd")
+        argv = calls[0][0]
+        self.assertEqual(argv[:3], ["patch", "applications.argoproj.io", "grafana"])
+        payload = json.loads(argv[argv.index("-p") + 1])
+        self.assertEqual(payload[-1], {
+            "op": "add", "path": "/operation", "value": requested,
+        })
+        self.assertNotIn(
+            {"op": "test", "path": "/operation", "value": None}, payload,
+        )
+
     def test_plan_rejects_tampered_validated_result(self):
         validated = qualification.Validator.validate(sample_snapshot(), sample_contract())
         tampered = validated._replace(controller_uid="replacement-controller")

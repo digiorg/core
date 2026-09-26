@@ -23,7 +23,7 @@
       "additionalProperties": false,
       "required": ["name", "object", "peeled_commit"],
       "properties": {
-        "name": {"const": "issue348-runtime-v6-20260919T100440Z"},
+        "name": {"const": "issue348-runtime-v7-20260926T152038Z"},
         "object": {"$ref": "#/$defs/sha1"},
         "peeled_commit": {"$ref": "#/$defs/sha1"}
       }

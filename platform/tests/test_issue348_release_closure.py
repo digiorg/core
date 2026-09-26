@@ -23,7 +23,7 @@ if str(SCRIPTS) not in sys.path:
 import issue348_runtime_v2_release_closure as closure
 import issue348_release_attestation as attestation
 
-RUNTIME_TAG = "issue348-runtime-v6-20260919T100440Z"
+RUNTIME_TAG = "issue348-runtime-v7-20260926T152038Z"
 PREVIOUS_TAG = "issue350-352-runtime-v3-20260904T195619Z"
 PREVIOUS_COMMIT = "f6e7d58c0b03ee6a3ec6ed9e1e22e5023f861549"
 RETAINED_TAG = "issue301-runtime-v16-20260817T130820Z"
@@ -247,7 +247,7 @@ def _validate_checkout_source(root, bundle):
             "tag": RETAINED_TAG, "commit": RETAINED_COMMIT}:
         raise AssertionError("generated closure retained identity changed")
     if manifest["expected_graph"] != {
-            "candidate": 5, "retained": 27, "previous": 0, "other": 0}:
+            "candidate": 6, "retained": 26, "previous": 0, "other": 0}:
         raise AssertionError("generated closure graph changed")
     if manifest["changes"] != _expected_changes():
         raise AssertionError("generated closure changes changed")
@@ -577,13 +577,26 @@ class DeterministicClosureTest(ClosureHarness):
         self.assertNotIn("closure_commit", inventory)
         self.assertNotIn("closure_tree", inventory)
         self.assertEqual(inventory["expected_graph"], {
-            "candidate": 5, "other": 0, "previous": 0, "retained": 27,
+            "candidate": 6, "other": 0, "previous": 0, "retained": 26,
         })
         self.assertEqual(len(inventory["changes"]), 32)
         self.assertEqual(
             {(item["path"], item["field"]) for item in inventory["changes"]},
             set(closure.ALLOWED_FIELDS),
         )
+        candidate_changes = {
+            (item["path"], item["field"])
+            for item in inventory["changes"]
+            if item["after"] == RUNTIME_TAG
+        }
+        self.assertEqual(candidate_changes, {
+            ("platform/base/argocd/applications/root-app.yaml", "/spec/source/targetRevision"),
+            ("apps/platform/argocd.yaml", "/spec/source/targetRevision"),
+            ("apps/platform/fluentd.yaml", "/spec/source/targetRevision"),
+            ("apps/platform/grafana.yaml", "/spec/sources/1/targetRevision"),
+            ("apps/platform/opensearch.yaml", "/spec/sources/1/targetRevision"),
+            ("apps/platform/opensearch.yaml", "/spec/sources/2/targetRevision"),
+        })
         changed = set(run_git(self.repo, "diff", "--name-only").stdout.splitlines())
         self.assertEqual(changed, {path for path, _ in closure.ALLOWED_FIELDS})
         self.assertEqual(
@@ -791,7 +804,7 @@ class DocumentationReconciliationTest(unittest.TestCase):
         text = (self.root / "specs/345-log-schema-isolation/runtime-v2-transition.md").read_text(encoding="utf-8")
         for phrase in (
             "issue348_runtime_v2_release_closure.py",
-            "5 candidate / 27 retained / 0 previous / 0 other",
+            "6 candidate / 26 retained / 0 previous / 0 other",
             "issue348-release-attestation.template.json",
             "must not be run in the source-candidate worktree",
             "future commit, tree, tag-object, CI, and review identities remain null",

@@ -15,7 +15,7 @@ from yaml.nodes import MappingNode, ScalarNode, SequenceNode
 
 GENERATOR_VERSION = "issue348-runtime-v2-release-closure/1"
 CORE_REPO = "https://github.com/digiorg/core.git"
-RUNTIME_TAG = "issue348-runtime-v6-20260919T100440Z"
+RUNTIME_TAG = "issue348-runtime-v7-20260926T152038Z"
 PREVIOUS_TAG = "issue350-352-runtime-v3-20260904T195619Z"
 PREVIOUS_COMMIT = "f6e7d58c0b03ee6a3ec6ed9e1e22e5023f861549"
 RETAINED_TAG = "issue301-runtime-v16-20260817T130820Z"
@@ -53,7 +53,7 @@ _RULES = (
     Rule("apps/platform/fluentd.yaml", "/spec/source/targetRevision", "candidate"),
     Rule("apps/platform/gitea.yaml", "/spec/sources/1/targetRevision", "retained"),
     Rule("apps/platform/gitea-actions-runner.yaml", "/spec/source/targetRevision", "retained"),
-    Rule("apps/platform/grafana.yaml", "/spec/sources/1/targetRevision", "retained"),
+    Rule("apps/platform/grafana.yaml", "/spec/sources/1/targetRevision", "candidate"),
     Rule("apps/platform/harbor.yaml", "/spec/sources/1/targetRevision", "retained"),
     Rule("apps/platform/harbor.yaml", "/spec/sources/2/targetRevision", "retained"),
     Rule("apps/platform/jaeger.yaml", "/spec/sources/1/targetRevision", "retained"),
@@ -432,7 +432,7 @@ def generate(config):
         "reserved_runtime_tag": config.runtime_tag,
         "predecessor": {"tag": config.previous_tag, "commit": config.previous_commit},
         "retained": {"tag": config.retained_tag, "commit": config.retained_commit},
-        "expected_graph": {"candidate": 5, "retained": 27, "previous": 0, "other": 0},
+        "expected_graph": {"candidate": 6, "retained": 26, "previous": 0, "other": 0},
         "changes": changes,
         "descriptor_sha256": _sha256(config.descriptor.read_bytes()),
         "fixture_digests": {
