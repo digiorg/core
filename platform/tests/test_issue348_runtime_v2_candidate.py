@@ -12,7 +12,7 @@ from test_issue348_release_closure import validate_checkout_contract
 
 ROOT = Path(__file__).resolve().parents[2]
 CORE_REPO = "https://github.com/digiorg/core.git"
-CANDIDATE_TAG = "issue348-runtime-v7-20260926T152038Z"
+CANDIDATE_TAG = "issue348-runtime-v8-20260927T160157Z"
 QUALIFICATION_DESCRIPTOR = CANDIDATE_TAG
 OLD_TAG = "issue301-runtime-v16-20260817T130820Z"
 CATALOG_REVISION = "d531180b322dc0128477ecb9bb0fc9071b41d631"
@@ -45,7 +45,7 @@ class RuntimeSourceGraphTest(unittest.TestCase):
 
     def test_normal_source_is_main_and_generated_candidate_is_not_imported(self):
         validate_checkout_contract(ROOT)
-        self.assertEqual(QUALIFICATION_DESCRIPTOR, "issue348-runtime-v7-20260926T152038Z")
+        self.assertEqual(QUALIFICATION_DESCRIPTOR, "issue348-runtime-v8-20260927T160157Z")
 
     def test_external_consumer_pins_are_unchanged(self):
         app_config = source_list(self.applications["app-config"])[0]
@@ -81,9 +81,9 @@ class RuntimeSourceGraphTest(unittest.TestCase):
 
 
 class TransitionModuleContractTest(unittest.TestCase):
-    def test_transition_binds_reserved_v7_runtime_tag(self):
+    def test_transition_binds_reserved_v8_runtime_tag(self):
         self.assertTrue(TRANSITION.exists(), "Issue #348 transition module is missing")
-        spec = spec_from_file_location("issue348_transition_v7", TRANSITION)
+        spec = spec_from_file_location("issue348_transition_v8", TRANSITION)
         assert spec and spec.loader
         module = module_from_spec(spec)
         spec.loader.exec_module(module)

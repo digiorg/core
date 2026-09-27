@@ -23,9 +23,11 @@ if str(SCRIPTS) not in sys.path:
 import issue348_runtime_v2_release_closure as closure
 import issue348_release_attestation as attestation
 
-RUNTIME_TAG = "issue348-runtime-v7-20260926T152038Z"
-PREVIOUS_TAG = "issue350-352-runtime-v3-20260904T195619Z"
-PREVIOUS_COMMIT = "f6e7d58c0b03ee6a3ec6ed9e1e22e5023f861549"
+RUNTIME_TAG = "issue348-runtime-v8-20260927T160157Z"
+PREVIOUS_TAG = "issue348-runtime-v7-20260926T152038Z"
+PREVIOUS_COMMIT = "0f35bf0824e571cb7f407092c7437adf3e251b71"
+RUNTIME_PREVIOUS_TAG = "issue350-352-runtime-v3-20260904T195619Z"
+RUNTIME_PREVIOUS_COMMIT = "f6e7d58c0b03ee6a3ec6ed9e1e22e5023f861549"
 RETAINED_TAG = "issue301-runtime-v16-20260817T130820Z"
 RETAINED_COMMIT = "8e6b8908f99ebf76db47c15613eff523644c23f6"
 DESCRIPTOR = Path("specs/345-log-schema-isolation/issue348-runtime-v2-contract.json")
@@ -574,6 +576,13 @@ class DeterministicClosureTest(ClosureHarness):
         self.assertEqual((self.repo / OUTPUT).read_bytes(), (second / OUTPUT).read_bytes())
         self.assertEqual(first_manifest, second_manifest)
         inventory = json.loads((self.repo / OUTPUT).read_text(encoding="utf-8"))
+        descriptor = json.loads((self.repo / DESCRIPTOR).read_text(encoding="utf-8"))
+        self.assertEqual(inventory["predecessor"], {
+            "tag": PREVIOUS_TAG,
+            "commit": PREVIOUS_COMMIT,
+        })
+        self.assertEqual(descriptor["previous_tag"], RUNTIME_PREVIOUS_TAG)
+        self.assertEqual(descriptor["previous_commit"], RUNTIME_PREVIOUS_COMMIT)
         self.assertNotIn("closure_commit", inventory)
         self.assertNotIn("closure_tree", inventory)
         self.assertEqual(inventory["expected_graph"], {
