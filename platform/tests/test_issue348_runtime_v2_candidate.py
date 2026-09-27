@@ -98,8 +98,12 @@ class TransitionModuleContractTest(unittest.TestCase):
         spec.loader.exec_module(module)
 
         self.assertEqual(module.RUNTIME_TAG, CANDIDATE_TAG)
-        self.assertEqual(module.PRODUCT_BASE_COMMIT, "dbb293c6d2b2c6064928f7b52a116019343cc027")
-        self.assertEqual(module.CANDIDATE_BASE_COMMIT, "dbb293c6d2b2c6064928f7b52a116019343cc027")
+        self.assertFalse(hasattr(module, "PRODUCT_BASE_COMMIT"))
+        self.assertFalse(hasattr(module, "CANDIDATE_BASE_COMMIT"))
+        self.assertEqual(
+            module.RELEASE_CLOSURE_PATH,
+            "issue348-runtime-v2-release-closure.json",
+        )
         self.assertEqual(module.PREVIOUS_TAG, "issue350-352-runtime-v3-20260904T195619Z")
         self.assertEqual(module.PREVIOUS_COMMIT, "f6e7d58c0b03ee6a3ec6ed9e1e22e5023f861549")
         self.assertEqual(module.OLD_TAG, OLD_TAG)

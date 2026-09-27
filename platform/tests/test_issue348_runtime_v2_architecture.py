@@ -200,14 +200,12 @@ class SnapshotValidatorTest(unittest.TestCase):
                 with self.assertRaises(qualification.QualificationError):
                     qualification.Validator.validate(snapshot, sample_contract())
 
-    def test_complete_typed_hpa_response_is_validated_without_shape_rewriting(self):
+    def test_typed_raw_hpa_response_accepts_items_without_type_meta(self):
         listing = {
             "apiVersion": "autoscaling/v2",
             "kind": "HorizontalPodAutoscalerList",
             "metadata": {"resourceVersion": "123"},
             "items": [{
-                "apiVersion": "autoscaling/v2",
-                "kind": "HorizontalPodAutoscaler",
                 "metadata": {"name": "unrelated", "namespace": "monitoring"},
                 "spec": {"scaleTargetRef": {
                     "apiVersion": "apps/v1",
@@ -237,6 +235,21 @@ class SnapshotValidatorTest(unittest.TestCase):
             {**valid, "metadata": []},
             {**valid, "items": None},
             {**valid, "items": [{}]},
+            {**valid, "items": [{
+                "apiVersion": "autoscaling/v1",
+                "kind": "HorizontalPodAutoscaler",
+                "metadata": {"name": "wrong", "namespace": "monitoring"},
+                "spec": {"scaleTargetRef": {
+                    "apiVersion": "apps/v1", "kind": "Deployment", "name": "wrong",
+                }},
+            }]},
+            {**valid, "items": [{
+                "apiVersion": "autoscaling/v2",
+                "metadata": {"name": "partial", "namespace": "monitoring"},
+                "spec": {"scaleTargetRef": {
+                    "apiVersion": "apps/v1", "kind": "Deployment", "name": "partial",
+                }},
+            }]},
         )
         for listing in malformed:
             with self.subTest(listing=listing):
@@ -248,8 +261,6 @@ class SnapshotValidatorTest(unittest.TestCase):
 
     def test_hpa_response_rejects_duplicate_identity_and_controller_target(self):
         item = {
-            "apiVersion": "autoscaling/v2",
-            "kind": "HorizontalPodAutoscaler",
             "metadata": {"name": "unrelated", "namespace": "monitoring"},
             "spec": {"scaleTargetRef": {
                 "apiVersion": "apps/v1",
@@ -422,8 +433,14 @@ class PreflightEntrypointTest(unittest.TestCase):
             "apiVersion": "autoscaling/v2",
             "kind": "HorizontalPodAutoscalerList",
             "metadata": {"resourceVersion": "123"},
-            "items": [],
+            "items": [{
+                "metadata": {"name": "unrelated", "namespace": "monitoring"},
+                "spec": {"scaleTargetRef": {
+                    "apiVersion": "apps/v1", "kind": "Deployment", "name": "unrelated",
+                }},
+            }],
         }
+        expected = sample_snapshot(hpa_list=typed_hpas)
         config = SimpleNamespace(
             kubeconfig=Path("/secure/kubeconfig"),
             context="retained",
@@ -435,11 +452,7 @@ class PreflightEntrypointTest(unittest.TestCase):
             old_commit="c" * 40,
         )
         adapter = preflight.ReadOnlySnapshotAdapter(config, ("preflight",))
-        adapter._remote_tags = lambda: (
-            (config.runtime_tag, config.runtime_commit),
-            (config.previous_tag, config.previous_commit),
-            (config.old_tag, config.old_commit),
-        )
+        adapter._remote_tags = lambda: expected.remote_tags
         adapter._argocd_diff = lambda: qualification.ReadResult(0, "", "")
         commands = []
 
@@ -455,19 +468,15 @@ class PreflightEntrypointTest(unittest.TestCase):
             if suffix == [
                     "get", "--raw",
                     "/apis/argoproj.io/v1alpha1/namespaces/argocd/applications"]:
-                return json.dumps({
-                    "apiVersion": "argoproj.io/v1alpha1",
-                    "kind": "ApplicationList",
-                    "items": [],
-                })
+                return expected.application_list_json
             if suffix == [
                     "-n", "argocd", "get", "statefulsets.apps", "-l",
                     "app.kubernetes.io/name=argocd-application-controller", "-o", "json"]:
-                return json.dumps({"items": [{}]})
+                return json.dumps({"items": [json.loads(expected.controller_json)]})
             if suffix == [
                     "-n", "argocd", "get", "pods", "-l",
                     "app.kubernetes.io/name=argocd-application-controller", "-o", "json"]:
-                return json.dumps({"items": []})
+                return json.dumps({"items": json.loads(expected.controller_pods_json)})
             if suffix == [
                     "get", "--raw", "/apis/autoscaling/v2/horizontalpodautoscalers"]:
                 return json.dumps(typed_hpas)
@@ -477,6 +486,7 @@ class PreflightEntrypointTest(unittest.TestCase):
             snapshot = adapter.collect()
 
         self.assertEqual(qualification.SnapshotDecoder.hpa_list(snapshot), typed_hpas)
+        qualification.Validator.validate(snapshot, sample_contract())
         self.assertIn(
             [
                 "kubectl", "--kubeconfig", str(config.kubeconfig),

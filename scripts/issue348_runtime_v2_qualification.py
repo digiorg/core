@@ -503,8 +503,12 @@ class Validator:
             metadata_hpa = item.get("metadata") if isinstance(item, dict) else None
             spec_hpa = item.get("spec") if isinstance(item, dict) else None
             ref = spec_hpa.get("scaleTargetRef") if isinstance(spec_hpa, dict) else None
-            if (not isinstance(item, dict) or item.get("apiVersion") != "autoscaling/v2" or
-                    item.get("kind") != "HorizontalPodAutoscaler" or
+            item_type_valid = isinstance(item, dict) and (
+                ("apiVersion" not in item and "kind" not in item) or
+                (item.get("apiVersion") == "autoscaling/v2" and
+                 item.get("kind") == "HorizontalPodAutoscaler")
+            )
+            if (not item_type_valid or
                     not isinstance(metadata_hpa, dict) or
                     not all(isinstance(metadata_hpa.get(key), str) and metadata_hpa[key]
                             for key in ("name", "namespace")) or
