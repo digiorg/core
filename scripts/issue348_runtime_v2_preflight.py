@@ -158,7 +158,7 @@ class ReadOnlySnapshotAdapter:
         if not isinstance(pods, list):
             raise QualificationError("controller Pod list shape is invalid")
         hpas = _json_command(self._kubectl([
-            "get", "horizontalpodautoscalers.autoscaling", "-A", "-o", "json",
+            "get", "--raw", "/apis/autoscaling/v2/horizontalpodautoscalers",
         ]))
         return SnapshotDecoder.snapshot(
             remote_tags=tags,

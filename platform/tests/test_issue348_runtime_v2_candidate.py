@@ -12,7 +12,7 @@ from test_issue348_release_closure import validate_checkout_contract
 
 ROOT = Path(__file__).resolve().parents[2]
 CORE_REPO = "https://github.com/digiorg/core.git"
-CANDIDATE_TAG = "issue348-runtime-v7-20260926T152038Z"
+CANDIDATE_TAG = "issue348-runtime-v8-20260927T160157Z"
 QUALIFICATION_DESCRIPTOR = CANDIDATE_TAG
 OLD_TAG = "issue301-runtime-v16-20260817T130820Z"
 CATALOG_REVISION = "d531180b322dc0128477ecb9bb0fc9071b41d631"
@@ -45,7 +45,7 @@ class RuntimeSourceGraphTest(unittest.TestCase):
 
     def test_normal_source_is_main_and_generated_candidate_is_not_imported(self):
         validate_checkout_contract(ROOT)
-        self.assertEqual(QUALIFICATION_DESCRIPTOR, "issue348-runtime-v7-20260926T152038Z")
+        self.assertEqual(QUALIFICATION_DESCRIPTOR, "issue348-runtime-v8-20260927T160157Z")
 
     def test_external_consumer_pins_are_unchanged(self):
         app_config = source_list(self.applications["app-config"])[0]
@@ -81,9 +81,9 @@ class RuntimeSourceGraphTest(unittest.TestCase):
 
 
 class TransitionModuleContractTest(unittest.TestCase):
-    def test_transition_binds_reserved_v7_runtime_tag(self):
+    def test_transition_binds_reserved_v8_runtime_tag(self):
         self.assertTrue(TRANSITION.exists(), "Issue #348 transition module is missing")
-        spec = spec_from_file_location("issue348_transition_v7", TRANSITION)
+        spec = spec_from_file_location("issue348_transition_v8", TRANSITION)
         assert spec and spec.loader
         module = module_from_spec(spec)
         spec.loader.exec_module(module)
@@ -98,8 +98,12 @@ class TransitionModuleContractTest(unittest.TestCase):
         spec.loader.exec_module(module)
 
         self.assertEqual(module.RUNTIME_TAG, CANDIDATE_TAG)
-        self.assertEqual(module.PRODUCT_BASE_COMMIT, "dbb293c6d2b2c6064928f7b52a116019343cc027")
-        self.assertEqual(module.CANDIDATE_BASE_COMMIT, "dbb293c6d2b2c6064928f7b52a116019343cc027")
+        self.assertFalse(hasattr(module, "PRODUCT_BASE_COMMIT"))
+        self.assertFalse(hasattr(module, "CANDIDATE_BASE_COMMIT"))
+        self.assertEqual(
+            module.RELEASE_CLOSURE_PATH,
+            "issue348-runtime-v2-release-closure.json",
+        )
         self.assertEqual(module.PREVIOUS_TAG, "issue350-352-runtime-v3-20260904T195619Z")
         self.assertEqual(module.PREVIOUS_COMMIT, "f6e7d58c0b03ee6a3ec6ed9e1e22e5023f861549")
         self.assertEqual(module.OLD_TAG, OLD_TAG)

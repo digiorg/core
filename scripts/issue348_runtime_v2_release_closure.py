@@ -15,9 +15,11 @@ from yaml.nodes import MappingNode, ScalarNode, SequenceNode
 
 GENERATOR_VERSION = "issue348-runtime-v2-release-closure/1"
 CORE_REPO = "https://github.com/digiorg/core.git"
-RUNTIME_TAG = "issue348-runtime-v7-20260926T152038Z"
-PREVIOUS_TAG = "issue350-352-runtime-v3-20260904T195619Z"
-PREVIOUS_COMMIT = "f6e7d58c0b03ee6a3ec6ed9e1e22e5023f861549"
+RUNTIME_TAG = "issue348-runtime-v8-20260927T160157Z"
+PREVIOUS_TAG = "issue348-runtime-v7-20260926T152038Z"
+PREVIOUS_COMMIT = "0f35bf0824e571cb7f407092c7437adf3e251b71"
+RUNTIME_PREVIOUS_TAG = "issue350-352-runtime-v3-20260904T195619Z"
+RUNTIME_PREVIOUS_COMMIT = "f6e7d58c0b03ee6a3ec6ed9e1e22e5023f861549"
 RETAINED_TAG = "issue301-runtime-v16-20260817T130820Z"
 RETAINED_COMMIT = "8e6b8908f99ebf76db47c15613eff523644c23f6"
 DESCRIPTOR_PATH = Path("specs/345-log-schema-isolation/issue348-runtime-v2-contract.json")
@@ -222,8 +224,8 @@ def _descriptor(config):
     if (
         value["schema"] != "issue348-runtime-v2-contract/v1"
         or value["runtime_tag"] != config.runtime_tag
-        or value["previous_tag"] != config.previous_tag
-        or value["previous_commit"] != config.previous_commit
+        or value["previous_tag"] != RUNTIME_PREVIOUS_TAG
+        or value["previous_commit"] != RUNTIME_PREVIOUS_COMMIT
         or value["old_tag"] != config.retained_tag
         or value["old_commit"] != config.retained_commit
         or value["remote_url"] != CORE_REPO
@@ -242,10 +244,12 @@ def _descriptor(config):
     # The committed descriptor is the retained preflight contract: Root, Argo CD,
     # and OpenSearch values are on the previous runtime while the other 29 Core
     # sources remain on the retained sibling.  The separate explicit rule table
-    # above defines the generated 5/27 publication closure.
-    if (core_targets.count(config.previous_tag), core_targets.count(config.retained_tag)) != (3, 29):
+    # above defines the generated 6/26 publication closure.
+    if (core_targets.count(RUNTIME_PREVIOUS_TAG),
+            core_targets.count(config.retained_tag)) != (3, 29):
         raise ClosureError("descriptor graph is stale")
-    if any(item not in (config.previous_tag, config.retained_tag) for item in core_targets):
+    if any(item not in (RUNTIME_PREVIOUS_TAG, config.retained_tag)
+           for item in core_targets):
         raise ClosureError("descriptor graph contains stale identity")
     return value
 

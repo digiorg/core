@@ -26,9 +26,11 @@ SPEC.loader.exec_module(transition)
 
 OLD_TAG = "issue301-runtime-v16-20260817T130820Z"
 OLD_COMMIT = "8e6b8908f99ebf76db47c15613eff523644c23f6"
-NEW_TAG = "issue348-runtime-v7-20260926T152038Z"
+NEW_TAG = "issue348-runtime-v8-20260927T160157Z"
 NEW_COMMIT = "0123456789abcdef0123456789abcdef01234567"
-CANDIDATE_BASE_COMMIT = "dbb293c6d2b2c6064928f7b52a116019343cc027"
+SOURCE_COMMIT = "d" * 40
+SOURCE_TREE = "c" * 40
+RELEASE_CLOSURE = "issue348-runtime-v2-release-closure.json"
 PREVIOUS_TAG = "issue350-352-runtime-v3-20260904T195619Z"
 PREVIOUS_COMMIT = "f6e7d58c0b03ee6a3ec6ed9e1e22e5023f861549"
 CORE = "https://github.com/digiorg/core.git"
@@ -317,6 +319,9 @@ class StatefulFakeKubectl:
         self.mutate_controller_while_stopped = False
         self.change_controller_revision_after_restore = False
         self.hpa_after_barrier = False
+        self.closure_source_commit = SOURCE_COMMIT
+        self.closure_source_tree = SOURCE_TREE
+        self.observed_source_tree = SOURCE_TREE
         self.barrier_app_mutation = None
         self.final_app_mutation = None
         self.rollback_uid_replacement = False
@@ -431,7 +436,18 @@ class StatefulFakeKubectl:
             if argv[1:] == ["rev-parse", "HEAD"]:
                 return self._result(stdout=NEW_COMMIT + "\n")
             if argv[1:] == ["rev-parse", "HEAD^"]:
-                return self._result(stdout=CANDIDATE_BASE_COMMIT + "\n")
+                return self._result(stdout=SOURCE_COMMIT + "\n")
+            if argv[1:] == ["rev-parse", f"{self.closure_source_commit}^{{tree}}"]:
+                return self._result(stdout=self.observed_source_tree + "\n")
+            if argv[1:] == ["show", f"HEAD:{RELEASE_CLOSURE}"]:
+                return self._json({
+                    "schema": "issue348-runtime-v2-release-closure/v1",
+                    "source": {
+                        "commit": self.closure_source_commit,
+                        "tree": self.closure_source_tree,
+                    },
+                    "reserved_runtime_tag": NEW_TAG,
+                })
             if argv[1:] == ["status", "--porcelain=v1", "--untracked-files=all"]:
                 return self._result(stdout="")
             if argv[1:3] == ["ls-tree", "--name-only"]:
@@ -512,14 +528,14 @@ class StatefulFakeKubectl:
             return self._json({"items": [deepcopy(self.controller)]})
         if verb == "get" and tail[0] == "pods":
             return self._json({"items": deepcopy(self.pods)})
-        if verb == "get" and tail[0] == "horizontalpodautoscalers.autoscaling":
+        if verb == "get" and tail[0:2] == [
+                "--raw", "/apis/autoscaling/v2/horizontalpodautoscalers"]:
             if self.hpa_listing is not None:
                 return self._json(deepcopy(self.hpa_listing))
             if self.controller["spec"]["replicas"] == 0 and self.hpa_after_barrier:
                 return self._json({
                     "apiVersion": "autoscaling/v2", "kind": "HorizontalPodAutoscalerList",
                     "metadata": {}, "items": [{
-                        "apiVersion": "autoscaling/v2", "kind": "HorizontalPodAutoscaler",
                         "metadata": {"name": "late", "namespace": "argocd"},
                         "spec": {"scaleTargetRef": {"apiVersion": "APPS/v1", "kind": "statefulset", "name": "argocd-application-controller"}},
                     }],
@@ -641,11 +657,18 @@ class Harness(unittest.TestCase):
 
 
 class SourceContractTest(unittest.TestCase):
-    def test_v7_identity_is_bound_to_reviewed_candidate_and_previous_runtime(self):
+    def test_v8_identity_is_bound_to_generated_source_and_previous_runtime(self):
         self.assertEqual(transition.RUNTIME_TAG, NEW_TAG)
-        self.assertEqual(transition.CANDIDATE_BASE_COMMIT, CANDIDATE_BASE_COMMIT)
+        self.assertFalse(hasattr(transition, "CANDIDATE_BASE_COMMIT"))
+        self.assertFalse(hasattr(transition, "PRODUCT_BASE_COMMIT"))
         self.assertEqual(transition.PREVIOUS_TAG, PREVIOUS_TAG)
         self.assertEqual(transition.PREVIOUS_COMMIT, PREVIOUS_COMMIT)
+        for text in (SCRIPT.read_text(encoding="utf-8"),
+                     RUNBOOK.read_text(encoding="utf-8")):
+            self.assertNotIn(
+                "dbb293c6" + "d2b2c6064928f7b52a116019343cc027", text,
+            )
+            self.assertNotIn("authorized Issue #348 " + "v7 base", text)
 
     def test_normal_source_graph_stays_on_main_and_generated_closure_is_explicit(self):
         validate_checkout_contract(ROOT)
@@ -764,6 +787,8 @@ class SecurityTest(Harness):
         self.assertIn(["git", "rev-parse", "--show-toplevel"], git_commands)
         self.assertIn(["git", "rev-parse", "HEAD"], git_commands)
         self.assertIn(["git", "rev-parse", "HEAD^"], git_commands)
+        self.assertIn(["git", "show", f"HEAD:{RELEASE_CLOSURE}"], git_commands)
+        self.assertIn(["git", "rev-parse", f"{SOURCE_COMMIT}^{{tree}}"], git_commands)
         self.assertIn(["git", "status", "--porcelain=v1", "--untracked-files=all"], git_commands)
         self.assertIn(["git", "ls-tree", "--name-only", "HEAD", "--", "scripts/issue348_runtime_v2_transition.py"], git_commands)
         self.assertIn(["git", "ls-tree", "--name-only", "HEAD", "--", "specs/345-log-schema-isolation/runtime-v2-transition.md"], git_commands)
@@ -801,8 +826,26 @@ class SecurityTest(Harness):
                 return super().run(argv, timeout, env=env)
 
         fake = WrongParent()
-        with self.assertRaisesRegex(transition.TransitionError, "authorized Issue #348 v7 base"):
+        with self.assertRaisesRegex(transition.TransitionError, "generated source commit"):
             self.execute(fake)
+        self.assertFalse(any(argv[0] == "kubectl" for argv, _ in fake.commands))
+
+    def test_wrong_generated_source_identity_fails_before_kubernetes(self):
+        fake = StatefulFakeKubectl()
+        fake.closure_source_commit = "0" * 40
+
+        with self.assertRaisesRegex(transition.TransitionError, "generated source commit"):
+            self.execute(fake)
+
+        self.assertFalse(any(argv[0] == "kubectl" for argv, _ in fake.commands))
+
+    def test_wrong_generated_source_tree_fails_before_kubernetes(self):
+        fake = StatefulFakeKubectl()
+        fake.closure_source_tree = "0" * 40
+
+        with self.assertRaisesRegex(transition.TransitionError, "source tree"):
+            self.execute(fake)
+
         self.assertFalse(any(argv[0] == "kubectl" for argv, _ in fake.commands))
 
     def test_kubeconfig_and_evidence_must_be_outside_checkout(self):
@@ -1377,7 +1420,6 @@ class TransitionBehaviorTest(Harness):
     def test_hpa_and_degraded_controller_fail_before_mutation(self):
         fake = StatefulFakeKubectl()
         fake.hpas = [{
-            "apiVersion": "autoscaling/v2", "kind": "HorizontalPodAutoscaler",
             "metadata": {"name": "bad", "namespace": "argocd"},
             "spec": {"scaleTargetRef": {"apiVersion": "apps/v1", "kind": "StatefulSet", "name": "argocd-application-controller"}},
         }]
@@ -1393,7 +1435,6 @@ class TransitionBehaviorTest(Harness):
 
     def test_malformed_hpa_enumeration_fails_closed_before_mutation(self):
         valid_item = {
-            "apiVersion": "autoscaling/v2", "kind": "HorizontalPodAutoscaler",
             "metadata": {"name": "unrelated", "namespace": "other"},
             "spec": {"scaleTargetRef": {
                 "apiVersion": "apps/v1", "kind": "Deployment", "name": "unrelated",
@@ -1411,6 +1452,15 @@ class TransitionBehaviorTest(Harness):
             {**valid_list, "items": {}},
             {**valid_list, "items": [valid_item] * 1001},
             {**valid_list, "items": [{}]},
+            {**valid_list, "items": [{
+                **valid_item,
+                "apiVersion": "autoscaling/v1",
+                "kind": "HorizontalPodAutoscaler",
+            }]},
+            {**valid_list, "items": [{
+                **valid_item,
+                "apiVersion": "autoscaling/v2",
+            }]},
         )
         for listing in malformed:
             with self.subTest(listing=listing):
@@ -1421,6 +1471,39 @@ class TransitionBehaviorTest(Harness):
                 with self.assertRaisesRegex(transition.TransitionError, "HPA list shape"):
                     self.execute(fake)
                 self.assertFalse(fake.patch_payloads)
+
+    def test_duplicate_hpa_inventory_fails_closed_before_mutation(self):
+        item = {
+            "metadata": {"name": "unrelated", "namespace": "other"},
+            "spec": {"scaleTargetRef": {
+                "apiVersion": "apps/v1", "kind": "Deployment", "name": "unrelated",
+            }},
+        }
+        fake = StatefulFakeKubectl()
+        fake.hpa_listing = {
+            "apiVersion": "autoscaling/v2",
+            "kind": "HorizontalPodAutoscalerList",
+            "metadata": {},
+            "items": [item, deepcopy(item)],
+        }
+
+        with self.assertRaisesRegex(transition.TransitionError, "duplicate identity"):
+            self.execute(fake)
+
+        self.assertFalse(fake.patch_payloads)
+
+    def test_hpa_inventory_uses_typed_raw_endpoint_before_mutation(self):
+        fake = self.execute()
+        commands = [argv for argv, _ in fake.commands]
+        hpa_reads = [argv for argv in commands
+                     if "/apis/autoscaling/v2/horizontalpodautoscalers" in argv]
+        self.assertTrue(hpa_reads)
+        self.assertTrue(all(argv[-2:] == [
+            "--raw", "/apis/autoscaling/v2/horizontalpodautoscalers",
+        ] for argv in hpa_reads))
+        first_patch = next(i for i, argv in enumerate(commands) if "patch" in argv)
+        first_hpa_read = commands.index(hpa_reads[0])
+        self.assertLess(first_hpa_read, first_patch)
 
     def test_controller_name_and_namespace_are_exact(self):
         for field, value in (("name", "lookalike-controller"), ("namespace", "other")):

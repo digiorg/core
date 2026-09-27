@@ -3,6 +3,7 @@
 
 from copy import deepcopy
 import hashlib
+from importlib.util import module_from_spec, spec_from_file_location
 import json
 import os
 from pathlib import Path
@@ -23,9 +24,11 @@ if str(SCRIPTS) not in sys.path:
 import issue348_runtime_v2_release_closure as closure
 import issue348_release_attestation as attestation
 
-RUNTIME_TAG = "issue348-runtime-v7-20260926T152038Z"
-PREVIOUS_TAG = "issue350-352-runtime-v3-20260904T195619Z"
-PREVIOUS_COMMIT = "f6e7d58c0b03ee6a3ec6ed9e1e22e5023f861549"
+RUNTIME_TAG = "issue348-runtime-v8-20260927T160157Z"
+PREVIOUS_TAG = "issue348-runtime-v7-20260926T152038Z"
+PREVIOUS_COMMIT = "0f35bf0824e571cb7f407092c7437adf3e251b71"
+RUNTIME_PREVIOUS_TAG = "issue350-352-runtime-v3-20260904T195619Z"
+RUNTIME_PREVIOUS_COMMIT = "f6e7d58c0b03ee6a3ec6ed9e1e22e5023f861549"
 RETAINED_TAG = "issue301-runtime-v16-20260817T130820Z"
 RETAINED_COMMIT = "8e6b8908f99ebf76db47c15613eff523644c23f6"
 DESCRIPTOR = Path("specs/345-log-schema-isolation/issue348-runtime-v2-contract.json")
@@ -36,6 +39,13 @@ SOURCE_BUNDLE = Path("platform/tests/fixtures/issue348/release-closure-source.js
 FIXTURES = (
     Path("platform/tests/fixtures/issue348/argocd-v3.4.5/application-list.json"),
     Path("platform/tests/fixtures/issue348/argocd-v3.4.5/manifest.json"),
+)
+RUNTIME_SOURCE_PATHS = (
+    Path("scripts/issue348_runtime_v2_transition.py"),
+    Path("scripts/issue348_runtime_v2_contract.py"),
+    Path("scripts/issue348_runtime_v2_mutator.py"),
+    Path("scripts/issue348_runtime_v2_qualification.py"),
+    Path("specs/345-log-schema-isolation/runtime-v2-transition.md"),
 )
 
 
@@ -282,7 +292,7 @@ def build_seed(destination, checkout_root, provenance_root=ROOT):
         target = destination / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
-    for relative in (DESCRIPTOR, *FIXTURES):
+    for relative in (DESCRIPTOR, *FIXTURES, *RUNTIME_SOURCE_PATHS):
         target = destination / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(checkout_root / relative, target)
@@ -364,6 +374,62 @@ class ClosureHarness(unittest.TestCase):
 
 
 class DeterministicClosureTest(ClosureHarness):
+    def test_generated_runtime_checkout_binds_actual_source_parent_and_tree(self):
+        manifest = closure.generate(self.config())
+        commit_all(self.repo, "generated release closure")
+        runtime_commit = run_git(self.repo, "rev-parse", "HEAD").stdout.strip()
+
+        transition_path = self.repo / "scripts/issue348_runtime_v2_transition.py"
+        spec = spec_from_file_location("generated_issue348_transition", transition_path)
+        assert spec and spec.loader
+        transition = module_from_spec(spec)
+        spec.loader.exec_module(transition)
+        shutil.rmtree(self.repo / "scripts/__pycache__", ignore_errors=True)
+
+        class RepositoryRunner:
+            def run(inner_self, argv, timeout, env=None):
+                result = subprocess.run(
+                    argv, cwd=self.repo, check=False, text=True,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    timeout=timeout, env=env,
+                )
+                return transition.CommandResult(
+                    result.returncode, result.stdout, result.stderr,
+                )
+
+        config = transition.Config(
+            kubeconfig=Path(self.temp.name) / "kubeconfig",
+            context="retained",
+            expected_server="https://api.example",
+            expected_kube_system_uid="uid",
+            remote_url=transition.CORE_REPO,
+            runtime_tag=RUNTIME_TAG,
+            runtime_commit=runtime_commit,
+            previous_tag=transition.PREVIOUS_TAG,
+            previous_commit=transition.PREVIOUS_COMMIT,
+            old_tag=transition.OLD_TAG,
+            old_commit=transition.OLD_COMMIT,
+            evidence=Path(self.temp.name) / "evidence.jsonl",
+        )
+        protocol = transition.Protocol(
+            config, RepositoryRunner(), transition.RealClock(), None,
+        )
+        protocol.validate_local_checkout(
+            transition.Deadline(transition.RealClock(), 30, "checkout"),
+        )
+        self.assertEqual(
+            run_git(self.repo, "rev-parse", "HEAD^").stdout.strip(),
+            manifest["source"]["commit"],
+        )
+
+        run_git(self.repo, "commit", "--allow-empty", "-m", "wrong runtime parent")
+        config.runtime_commit = run_git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        with self.assertRaisesRegex(
+                transition.TransitionError, "generated source commit"):
+            protocol.validate_local_checkout(
+                transition.Deadline(transition.RealClock(), 30, "checkout"),
+            )
+
     def test_generated_checkout_accepts_strict_synthetic_pull_request_merge(self):
         manifest = closure.generate(self.config())
         commit_all(self.repo, "generated release closure")
@@ -574,6 +640,13 @@ class DeterministicClosureTest(ClosureHarness):
         self.assertEqual((self.repo / OUTPUT).read_bytes(), (second / OUTPUT).read_bytes())
         self.assertEqual(first_manifest, second_manifest)
         inventory = json.loads((self.repo / OUTPUT).read_text(encoding="utf-8"))
+        descriptor = json.loads((self.repo / DESCRIPTOR).read_text(encoding="utf-8"))
+        self.assertEqual(inventory["predecessor"], {
+            "tag": PREVIOUS_TAG,
+            "commit": PREVIOUS_COMMIT,
+        })
+        self.assertEqual(descriptor["previous_tag"], RUNTIME_PREVIOUS_TAG)
+        self.assertEqual(descriptor["previous_commit"], RUNTIME_PREVIOUS_COMMIT)
         self.assertNotIn("closure_commit", inventory)
         self.assertNotIn("closure_tree", inventory)
         self.assertEqual(inventory["expected_graph"], {

@@ -51,9 +51,7 @@ FLUENTD_NAMESPACE = "logging"
 CONTROLLER_LABEL = "app.kubernetes.io/name=argocd-application-controller"
 CONTROLLER_NAME = "argocd-application-controller"
 CORE_REPO = "https://github.com/digiorg/core.git"
-RUNTIME_TAG = "issue348-runtime-v7-20260926T152038Z"
-PRODUCT_BASE_COMMIT = "dbb293c6d2b2c6064928f7b52a116019343cc027"
-CANDIDATE_BASE_COMMIT = "dbb293c6d2b2c6064928f7b52a116019343cc027"
+RUNTIME_TAG = "issue348-runtime-v8-20260927T160157Z"
 PREVIOUS_TAG = "issue350-352-runtime-v3-20260904T195619Z"
 PREVIOUS_COMMIT = "f6e7d58c0b03ee6a3ec6ed9e1e22e5023f861549"
 OLD_TAG = "issue301-runtime-v16-20260817T130820Z"
@@ -222,6 +220,7 @@ PREFLIGHT_SOURCE_GRAPH["grafana"][1] = (
 PREFLIGHT_SOURCE_GRAPH["opensearch"][2] = (
     CORE_REPO, None, "platform/base/opensearch", None, OLD_TAG,
 )
+RELEASE_CLOSURE_PATH = "issue348-runtime-v2-release-closure.json"
 TRACKED_RUNTIME_FILES = (
     "scripts/issue348_runtime_v2_transition.py",
     "scripts/issue348_runtime_v2_contract.py",
@@ -229,6 +228,7 @@ TRACKED_RUNTIME_FILES = (
     "scripts/issue348_runtime_v2_qualification.py",
     "specs/345-log-schema-isolation/issue348-runtime-v2-contract.json",
     "specs/345-log-schema-isolation/runtime-v2-transition.md",
+    RELEASE_CLOSURE_PATH,
 )
 OS_NAMESPACE = "platform-db"
 OS_STS = "opensearch-cluster-master"
@@ -689,9 +689,25 @@ class Protocol:
         head = self.run_command(["git", "rev-parse", "HEAD"], deadline)
         if head not in {self.config.runtime_commit, self.config.runtime_commit + "\n"}:
             raise TransitionError("local checkout HEAD is not the runtime commit")
+        closure_text = self.run_command(
+            ["git", "show", f"HEAD:{RELEASE_CLOSURE_PATH}"], deadline,
+        )
+        closure = exact_json(closure_text, dict)
+        source = closure.get("source")
+        if (closure.get("schema") != "issue348-runtime-v2-release-closure/v1" or
+                closure.get("reserved_runtime_tag") != self.config.runtime_tag or
+                not isinstance(source, dict) or set(source) != {"commit", "tree"} or
+                not all(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{40}", value)
+                        for value in source.values())):
+            raise TransitionError("generated release closure identity is invalid")
         parent = self.run_command(["git", "rev-parse", "HEAD^"], deadline)
-        if parent not in {CANDIDATE_BASE_COMMIT, CANDIDATE_BASE_COMMIT + "\n"}:
-            raise TransitionError("runtime commit is not based directly on the authorized Issue #348 v7 base")
+        if parent not in {source["commit"], source["commit"] + "\n"}:
+            raise TransitionError("runtime commit is not based directly on the generated source commit")
+        source_tree = self.run_command(
+            ["git", "rev-parse", f"{source['commit']}^{{tree}}"], deadline,
+        )
+        if source_tree not in {source["tree"], source["tree"] + "\n"}:
+            raise TransitionError("generated source tree does not match the source commit")
         dirty = self.run_command(
             ["git", "status", "--porcelain=v1", "--untracked-files=all"], deadline)
         if dirty != "":
@@ -829,19 +845,27 @@ class Protocol:
                 raise TransitionError(f"Application closure changed identity/spec for {name} at {label}")
 
     def hpa_absent(self, deadline):
-        listing = self.get_json(["get", "horizontalpodautoscalers.autoscaling", "-A"], deadline)
+        output = self.kubectl([
+            "get", "--raw", "/apis/autoscaling/v2/horizontalpodautoscalers",
+        ], deadline)
+        listing = exact_json(output, dict)
         items = listing.get("items") if isinstance(listing, dict) else None
         if (not isinstance(listing, dict) or listing.get("apiVersion") != "autoscaling/v2" or
                 listing.get("kind") != "HorizontalPodAutoscalerList" or
                 not isinstance(listing.get("metadata"), dict) or
                 not isinstance(items, list) or len(items) > 1000):
             raise TransitionError("HPA list shape is invalid")
+        identities = set()
         for item in items:
             metadata = item.get("metadata") if isinstance(item, dict) else None
             spec = item.get("spec") if isinstance(item, dict) else None
             ref = spec.get("scaleTargetRef") if isinstance(spec, dict) else None
-            if (not isinstance(item, dict) or item.get("apiVersion") != "autoscaling/v2" or
-                    item.get("kind") != "HorizontalPodAutoscaler" or
+            item_type_valid = isinstance(item, dict) and (
+                ("apiVersion" not in item and "kind" not in item) or
+                (item.get("apiVersion") == "autoscaling/v2" and
+                 item.get("kind") == "HorizontalPodAutoscaler")
+            )
+            if (not item_type_valid or
                     not isinstance(metadata, dict) or
                     not all(isinstance(metadata.get(key), str) and metadata[key]
                             for key in ("name", "namespace")) or
@@ -849,6 +873,10 @@ class Protocol:
                     not all(isinstance(ref.get(key), str) and ref[key]
                             for key in ("apiVersion", "kind", "name"))):
                 raise TransitionError("HPA list shape is invalid")
+            identity = (metadata["namespace"], metadata["name"])
+            if identity in identities:
+                raise TransitionError("HPA inventory has duplicate identity")
+            identities.add(identity)
             api_group = ref["apiVersion"].split("/", 1)[0].lower()
             if (metadata["namespace"] == ARGOCD_NAMESPACE and
                     api_group == "apps" and ref["kind"].lower() == "statefulset" and

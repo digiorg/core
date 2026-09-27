@@ -3,7 +3,7 @@
   "source": {"commit": null, "tree": null},
   "closure": {"commit": null, "tree": null, "manifest_sha256": null},
   "tag": {
-    "name": "issue348-runtime-v7-20260926T152038Z",
+    "name": "issue348-runtime-v8-20260927T160157Z",
     "object": null,
     "peeled_commit": null
   },
