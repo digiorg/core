@@ -28,6 +28,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          # Separation contracts render the exact retained writer commit.
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -64,6 +67,14 @@ jobs:
           curl -fsSL https://github.com/argoproj/argo-cd/releases/download/v3.4.5/argocd-linux-amd64 -o /tmp/argocd-v3.4.5
           echo '23303f05a58c1e041324d5645b0f9d6ea338b16bbf32f4a24508f388fcf9f9c0  /tmp/argocd-v3.4.5' | sha256sum -c -
           chmod 0755 /tmp/argocd-v3.4.5
+
+      - name: Install Kustomize for separation render contracts
+        run: |
+          set -euo pipefail
+          curl -fsSL https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.8.1/kustomize_v5.8.1_linux_amd64.tar.gz -o /tmp/kustomize.tgz
+          echo '029a7f0f4e1932c52a0476cf02a0fd855c0bb85694b82c338fc648dcb53a819d  /tmp/kustomize.tgz' | sha256sum -c -
+          tar -xzf /tmp/kustomize.tgz -C /tmp
+          sudo install -m 0755 /tmp/kustomize /usr/local/bin/kustomize
 
       - name: Platform regression tests
         env:
