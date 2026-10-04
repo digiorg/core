@@ -1,0 +1,66 @@
+# Issue #285: the GitOps reconciliation contract for generated AppClaim
+# manifests. Backstage's `create-pull-request` step (core-portal, already
+# independently tested and configured with a Gitea publish target) opens PRs
+# against the private DigiOrg/app-config repository's `claims/` directory
+# (core-portal app-config.yaml: kubernetesIngestor.crossplane.xrds.publishPhase.git.targetPath
+# -- this path MUST match that value exactly); merging a PR here is what
+# actually creates the AppClaim in-cluster — the missing link the issue's P0
+# evidence identified ("no declared GitOps sink exists for generated
+# manifests"). Read access is a dedicated, least-privilege Gitea identity
+# (scripts/local-setup.nu: configure_argocd_gitea_access), never the Gitea
+# platform-admin bootstrap token, and is a wholly separate concern from the
+# per-app Gitea SOURCE repository the AppClaim Composition itself provisions
+# (core-catalog/compositions/local/pipeline.yaml).
+#
+# repoURL (Issue #285 TLS hardening) goes through the trusted digiorg.local
+# ingress over HTTPS (CA: cert-manager/digiorg-local-ca-secret), not the raw
+# in-cluster Gitea Service address over plain HTTP. ArgoCD's repo-server
+# trusts that CA via configs.tls.certificates (scripts/local-setup.nu
+# patch_argocd_oidc_ca). This matches core-portal's own (already tested)
+# Gitea integration and the pipeline Composition's own giteaApiBase, both of
+# which now also talk to Gitea only through this same trusted ingress.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: app-config
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    # Wave 11: after crossplane-xrds (wave 7, the AppClaim CRD) and
+    # core-catalog (wave 8, the rendering Composition) are reconciled. Placed
+    # after the optional, manually-synced cnpg/cnpg-cluster (waves 9-10) too,
+    # so an AppClaim requesting database.enabled never races the CNPG
+    # prerequisite the Composition itself fails closed on.
+    argocd.argoproj.io/sync-wave: "11"
+spec:
+  project: default
+
+  source:
+    repoURL: https://digiorg.local/gitea/DigiOrg/app-config.git
+    targetRevision: main
+    path: claims
+    directory:
+      recurse: true
+      include: '*.yaml'
+
+  destination:
+    server: https://kubernetes.default.svc
+    # Fixed claims-hosting namespace (platform/base/namespaces/namespaces.yaml)
+    # -- see the comment there for why AppClaims live here rather than in the
+    # per-app namespace their own Composition creates.
+    namespace: app-claims
+
+  syncPolicy:
+    automated:
+      selfHeal: true
+      prune: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m

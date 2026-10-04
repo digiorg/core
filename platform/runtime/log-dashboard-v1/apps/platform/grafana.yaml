@@ -1,0 +1,57 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: grafana
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    # Wave 2: Platform Services - Grafana depends on Keycloak for OAuth
+    argocd.argoproj.io/sync-wave: "2"
+    platform.digiorg.io/upgrade-gate: "issue-275-manual"
+spec:
+  project: default
+
+  sources:
+    - repoURL: https://prometheus-community.github.io/helm-charts
+      chart: kube-prometheus-stack
+      targetRevision: 87.17.0
+      helm:
+        releaseName: prometheus
+        valueFiles:
+          - $values/platform/base/grafana/values.yaml
+    - repoURL: https://github.com/digiorg/core.git
+      targetRevision: 41b77b1b1af726563c7209f6d51f57a5ab1a03e4
+      ref: values
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+
+  # kube-prometheus-stack generates Grafana's initial admin password on every
+  # render when no explicit password is supplied. Preserve only that generated
+  # key and its rollout checksum; all other Secret data remains drift-managed.
+  ignoreDifferences:
+    - group: ""
+      kind: Secret
+      name: prometheus-grafana
+      jsonPointers:
+        - /data/admin-password
+    - group: apps
+      kind: Deployment
+      name: prometheus-grafana
+      jsonPointers:
+        - /spec/template/metadata/annotations/checksum~1secret
+
+  syncPolicy:
+    # Major Prometheus Operator/CRD migration: promote and validate manually.
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

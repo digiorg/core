@@ -1,0 +1,39 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: core-catalog
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    # Wave 8: Depends on XRDs (Wave 7) being installed and CRDs available
+    argocd.argoproj.io/sync-wave: "8"
+    platform.digiorg.io/upgrade-gate: "issue-275-manual"
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/digiorg/core-catalog.git
+    # Core-catalog PR #28 repairs the deterministic source scaffold's NGINX
+    # response and advances its contract to v3. Pin its exact independently
+    # reviewed canonical merge commit so
+    # Core and Catalog are deployed as one immutable integration.
+    # Keep this manual (no syncPolicy.automated) — see docs/guides/platform-versions.md.
+    targetRevision: d531180b322dc0128477ecb9bb0fc9071b41d631
+    path: compositions/local
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: crossplane-system
+
+  syncPolicy:
+    # Manual until the v2 XRDs and pinned catalog commit are validated together.
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

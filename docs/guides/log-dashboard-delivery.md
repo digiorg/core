@@ -81,6 +81,15 @@ the existing #348-specific delivery mechanism is intentionally not generalized.
 No runtime argv can be authorized until the fresh Root/Argo closure and normal
 supported rollout mechanism are separately settled and reviewed.
 
+## Approved explicit retained consumer preparation
+
+Task t_8e98c858 prepares the explicit declarative owner graph and reserved
+annotated-tag contract in [runtime-v1 plan](log-dashboard-runtime-v1.md).
+That specific approval permits static retained child manifests and a Root/Argo
+Kustomize wrapper, not a new generator or tag publication. Canonical apps/ and
+base resources remain unchanged. Both necessary owner paths and revisions are
+reviewed together; publication still targets the actual reviewed final merge.
+
 ## Migration ordering and acceptance
 
 After authorized publication, reserve `digiorg-core-dev`, preserve historical

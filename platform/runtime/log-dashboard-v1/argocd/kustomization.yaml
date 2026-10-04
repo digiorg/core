@@ -1,0 +1,20 @@
+# Explicit reviewed consumer wrapper, not a generated release closure.
+# Non-Root Argo resources are byte-identical to the retained baseline.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../base/argocd
+patches:
+  - target:
+      group: argoproj.io
+      version: v1alpha1
+      kind: Application
+      name: root-app
+      namespace: argocd
+    patch: |-
+      - op: replace
+        path: /spec/source/targetRevision
+        value: log-dashboard-runtime-v1
+      - op: replace
+        path: /spec/source/path
+        value: platform/runtime/log-dashboard-v1/apps

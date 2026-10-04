@@ -1,0 +1,120 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kyverno
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    # Wave 3: Extensions - no dependencies on other platform services
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  project: default
+
+  source:
+    repoURL: https://kyverno.github.io/kyverno/
+    chart: kyverno
+    targetRevision: 3.8.1
+    helm:
+      releaseName: kyverno
+      values: |
+        # Kyverno Helm values for local development
+        # Reduced resource requests for KinD
+        # The removed policyReportsCleanup value is intentionally not used.
+        #
+        # Issue #279: crds.migration.enabled renders a Helm post-upgrade hook
+        # (kyverno-migrate-resources). Helm itself only runs post-upgrade hooks
+        # on `helm upgrade`, never on a fresh `helm install` — but Argo CD
+        # renders via `helm template` and maps post-upgrade/post-install hooks
+        # onto PostSync for every sync, with no install-vs-upgrade distinction.
+        # On a brand-new disposable cluster there is no prior Kyverno CRD state
+        # to migrate, so the hook was pure churn. Disabled for this clean-install
+        # baseline; see docs/guides/platform-versions.md for how to re-enable it
+        # for a real upgrade with prior Kyverno state.
+        crds:
+          migration:
+            enabled: false
+        # The kyverno-api subchart otherwise emits labels: {} on policy-v2
+        # CRDs, which kube-apiserver normalizes away and Argo CD reports as
+        # perpetual drift. Render one stable label instead of ignoring metadata.
+        kyverno-api:
+          labels:
+            app.kubernetes.io/managed-by: kyverno
+        admissionController:
+          replicas: 1
+          container:
+            resources:
+              requests:
+                cpu: 50m
+                memory: 64Mi
+              limits:
+                cpu: 200m
+                memory: 256Mi
+          initContainer:
+            resources:
+              requests:
+                cpu: 10m
+                memory: 32Mi
+              limits:
+                cpu: 50m
+                memory: 64Mi
+        backgroundController:
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+        cleanupController:
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+        reportsController:
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+
+        # Chart 3.8.1 defaults both hook images to readiness-checker:latest.
+        # Pin the v1.18.1 OCI index used by this Kyverno release.
+        test:
+          image:
+            tag: "v1.18.1@sha256:455400758235cf448dd9be3374ecb9e8bf543ee0c39adc880d25ed28cc7eb69d"
+        webhooksCleanup:
+          image:
+            tag: "v1.18.1@sha256:455400758235cf448dd9be3374ecb9e8bf543ee0c39adc880d25ed28cc7eb69d"
+
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kyverno
+
+  # Kubernetes defaults absent CRD conversion blocks to strategy=None. Ignore
+  # only that API-added object; any declared webhook conversion remains managed.
+  ignoreDifferences:
+    - group: apiextensions.k8s.io
+      kind: CustomResourceDefinition
+      jqPathExpressions:
+        - '.spec.conversion | select(.strategy == "None")'
+
+  syncPolicy:
+    automated:
+      selfHeal: true
+      prune: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

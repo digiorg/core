@@ -1,0 +1,34 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: crossplane-provider-configs
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    # Wave 6: Depends on crossplane-providers (Wave 4) being installed and CRDs being available
+    argocd.argoproj.io/sync-wave: "6"
+    platform.digiorg.io/upgrade-gate: "issue-275-manual"
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/digiorg/core.git
+    targetRevision: issue301-runtime-v16-20260817T130820Z
+    path: crossplane/providers/configs
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: crossplane-system
+
+  syncPolicy:
+    # Manual until all upgraded Provider packages report Healthy.
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 10
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m

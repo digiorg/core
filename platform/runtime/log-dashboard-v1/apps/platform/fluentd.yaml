@@ -1,0 +1,52 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: fluentd
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    # Wave 4 follows OpenSearch as cross-Application ordering metadata; it does
+    # not prove backend readiness. The Fluentd Application's own PreSync schema
+    # hook is the writer safety boundary and must pass before writer resources.
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  project: default
+
+  sources:
+    - repoURL: https://github.com/digiorg/core.git
+      targetRevision: 8e6b8908f99ebf76db47c15613eff523644c23f6
+      path: platform/base/fluentd
+      kustomize:
+        patches:
+          - target:
+              version: v1
+              kind: ConfigMap
+              name: fluentd-grafana-dashboards
+            patch: |
+              $patch: delete
+              apiVersion: v1
+              kind: ConfigMap
+              metadata:
+                name: fluentd-grafana-dashboards
+    - repoURL: https://github.com/digiorg/core.git
+      targetRevision: 41b77b1b1af726563c7209f6d51f57a5ab1a03e4
+      path: platform/base/log-dashboards
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: logging
+
+  syncPolicy:
+    automated:
+      selfHeal: true
+      prune: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
