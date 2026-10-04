@@ -3,6 +3,17 @@
 Fluentd tails Kubernetes container logs, preserves their raw text and Kubernetes
 identity envelope, and writes daily `digiorg-logs-*` indices to OpenSearch.
 
+## Independent dashboard source
+
+The canonical dashboard payload lives in `../log-dashboards`; this base still
+includes it for standalone compatibility. Bounded retained dashboard delivery
+uses two independently pinned sources within the SAME Fluentd Application,
+with a manifest-generation delete patch suppressing this source's dashboard
+and the second source supplying exactly one replacement. No live deletion or
+ownership migration is required. See [delivery and rollback](../../../docs/guides/log-dashboard-delivery.md).
+Do not advance the writer revision or run its schema hook as part of a
+dashboard-only rollout.
+
 ## Governed record shape
 
 Successful inner-JSON parsing uses Fluentd's `hash_value_field structured`, so

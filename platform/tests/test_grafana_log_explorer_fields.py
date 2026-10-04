@@ -11,7 +11,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 FLUENTD = ROOT / "platform/base/fluentd"
-DASHBOARDS = FLUENTD / "grafana-dashboards.yaml"
+DASHBOARDS = ROOT / "platform/base/log-dashboards/grafana-dashboards.yaml"
 LOG_SCHEMA = FLUENTD / "log-schema-job.yaml"
 IDENTITY_FIELDS = (
     "kubernetes.namespace_name",

@@ -9,4 +9,7 @@ resources:
   - configmap.yaml
   - daemonset.yaml
   - service.yaml
-  - grafana-dashboards.yaml
+  # Standalone compatibility. Independent delivery deletes this one ConfigMap
+  # from the writer source and provides it from a separately pinned source,
+  # within the same Fluentd Application (see log_dashboard_delivery.py).
+  - ../log-dashboards
