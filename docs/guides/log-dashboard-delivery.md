@@ -4,6 +4,22 @@ Source scope: #303/#347; preparation t_24070940. Publication, merge, shared
 runtime use and deployment each require Chris's separate authority. This guide
 is not a runnable runtime transition and does not reactivate closed #348.
 
+## Applicability: disposable prototype versus retained delivery
+
+For the single disposable pre-1.0 `digiorg-core-dev`, use the canonical
+[main bootstrap workflow](../../scripts/README.md#disposable-pre-10-main-workflow).
+Root, self-managed Argo and Core child sources already follow main; standalone
+Fluentd includes the canonical dashboard base and its schema safety hook.
+No two-source preparer, immutable Root/Argo closure or release-specific
+Application copy is needed. Source publication/CI/merge, reset approval and
+Chris's visual Grafana acceptance remain separate gates.
+
+The retained-state isolation instructions below are historical/conditional,
+not prerequisites for the disposable workflow. They describe a different goal:
+updating a dashboard without changing a retained writer or executing its schema
+hook. Keep #369's reusable source extraction and offline tests; do not apply
+its retained delivery plan to the normal main-based rebuild.
+
 ## Ownership and independent pins
 
 The canonical dashboard payload is now in `platform/base/log-dashboards`.
