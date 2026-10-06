@@ -35,6 +35,54 @@ nu scripts/local-setup.nu status
 nu scripts/local-setup.nu bootstrap
 ```
 
+## Disposable pre-1.0 main workflow
+
+For the single disposable `digiorg-core-dev` prototype, use the existing
+`local-setup.nu` workflow from a clean checkout of current merged `origin/main`.
+The canonical Root (`platform/base/argocd/applications/root-app.yaml`),
+self-managed Argo CD (`apps/platform/argocd.yaml`), and all Core-owned child
+sources follow `main`. There is one Application set under `apps/platform/`.
+No runtime tag, release closure, or dashboard preparer is required. Do not
+create release-specific Application copies or invoke the historical #348
+retained-state transition tools for this workflow.
+
+External chart versions, image digests, Catalog commit and bootstrap release
+assets remain pinned. Main-based Core delivery does not relax TLS verification,
+credential handling, schema safety hooks or readiness/convergence gates.
+`platform/base/fluentd` includes the canonical `log-dashboards` base, so normal
+bootstrap includes the merged dashboard/field, Grafana plugin and ingest fixes
+without independently pinned writer/dashboard sources. This is a full prototype
+bootstrap, not a dashboard-only retained-state rollout.
+
+### Rebuild readiness and approval checklist
+
+1. Complete independent candidate review, separately approve source publication,
+   pass exact-head authoritative CI, and obtain Chris's PR approval and merge.
+   A local candidate is not yet deployed or reset-ready.
+2. On the intended development host, obtain a clean checkout of the merged main
+   revision; record `git rev-parse HEAD` and confirm `git status --short` is empty.
+   Verify tools, Docker capacity, trusted local route and exclusive environment
+   ownership. Do not reuse an old runtime-tag checkout. Main can advance while
+   Argo reconciles: record actual target/synced revisions for runtime attribution.
+3. Report readiness to Chris before doing anything destructive. Confirm that
+   the cluster is still disposable with no preservation-required data. Only
+   after separate explicit reset approval, from that checkout run the existing
+   `nu --no-config-file scripts/local-setup.nu reset` (down followed by up).
+   Retain the real exit code and a protected log; do not print credentials.
+4. Stop on a non-zero exit and preserve evidence. Do not automatically retry,
+   repair, restart or reset again. Chris decides any next attempt.
+5. After a successful run, verify live Application/workload identities, the
+   schema hook, fresh ingestion and authenticated Grafana datasource/query
+   health. Chris performs final visual Grafana/dashboard acceptance. Static
+   tests and a bootstrap success banner do not prove that acceptance.
+
+For ordinary merged source updates, Argo reconciles automated Applications;
+manual-gated Applications still need an explicitly approved sync through the
+existing script workflow. Repeated full `up` is not required on every deployment.
+An approved `up` can resume an interrupted bootstrap but is not a read-only probe:
+it performs configuration and restarts OIDC-dependent Pods. Preserve failures
+and decide the resume separately. CNPG remains optional via `future-infra`.
+
 ## Architecture
 
 The setup follows a three-phase approach:

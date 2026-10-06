@@ -41,7 +41,7 @@ That command fails closed and sequences operator sync, operator Deployment avail
 
 ## Adding an Application
 
-1. Add `apps/platform/<name>.yaml` with an immutable source revision and the correct destination namespace.
+1. Add `apps/platform/<name>.yaml` with the correct destination namespace. Core-owned sources use `targetRevision: main` for the disposable pre-1.0 prototype; external charts, images and Catalog sources retain exact pins. See [the main bootstrap workflow](../scripts/README.md#disposable-pre-10-main-workflow).
 2. Assign a wave based on ordering only; add an explicit functional gate when another Application must be demonstrably ready.
 3. Add the corresponding manifests under `platform/base/<name>/`.
 4. Use automated sync only for core Applications that should be reconciled by normal `up`. Optional infrastructure must remain explicit and script-driven.
@@ -63,7 +63,7 @@ spec:
   project: default
   source:
     repoURL: https://github.com/digiorg/core.git
-    targetRevision: <immutable-revision>
+    targetRevision: main
     path: platform/base/my-app
   destination:
     server: https://kubernetes.default.svc
