@@ -164,6 +164,29 @@ After all core ArgoCD apps reach their required state, the script runs the post-
 - Fetches the Keycloak IdP X.509 certificate from the SAML metadata descriptor
 - Pushes all `sonar.auth.saml.*` settings via the Settings API
 - Enables SAML authentication
+- Issue #372: after SAML readback, prepares the dedicated `digiorg-provisioner`
+  account/token through `sonarqube_provisioner.py` and the existing
+  `persist_opaque_secret` mechanism into
+  `crossplane-system/crossplane-sonarqube-credentials` (`token`). The helper is
+  internal: do not invoke it interactively or print its captured stdout.
+  Administrator credentials are piped to this bounded bootstrap step only;
+  app Jobs mount only the dedicated token and the existing public CA Secret.
+  The host needs Python 3 and a resolvable, CA-trusted
+  `https://digiorg.local/sonarqube` route. There is no insecure HTTP fallback.
+- Shared default group/template policy is inspected, never repaired. The
+  explicitly accepted prototype rights include inherited global Execute Analysis
+  and project Browse/See Source Code/Administer Issues/Administer Security
+  Hotspots, in addition to Create Projects. Unexpected rights, additional groups,
+  incomplete inventories or changed templates stop bootstrap. No Administer
+  System is granted to the provisioner. See `specs/372-sonarqube-onboarding/`.
+- Existing valid tokens are preserved. Missing Secret plus an already-issued
+  stable-name token, invalid credentials, failed Secret persistence or policy
+  drift requires operator recovery; bootstrap never revokes or rotates tokens
+  automatically. Token issuance before a later failure may leave an unreachable
+  synthetic/live token for the separately authorized operator to inventory.
+  Rotation does not rerun completed enrollment Jobs. Adoption and teardown need
+  Chris's exact-key approval; no SonarQube project/history deletion is performed.
+  Source implementation is not permission to run bootstrap or roll out Catalog.
 
 #### c) `restart_oidc_dependent_pods`
 Restarts ArgoCD Server, Grafana, Backstage, and Landing Page to pick up Keycloak OIDC configuration.

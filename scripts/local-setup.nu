@@ -6081,7 +6081,50 @@ def configure_sonarqube [] {
         error make {msg: "SonarQube does not expose the required secured SAML certificate setting definition"}
     }
 
+    configure_crossplane_sonarqube_credentials $password
     print $"(ansi green)✓ SAML fully configured, enabled and verified in SonarQube(ansi reset)"
+}
+
+# Issue #372: administrator is used only for the bounded bootstrap prerequisite,
+# never mounted into an app runner. Preserve tokens; rotation belongs to operator.
+def configure_crossplane_sonarqube_credentials [password: string] {
+    let existing = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH get secret crossplane-sonarqube-credentials -n crossplane-system -o json
+    } | complete)
+    let token = if $existing.exit_code == 0 {
+        let encoded = (try { $existing.stdout | from json | get data.token } catch {
+            error make {msg: "Malformed SonarQube provisioner Secret"}
+        })
+        let decoded = (try { $encoded | decode base64 | decode utf-8 | str trim } catch {
+            error make {msg: "Invalid SonarQube provisioner Secret encoding"}
+        })
+        if ($decoded | is-empty) { error make {msg: "Empty SonarQube provisioner Secret"} }
+        $decoded
+    } else if (kubectl_error_is_exact_not_found $existing.stderr "secrets" "crossplane-sonarqube-credentials") {
+        ""
+    } else {
+        error make {msg: "Failed to inspect SonarQube provisioner Secret"}
+    }
+    let ca = (do {
+        kubectl --kubeconfig $KUBECONFIG_PATH get secret digiorg-local-ca -n crossplane-system -o json
+    } | complete)
+    if $ca.exit_code != 0 { error make {msg: "SonarQube runner CA Secret unavailable"} }
+    let ca_pem = (try { $ca.stdout | from json | get data | get 'ca.crt' | decode base64 | decode utf-8 } catch {
+        error make {msg: "SonarQube runner CA Secret malformed"}
+    })
+    let temporary = (^mktemp -d | str trim)
+    let ca_file = ($temporary | path join "ca.crt")
+    $ca_pem | save $ca_file
+    let result = (do {
+        {password: $password, existing_token: $token, ca_file: $ca_file} | to json | python3 scripts/sonarqube_provisioner.py
+    } | complete)
+    rm -r $temporary
+    if $result.exit_code != 0 or ($result.stdout | str trim | is-empty) {
+        error make {msg: "SonarQube provisioner prerequisite failed: verify trusted HTTPS route, approved account/policy and operator token recovery"}
+    }
+    let provisioner_token = ($result.stdout | str trim)
+    persist_opaque_secret "crossplane-system" "crossplane-sonarqube-credentials" "token" $provisioner_token
+    print "SonarQube dedicated provisioning credential verified and persisted; default-policy exceptions are documented in specs/372-sonarqube-onboarding"
 }
 
 # Restart one existing OIDC-dependent deployment and fail closed if either the
