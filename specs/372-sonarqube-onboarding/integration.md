@@ -30,6 +30,37 @@ current delivery receipt. This addendum records the bounded integration scope.
    verify live policy, Crossplane completion, Portal journey and existing-app
    backfill/retention. Local tests cannot establish those acceptance states.
 
+## Historical Issue #348 test-contract separation
+
+Chris approved a bounded test-only migration after the new pin exposed an
+inherited coupling: the historical closure harness required every current
+Application to be byte-identical to its September source, including Catalog
+`d531180b322dc0128477ecb9bb0fc9071b41d631`.
+
+- The retained `release-closure-source.json`, its original commit/tree/digests,
+  live parser fixtures, runtime descriptors/tags, production transition/closure
+  scripts and strict historical `_validate_checkout_source` remain unchanged.
+- The current-main test contract permits exactly the reviewed Catalog
+  Application bytes (pin plus related comment), SHA-256
+  `36acfe6923aa04bfda7918afecda034df8e432de470397699e6c8c21e618ee03`.
+  Every other retained Application remains byte-exact. This is not an arbitrary
+  new-pin allowlist and does not accept generated runtime closure bytes as main.
+- Historical generator tests accept strictly validated historical source/closure
+  or current-main input, but seed Applications only from the original historical
+  fixture. Current Catalog bytes never silently replace historical evidence.
+- Source-graph tests assert both the current canonical consumer and the separate
+  original historical Catalog pin. Negative tests reject old/mutable/wrong pins,
+  comment, gate, path, sync-option/automation and unrelated Application drift;
+  the historical validator and production generator still reject the new pin.
+- Old-base controls, focused RED/GREEN, negative/sabotage checks and the full
+  exact-candidate local matrix are retained in the task evidence packet.
+
+This separation is not a new Issue #348 runtime candidate, closure generation
+approval, live compatibility proof, or operational completion. A future runtime
+transition still requires its own source compatibility, exact review, immutable
+closure, authorization and live acceptance gates. No historical fixture cleanup,
+production release-model change, test skip, or relaxed closure guard is included.
+
 ## Unchanged operational boundaries
 
 All eligible claims may enroll on rollout, including existing and CI-disabled

@@ -7,7 +7,7 @@ import unittest
 
 import yaml
 
-from test_issue348_release_closure import validate_checkout_contract
+from test_issue348_release_closure import _source_bundle, validate_checkout_contract
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -15,7 +15,9 @@ CORE_REPO = "https://github.com/digiorg/core.git"
 CANDIDATE_TAG = "issue348-runtime-v8-20260927T160157Z"
 QUALIFICATION_DESCRIPTOR = CANDIDATE_TAG
 OLD_TAG = "issue301-runtime-v16-20260817T130820Z"
-CATALOG_REVISION = "d531180b322dc0128477ecb9bb0fc9071b41d631"
+# Current canonical-main consumer, not the retained Issue #348 runtime graph.
+CATALOG_REVISION = "2867d1b4d47f472c7bb4097d61226e206e32a5a1"
+HISTORICAL_CATALOG_REVISION = "d531180b322dc0128477ecb9bb0fc9071b41d631"
 TRANSITION = ROOT / "scripts/issue348_runtime_v2_transition.py"
 
 
@@ -70,6 +72,15 @@ class RuntimeSourceGraphTest(unittest.TestCase):
                 CATALOG_REVISION,
             ),
         )
+
+    def test_historical_catalog_fixture_pin_is_not_migrated_to_current_main(self):
+        catalog = yaml.safe_load(_source_bundle()["apps/platform/core-catalog.yaml"])
+        self.assertEqual(
+            source_identity(source_list(catalog)[0]),
+            ("https://github.com/digiorg/core-catalog.git", None,
+             "compositions/local", None, HISTORICAL_CATALOG_REVISION),
+        )
+        self.assertNotEqual(HISTORICAL_CATALOG_REVISION, CATALOG_REVISION)
 
     def test_issue350_memory_headroom_remains_exact(self):
         values = yaml.safe_load(
