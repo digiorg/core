@@ -41,6 +41,25 @@ class FolderProviderTests(unittest.TestCase):
             legacy = 'templates/grafana/dashboards-1.14/k8s-resources-namespace.yaml'
             self.assertEqual(render(values, legacy), render(directory / 'baseline.yaml', legacy))
             self.assertNotIn('grafana_folder', render(values, legacy)[0]['metadata'].get('annotations', {}))
+            def full_render(value_file):
+                result = subprocess.run(['helm', 'template', 'prometheus', str(chart), '--namespace', 'monitoring', '-f', str(value_file)], capture_output=True, text=True, check=True, timeout=60)
+                return [doc for doc in yaml.safe_load_all(result.stdout) if doc]
+            current = full_render(values)
+            baseline = full_render(directory / 'baseline.yaml')
+            def dashboard_imports(docs):
+                return [doc for doc in docs if doc.get('metadata', {}).get('labels', {}).get('grafana_dashboard') == '1']
+            self.assertEqual(dashboard_imports(current), dashboard_imports(baseline))
+            self.assertTrue(dashboard_imports(current))
+            self.assertTrue(all(doc['kind'] == 'ConfigMap' for doc in dashboard_imports(current)))
+            def sidecars(docs):
+                deployment = next(doc for doc in docs if doc['kind'] == 'Deployment' and doc['metadata']['name'] == 'prometheus-grafana')
+                return {container['name']: container for container in deployment['spec']['template']['spec']['containers']}
+            containers = sidecars(current)
+            env = {item['name']: item.get('value') for item in containers['grafana-sc-dashboard']['env']}
+            self.assertEqual(env['RESOURCE'], 'configmap', 'Secret dashboard import must be disabled')
+            self.assertEqual(env['LABEL'], 'grafana_dashboard')
+            self.assertEqual(env['LABEL_VALUE'], '1')
+            self.assertEqual(containers['grafana-sc-datasources'], sidecars(baseline)['grafana-sc-datasources'])
 
 
 if __name__ == '__main__':

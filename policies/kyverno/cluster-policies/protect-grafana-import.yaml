@@ -13,6 +13,18 @@ spec:
   admission: true
   emitWarning: false
   failurePolicy: Fail
+  # Kyverno 1.18.1 generates a separate per-policy webhook for these conditions.
+  # Evaluate BOTH versions before invocation: selectors alone permit stripping.
+  webhookConfiguration:
+    matchConditions:
+    - name: reserved-dashboard-old-or-new
+      expression: >-
+        [object, oldObject].exists(o, o != null &&
+          ((has(o.metadata.labels) && 'grafana_dashboard' in o.metadata.labels &&
+            o.metadata.labels['grafana_dashboard'] == '1') ||
+           (has(o.metadata.annotations) && 'grafana_folder' in o.metadata.annotations &&
+            o.metadata.annotations['grafana_folder'] != '') ||
+           o.metadata.name.matches('^grafana-app-dev-[a-z]([a-z0-9-]{0,30}[a-z0-9])?$')))
   rules:
   - name: reserved-import-ownership
     skipBackgroundRequests: true

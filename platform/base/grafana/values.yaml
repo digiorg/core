@@ -38,6 +38,8 @@ grafana:
 
   sidecar:
     dashboards:
+      # Reserved import admission protects ConfigMaps, never Secret dashboards.
+      resource: configmap
       label: grafana_dashboard
       labelValue: "1"
       folderAnnotation: grafana_folder

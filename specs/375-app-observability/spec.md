@@ -2,7 +2,7 @@
 
 Status: local implementation candidate; exact validation/freeze state is recorded in the delivered external evidence manifest. No publication or deployment. Component proof is not live acceptance.
 Owner: Scott / platform-engineer. Standard lane, large cross-repository change.
-Controlling task: t_278943ce; independent review: t_76da5507 (not yet bound).
+Controlling R2 correction task: t_1babc153; independent R2 review: t_6ba42bcb (binding by Simon after freeze). Original R1 task t_278943ce and review t_76da5507 remain preserved.
 
 ## Authorized outcome and boundaries
 
@@ -10,7 +10,7 @@ The task authorizes local implementation and testing of Core issue 375, supersed
 
 Core base: ca30a538648ef46a55f3f4da511e1ed0fb60e80d.
 Catalog base: 2867d1b4d47f472c7bb4097d61226e206e32a5a1.
-Both isolated local branches: feat/375-app-dashboards; neither tracks AGENTS.md.
+R2 isolated branches: issue375-r2; Core starts at R1 e9db055cb2a71d86369938b2fbeb43816c98f145. Catalog remains unchanged at R1 6e2e7d8f8a3670d0b45c5df4236ef28a0b020a0c. Neither tracks AGENTS.md.
 
 ## Confirmed requirements (not reopened)
 
@@ -39,8 +39,38 @@ Read-only source and exact pinned-chart RBAC inventory is in the task workspace'
 
 S1/S2, S3 canonical-name/cross-publisher reservation and the GET-based actual-controller verification were explicitly approved by Chris for LOCAL implementation/tests on t_278943ce. KSM adds only AppClaim get/list/watch and CRD list/watch. Supplemental Kyverno RBAC grants only exact rendered admission subject get on kubernetes.crossplane.io/objects. That is FULL-resource GET and may expose embedded Secret manifests; it is not metadata-only permission. The policy reads the canonical still-finalizing Object, verifies Application controller UID and desired target/identity, and fails closed on absent/mismatched/unavailable evidence. No additional publishers, namespace-controller bypass, blanket group/admin exception, direct Secret API or live grant is added. A foreign replacement can leave cleanup pending for explicit operator resolution; Chris accepted that bounded local-design consequence. Real pinned Kyverno component tests exercise the actual API context GET against an isolated loopback fixture; they do not prove live effective permissions or a running Crossplane finalizer.
 
+## R2 authorized B1/N1 corrections
+
+Chris authorized ConfigMap-only DASHBOARD import and narrowing actual admission
+webhook scope. Set only grafana.sidecar.dashboards.resource=configmap; datasource
+sidecar and shared Grafana Secret-read RBAC remain unchanged. Source and pinned
+chart inventory found three source dashboard ConfigMaps and 28 chart dashboard
+ConfigMaps, no legacy dashboard Secret dependency. The real chart render test
+compares every legacy dashboard and the datasource sidecar unchanged.
+
+The production ClusterPolicy uses webhookConfiguration.matchConditions, not just
+rule preconditions. Its old-or-new predicate covers label grafana_dashboard=1,
+nonempty grafana_folder, or the exact reserved app-name pattern. Ordinary unrelated
+ConfigMaps are excluded before invocation; stripping metadata and name-only
+foreign replacement still invoke the Fail webhook. Namespace and actor are not
+exemptions. Pinned Kyverno source supports a separate per-policy Fail webhook;
+installed registration, shared global configuration filters and real outage
+behavior are not proven here. Protected operations still depend on Kyverno and,
+for provider ownership, authoritative full-resource Object GET. Failed lookup or
+foreign ownership keeps cleanup fail-closed; there is no automatic recovery.
+
+Pinned CLI 1.18.1 cannot validate custom match conditions because its apply wrapper
+passes a nil client to the validator. Simon authorized a test-only adapter using
+unchanged pinned loader, full validator with synthetic discovery, and CLI engine
+processor. All existing publisher and actual owner-GET assertions are retained;
+no field stripping, engine upgrade, validation bypass or historical-test rewrite.
+See platform/tests/kyverno-component/README.md for exact attribution, locked build,
+real apiserver matcher proof, fixture warnings and retained git-object dependency.
+N2 registration redesign is not part of R2. Catalog and canonical consumer pin
+remain unchanged. Simon binds existing R2 review after final local freeze.
+
 ## Delivery, validation and rollback
 
-After security-scope approval: vertical RED/GREEN implementation, real KCL/parsed JSON, pinned chart and provider component fixtures, then full workflow-locked local gates. Freeze base/parent/commit/tree, diffs, logs, portable bundles and hashes; reconstruct in fresh directories. Simon binds existing review round 1. Catalog producer must be reviewed, published and canonically merged before Core pins it; local Core candidate leaves the canonical pin unchanged and explicitly defers integration.
+After security-scope approval: vertical RED/GREEN implementation, real KCL/parsed JSON, pinned chart and provider component fixtures, then full workflow-locked local gates. Freeze base/parent/commit/tree, diffs, logs, portable bundles and hashes; reconstruct in fresh directories. Simon binds the existing review for the frozen round (currently R2). Catalog producer must be reviewed, published and canonically merged before Core pins it; local Core candidate leaves the canonical pin unchanged and explicitly defers integration.
 
 Source rollback is reviewed revert/template correction with stable UIDs. No automatic runtime repair. Authenticated Grafana import/datasource/panel checks, positive synthetic log ingestion, fault/lifecycle testing and capacity measurements require separately authorized runtime acceptance. No measured import SLO or capacity claim exists.

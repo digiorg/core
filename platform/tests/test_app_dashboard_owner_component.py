@@ -1,4 +1,4 @@
-"""Pinned Kyverno CLI with an isolated loopback API; never uses a real kubeconfig.
+"""Pinned Kyverno component with an isolated loopback API; never live kubeconfig.
 
 The API is synthetic. This proves actual GET/context/deny behavior, not API-server
 webhook registration, Crossplane reconciliation or production effective permissions.
@@ -56,8 +56,8 @@ class OwnerComponentTests(unittest.TestCase):
         self.assertIn('5e6bba9ca85beec6c93e94ca7fb0972a66df3b2e67636a08bef090cd3fc6535c', workflow)
 
     def test_api_lookup_lifecycle_and_fail_closed(self):
-        cli = os.environ.get('KYVERNO_CLI') or shutil.which('kyverno')
-        self.assertIsNotNone(cli, 'pinned Kyverno CLI required')
+        cli = os.environ.get('KYVERNO_COMPONENT')
+        self.assertIsNotNone(cli, 'KYVERNO_COMPONENT must name the built pinned test adapter')
         state = {'object': managed_object(), 'code': 200, 'paths': []}
         class API(http.server.BaseHTTPRequestHandler):
             def log_message(self, *args):

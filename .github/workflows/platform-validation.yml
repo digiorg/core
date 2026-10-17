@@ -85,8 +85,22 @@ jobs:
           tar -xzf /tmp/kyverno.tgz -C /tmp/kyverno-cli
           sudo install -m 0755 /tmp/kyverno-cli/kyverno /usr/local/bin/kyverno
 
+      - name: Build pinned Kyverno component and test real API-server matcher
+        run: |
+          set -euo pipefail
+          curl -fsSL https://go.dev/dl/go1.26.1.linux-amd64.tar.gz -o /tmp/go-issue375.tgz
+          echo '031f088e5d955bab8657ede27ad4e3bc5b7c1ba281f05f245bcc304f327c987a  /tmp/go-issue375.tgz' | sha256sum -c -
+          mkdir -p /tmp/go-issue375
+          tar -xzf /tmp/go-issue375.tgz -C /tmp/go-issue375
+          export PATH="/tmp/go-issue375/go/bin:$PATH"
+          cd platform/tests/kyverno-component
+          go mod verify
+          go test -mod=readonly -p 4 -v ./...
+          go build -mod=readonly -p 4 -o /tmp/kyverno-component .
+
       - name: Platform regression tests
         env:
+          KYVERNO_COMPONENT: /tmp/kyverno-component
           ARGOCD_V345_BINARY: /tmp/argocd-v3.4.5
         run: python3 -m unittest discover -s platform/tests -p 'test_*.py' -v
 

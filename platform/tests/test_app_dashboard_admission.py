@@ -1,4 +1,7 @@
-"""Exact publisher, old/new metadata and legacy compatibility through Kyverno CLI."""
+"""Exact publisher, old/new metadata and legacy cases via pinned Kyverno component.
+
+Unchanged full-policy loader/validator/engine; not the defective CLI apply wrapper.
+"""
 import copy
 import os
 from pathlib import Path
@@ -17,8 +20,8 @@ ARGO = "system:serviceaccount:argocd:argocd-application-controller"
 class DashboardAdmissionTests(unittest.TestCase):
     def test_reserved_import_exact_publisher_boundary(self):
         self.assertTrue(POLICY.exists(), "reserved import protection missing")
-        cli = os.environ.get("KYVERNO_CLI") or shutil.which("kyverno")
-        self.assertIsNotNone(cli, "Kyverno 1.18.1 CLI required for real policy tests")
+        cli = os.environ.get("KYVERNO_COMPONENT")
+        self.assertIsNotNone(cli, "KYVERNO_COMPONENT must name the built pinned test adapter")
         app = {"apiVersion": "v1", "kind": "ConfigMap", "metadata": {
             "name": "grafana-app-dev-alpha", "namespace": "alpha", "labels": {"grafana_dashboard": "1"},
             "annotations": {"grafana_folder": "/tmp/dashboards/DigiOrg Apps", "platform.digiorg.io/dashboard-owner": "xr-uid", "platform.digiorg.io/app-id": "alpha"}}, "data": {"app-dev-alpha.json": "{}"}}
