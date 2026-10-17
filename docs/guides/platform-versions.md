@@ -164,10 +164,17 @@ where noted (this environment has no cluster — see section 7).
   patch-and-transform — any P&T Composition there must be converted to the
   function pipeline (`crossplane beta convert pipeline-composition`). Out of
   scope for this repo; validate `core-catalog` separately before promoting.
-- **core-catalog pin (Issue #301 follow-up):** `apps/platform/core-catalog.yaml`
+- **core-catalog pin (Issue #372 integration):** `apps/platform/core-catalog.yaml`
   pins the exact independently reviewed canonical merge commit of
-  core-catalog PR #28, `d531180b322dc0128477ecb9bb0fc9071b41d631`. This retains provider-http-safe
-  Gitea Actions-secret array normalization, in-place credential-fingerprint drift
+  core-catalog PR #30, `2867d1b4d47f472c7bb4097d61226e206e32a5a1`.
+  This adds initial private SonarQube project enrollment for all eligible
+  repository-enabled apps, including CI-disabled apps and existing claims.
+  The manual synchronization gate remains: approved provisioner account/Secret
+  prerequisites and live effective-policy verification must precede rollout.
+  The pin is not runtime acceptance; Portal/backfill/retention validation remains
+  separate. See `specs/372-sonarqube-onboarding/` for the contract and rollback.
+  This retains the core-catalog PR #28 NGINX-scaffold v3 contract and
+  provider-http-safe Gitea Actions-secret array normalization, in-place credential-fingerprint drift
   repair, and shell-data-safe Harbor credentials. It additionally withholds the
   push-triggered workflow Request on fresh installs until the Harbor robot has a
   numeric ID, the credential fingerprint is available, and both Gitea Actions
