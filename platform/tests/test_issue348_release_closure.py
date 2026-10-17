@@ -272,14 +272,34 @@ def _validate_checkout_source(root, bundle):
         raise AssertionError("generated closure live-fixture digests changed")
 
 
-def validate_checkout_contract(root=ROOT):
-    """Validate the exact canonical source or complete generated closure checkout."""
-    _validate_checkout_source(root, _source_bundle(root))
+# Current-main integration is not the historical Issue #348 release source.
+# This digest allows exactly the Issue #372 Catalog pin/comment update; historical
+# fixture bytes, SOURCE_DIGESTS and the generated-closure validator stay intact.
+CURRENT_CATALOG_PATH = "apps/platform/core-catalog.yaml"
+CURRENT_CATALOG_SHA256 = "36acfe6923aa04bfda7918afecda034df8e432de470397699e6c8c21e618ee03"
+
+
+def validate_checkout_contract(root=ROOT, provenance_root=ROOT):
+    """Validate current main, not a historical or generated runtime closure."""
+    bundle = _source_bundle(provenance_root)
+    for relative, historical in bundle.items():
+        data = (root / relative).read_bytes()
+        expected_digest = (CURRENT_CATALOG_SHA256 if relative == CURRENT_CATALOG_PATH
+                           else hashlib.sha256(historical).hexdigest())
+        if hashlib.sha256(data).hexdigest() != expected_digest:
+            raise AssertionError(f"current-main Application drift: {relative}")
 
 
 def build_seed(destination, checkout_root, provenance_root=ROOT):
     bundle = _source_bundle(provenance_root)
-    _validate_checkout_source(checkout_root, bundle)
+    # Validate either exact current-main input or the original exact historical
+    # source/closure. Always seed historical Applications from the retained bundle,
+    # never silently feed a new consumer pin to the old runtime generator.
+    catalog = (checkout_root / CURRENT_CATALOG_PATH).read_bytes()
+    if hashlib.sha256(catalog).hexdigest() == CURRENT_CATALOG_SHA256:
+        validate_checkout_contract(checkout_root, provenance_root)
+    else:
+        _validate_checkout_source(checkout_root, bundle)
     destination.mkdir()
     run_git(destination, "init", "-b", "main")
     run_git(destination, "config", "user.email", "issue348@example.invalid")
@@ -301,6 +321,80 @@ def build_seed(destination, checkout_root, provenance_root=ROOT):
     protected.write_text("PROTECTED = True\n", encoding="utf-8")
     commit_all(destination, "canonical merged source")
     return base_commit
+
+
+class CurrentMainIntegrationTest(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.repo = Path(self.temp.name) / "current-main"
+        self.bundle = _source_bundle()
+        for relative, data in self.bundle.items():
+            target = self.repo / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+        self.catalog = self.repo / CURRENT_CATALOG_PATH
+        self.catalog.write_bytes((ROOT / CURRENT_CATALOG_PATH).read_bytes())
+
+    def test_current_main_accepts_reviewed_catalog_integration(self):
+        validate_checkout_contract(ROOT)
+        validate_checkout_contract(self.repo)
+
+    def test_current_main_rejects_wrong_mutable_and_historical_catalog_pins(self):
+        original = self.catalog.read_text(encoding="utf-8")
+        reviewed = yaml.safe_load(original)["spec"]["source"]["targetRevision"]
+        for wrong in ("main", "f" * 40,
+                      "d531180b322dc0128477ecb9bb0fc9071b41d631"):
+            with self.subTest(pin=wrong):
+                self.catalog.write_text(original.replace(reviewed, wrong), encoding="utf-8")
+                with self.assertRaisesRegex(AssertionError, "current-main Application drift"):
+                    validate_checkout_contract(self.repo)
+        self.catalog.write_bytes(self.bundle[CURRENT_CATALOG_PATH])
+        with self.assertRaisesRegex(AssertionError, "current-main Application drift"):
+            validate_checkout_contract(self.repo)
+
+    def test_current_main_rejects_catalog_comment_gate_and_source_drift(self):
+        original = self.catalog.read_text(encoding="utf-8")
+        for changed in (
+                original + "# unauthorized comment\n",
+                original.replace("issue-275-manual", "unauthorized"),
+                original.replace("compositions/local", "compositions/aws"),
+                original.replace("      - ServerSideApply=true", "      - ServerSideApply=false"),
+                original.replace("  syncPolicy:\n", "  syncPolicy:\n    automated: {}\n")):
+            self.assertNotEqual(changed, original)
+            with self.subTest(changed=changed):
+                self.catalog.write_text(changed, encoding="utf-8")
+                with self.assertRaisesRegex(AssertionError, "current-main Application drift"):
+                    validate_checkout_contract(self.repo)
+
+    def test_current_main_rejects_unrelated_application_drift(self):
+        path = self.repo / "apps/platform/fluentd.yaml"
+        path.write_bytes(path.read_bytes() + b"# unauthorized drift\n")
+        with self.assertRaisesRegex(AssertionError, "apps/platform/fluentd.yaml"):
+            validate_checkout_contract(self.repo)
+
+    def test_historical_exact_source_does_not_accept_current_catalog(self):
+        with self.assertRaisesRegex(AssertionError, "neither canonical source nor exact"):
+            _validate_checkout_source(self.repo, self.bundle)
+        self.catalog.write_bytes(self.bundle[CURRENT_CATALOG_PATH])
+        _validate_checkout_source(self.repo, self.bundle)
+
+    def test_current_main_harness_rejects_unrelated_drift_before_seeding(self):
+        path = self.repo / "apps/platform/fluentd.yaml"
+        path.write_bytes(path.read_bytes() + b"# unauthorized drift\n")
+        destination = Path(self.temp.name) / "must-not-exist"
+        with self.assertRaisesRegex(AssertionError, "apps/platform/fluentd.yaml"):
+            build_seed(destination, self.repo)
+        self.assertFalse(destination.exists())
+
+    def test_current_main_seeds_original_historical_bytes_not_new_pin(self):
+        destination = Path(self.temp.name) / "historical-seed"
+        build_seed(destination, ROOT)
+        for relative, historical in self.bundle.items():
+            self.assertEqual((destination / relative).read_bytes(), historical, relative)
+        self.assertNotEqual(
+            (destination / CURRENT_CATALOG_PATH).read_bytes(), self.catalog.read_bytes(),
+        )
 
 
 class ClosureHarness(unittest.TestCase):
@@ -374,6 +468,14 @@ class ClosureHarness(unittest.TestCase):
 
 
 class DeterministicClosureTest(ClosureHarness):
+    def test_current_catalog_pin_is_not_authorized_for_historical_runtime_generation(self):
+        path = self.repo / CURRENT_CATALOG_PATH
+        path.write_bytes((ROOT / CURRENT_CATALOG_PATH).read_bytes())
+        self.recommit("sabotage historical source with current Catalog")
+        with self.assertRaisesRegex(closure.ClosureError, "source graph|reviewed source"):
+            closure.generate(self.config())
+        self.assertFalse((self.repo / OUTPUT).exists())
+
     def test_generated_runtime_checkout_binds_actual_source_parent_and_tree(self):
         manifest = closure.generate(self.config())
         commit_all(self.repo, "generated release closure")

@@ -14,12 +14,12 @@ spec:
 
   source:
     repoURL: https://github.com/digiorg/core-catalog.git
-    # Core-catalog PR #28 repairs the deterministic source scaffold's NGINX
-    # response and advances its contract to v3. Pin its exact independently
-    # reviewed canonical merge commit so
-    # Core and Catalog are deployed as one immutable integration.
+    # Core-catalog PR #30 adds initial private SonarQube project enrollment
+    # (Core issue #372). Pin its independently reviewed canonical merge commit.
+    # Rollout requires approved account/Secret prerequisites and live acceptance;
+    # this pin alone does not establish deployment or runtime readiness.
     # Keep this manual (no syncPolicy.automated) — see docs/guides/platform-versions.md.
-    targetRevision: d531180b322dc0128477ecb9bb0fc9071b41d631
+    targetRevision: 2867d1b4d47f472c7bb4097d61226e206e32a5a1
     path: compositions/local
 
   destination:
