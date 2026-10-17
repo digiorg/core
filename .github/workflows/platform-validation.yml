@@ -76,6 +76,15 @@ jobs:
           tar -xzf /tmp/kustomize.tgz -C /tmp
           sudo install -m 0755 /tmp/kustomize /usr/local/bin/kustomize
 
+      - name: Install pinned Kyverno CLI for admission component tests
+        run: |
+          set -euo pipefail
+          curl -fsSL https://github.com/kyverno/kyverno/releases/download/v1.18.1/kyverno-cli_v1.18.1_linux_x86_64.tar.gz -o /tmp/kyverno.tgz
+          echo '5e6bba9ca85beec6c93e94ca7fb0972a66df3b2e67636a08bef090cd3fc6535c  /tmp/kyverno.tgz' | sha256sum -c -
+          mkdir -p /tmp/kyverno-cli
+          tar -xzf /tmp/kyverno.tgz -C /tmp/kyverno-cli
+          sudo install -m 0755 /tmp/kyverno-cli/kyverno /usr/local/bin/kyverno
+
       - name: Platform regression tests
         env:
           ARGOCD_V345_BINARY: /tmp/argocd-v3.4.5

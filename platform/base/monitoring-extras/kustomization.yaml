@@ -8,3 +8,4 @@ resources:
   - jaeger-servicemonitor.yaml
   - opensearch-servicemonitor.yaml
   - fluentd-servicemonitor.yaml
+  - ../app-dashboards

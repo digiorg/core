@@ -1,0 +1,4 @@
+# Empty placeholder. Populate only with the canonically merged Catalog adapter.
+apiVersion: v1
+kind: List
+items: []

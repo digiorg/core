@@ -1,0 +1,11 @@
+# Issue 375 implementation plan
+
+1. Verify exact source bases and chart RBAC; record security boundary. DONE (source/render only, not live audit).
+2. S1/S2, S3 reserved-name/deletion fail-closed semantics and exact GET-based controller-owner verification were explicitly approved for local implementation/tests by Chris on t_278943ce. Real pinned Kyverno/API fixture proves target/controller checks and lookup failure behavior. No runtime/publishing authority follows from these approvals.
+3. R1–R3: write one real-KCL failing test for deterministic scoped app dashboard; implement minimal builder/Object; iterate identity/adoption/collision, Active namespace gating, multi-service, update and deletion fixtures. Test collisions before importing anything; no foreign adoption.
+4. R4–R6: RED/GREEN narrow KSM custom state/allowlists and actual pinned component fixtures, including late CRD startup. Add registration adapter consuming canonical producer, expected services/conditions, inventory-anchored overview and freshness/no-data distinctions.
+5. R4/R8: RED/GREEN folder/file-provider compatibility and exact approved import publisher policy; preserve existing dashboards and test deny/allow/removal/legacy cases.
+6. R7: vertical query fixtures and negative/sabotage checks for every scoped query/variable/link, owner joins, missing denominators and normalized/missing levels. Actual parsed dashboard JSON, not source-string snapshots only.
+7. Run authoritative workflow-locked full local Catalog and Core checks (real KCL, image/component tests where required, pin policy, render, Kustomize, Nushell, whitespace/security). Preserve existing main/bootstrap/SonarQube and historical controls. Do not weaken failures.
+8. Freeze exact commits/trees/parents, complete diffs, test logs and thin portable bundles. Prove reconstruction and hashes. Keep Core canonical Catalog pin unchanged until the producer is canonically merged; document deferred integration. Simon binds existing independent review t_76da5507; no same-card reassignment or duplicate review.
+9. Publication/CI/Chris merge, canonical producer verification/consumer pin, and Nadia runtime acceptance are later separately authorized stages, not this local implementation's claims.

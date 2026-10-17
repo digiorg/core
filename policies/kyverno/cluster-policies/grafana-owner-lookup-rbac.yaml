@@ -1,0 +1,23 @@
+# Issue 375: approved full-resource GET consequence, not metadata-only RBAC.
+# Subject verified from pinned Kyverno 3.8.1 admission-controller binding.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kyverno:grafana-dashboard-owner-lookup
+rules:
+- apiGroups: [kubernetes.crossplane.io]
+  resources: [objects]
+  verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kyverno:grafana-dashboard-owner-lookup
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kyverno:grafana-dashboard-owner-lookup
+subjects:
+- kind: ServiceAccount
+  name: kyverno-admission-controller
+  namespace: kyverno

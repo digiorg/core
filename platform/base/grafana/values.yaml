@@ -36,6 +36,18 @@ grafana:
       # Remove in production (use proper CA trust instead)
       tls_skip_verify_insecure: true
 
+  sidecar:
+    dashboards:
+      label: grafana_dashboard
+      labelValue: "1"
+      folderAnnotation: grafana_folder
+      provider:
+        foldersFromFilesStructure: true
+        folder: ""
+        folderUid: ""
+        disableDelete: false
+        allowUiUpdates: false
+
   additionalDataSources:
     - name: Jaeger
       type: jaeger
@@ -88,6 +100,63 @@ prometheus:
           values:
             - prometheus
             - harbor
+
+# Issue 375 / approved S1: narrowly bounded read-only app inventory.
+kube-state-metrics:
+  metricLabelsAllowlist:
+    - namespaces=[platform.digiorg.io/type,platform.digiorg.io/app-id,platform.digiorg.io/team]
+  rbac:
+    extraRules:
+      - apiGroups: [platform.digiorg.io]
+        resources: [appclaims]
+        verbs: [get, list, watch]
+      - apiGroups: [apiextensions.k8s.io]
+        resources: [customresourcedefinitions]
+        verbs: [list, watch]
+  customResourceState:
+    enabled: true
+    config:
+      kind: CustomResourceStateMetrics
+      spec:
+        resources:
+          - groupVersionKind:
+              group: platform.digiorg.io
+              version: v1alpha1
+              kind: AppClaim
+            metricNamePrefix: digiorg_app
+            labelsFromPath:
+              app_id: [spec, appName]
+              namespace: [spec, appName]
+              claim: [metadata, name]
+              claim_namespace: [metadata, namespace]
+              claim_uid: [metadata, uid]
+            metrics:
+              - name: info
+                help: Registered AppClaim identity; not workload health or Grafana import readiness.
+                each:
+                  type: Info
+                  info:
+                    labelsFromPath:
+                      team: [spec, team]
+              - name: service_info
+                help: Expected service before its Deployment exists.
+                each:
+                  type: Info
+                  info:
+                    path: [spec, services]
+                    labelsFromPath:
+                      service: [name]
+              - name: condition
+                help: Actual claim condition; absent conditions remain unknown.
+                each:
+                  type: StateSet
+                  stateSet:
+                    path: [status, conditions]
+                    labelsFromPath:
+                      condition: [type]
+                    labelName: status
+                    valueFrom: [status]
+                    list: ["True", "False", "Unknown"]
 
 alertmanager:
   enabled: false
