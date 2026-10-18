@@ -14,12 +14,13 @@ spec:
 
   source:
     repoURL: https://github.com/digiorg/core-catalog.git
-    # Core-catalog PR #30 adds initial private SonarQube project enrollment
-    # (Core issue #372). Pin its independently reviewed canonical merge commit.
+    # Core-catalog PR #31 adds per-app dashboards and app identity metadata
+    # (Core issue #375), retaining PR #30 SonarQube enrollment (issue #372).
+    # Pin the independently reviewed producer's actual canonical merge commit.
     # Rollout requires approved account/Secret prerequisites and live acceptance;
     # this pin alone does not establish deployment or runtime readiness.
     # Keep this manual (no syncPolicy.automated) — see docs/guides/platform-versions.md.
-    targetRevision: 2867d1b4d47f472c7bb4097d61226e206e32a5a1
+    targetRevision: 14bed077beb3da068454775869f5e5009b5fc21c
     path: compositions/local
 
   destination:

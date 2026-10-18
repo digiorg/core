@@ -273,10 +273,10 @@ def _validate_checkout_source(root, bundle):
 
 
 # Current-main integration is not the historical Issue #348 release source.
-# This digest allows exactly the Issue #372 Catalog pin/comment update; historical
+# This digest allows exactly the Issue #375 Catalog pin/comment update; historical
 # fixture bytes, SOURCE_DIGESTS and the generated-closure validator stay intact.
 CURRENT_CATALOG_PATH = "apps/platform/core-catalog.yaml"
-CURRENT_CATALOG_SHA256 = "36acfe6923aa04bfda7918afecda034df8e432de470397699e6c8c21e618ee03"
+CURRENT_CATALOG_SHA256 = "41c8041917db6d9e9c391a50625358c310cefb51504141f7bc360adad33cf6eb"
 
 
 def validate_checkout_contract(root=ROOT, provenance_root=ROOT):

@@ -164,15 +164,17 @@ where noted (this environment has no cluster — see section 7).
   patch-and-transform — any P&T Composition there must be converted to the
   function pipeline (`crossplane beta convert pipeline-composition`). Out of
   scope for this repo; validate `core-catalog` separately before promoting.
-- **core-catalog pin (Issue #372 integration):** `apps/platform/core-catalog.yaml`
+- **core-catalog pin (Issue #375 integration):** `apps/platform/core-catalog.yaml`
   pins the exact independently reviewed canonical merge commit of
-  core-catalog PR #30, `2867d1b4d47f472c7bb4097d61226e206e32a5a1`.
-  This adds initial private SonarQube project enrollment for all eligible
+  core-catalog PR #31, `14bed077beb3da068454775869f5e5009b5fc21c`.
+  This adds per-app dashboards and app identity metadata while retaining PR #30's
+  initial private SonarQube project enrollment for all eligible
   repository-enabled apps, including CI-disabled apps and existing claims.
   The manual synchronization gate remains: approved provisioner account/Secret
   prerequisites and live effective-policy verification must precede rollout.
   The pin is not runtime acceptance; Portal/backfill/retention validation remains
-  separate. See `specs/372-sonarqube-onboarding/` for the contract and rollback.
+  separate. See `specs/375-app-observability/integration.md` and
+  `specs/372-sonarqube-onboarding/` for the contracts and rollback.
   This retains the core-catalog PR #28 NGINX-scaffold v3 contract and
   provider-http-safe Gitea Actions-secret array normalization, in-place credential-fingerprint drift
   repair, and shell-data-safe Harbor credentials. It additionally withholds the

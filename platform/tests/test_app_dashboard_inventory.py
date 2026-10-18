@@ -7,14 +7,15 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class AppInventoryConfigurationTests(unittest.TestCase):
-    def test_registration_output_is_wired_without_a_speculative_catalog_pin(self):
+    def test_registration_output_is_wired_to_canonical_dashboard_producer(self):
         base = ROOT / 'platform/base/app-dashboards'
         resources = yaml.safe_load((base / 'kustomization.yaml').read_text())['resources']
         self.assertIn('registered-apps.generated.yaml', resources)
         self.assertEqual(yaml.safe_load((base / 'registrations.yaml').read_text()), {'apps': []})
         self.assertEqual(yaml.safe_load((base / 'registered-apps.generated.yaml').read_text())['items'], [])
         catalog = yaml.safe_load((ROOT / 'apps/platform/core-catalog.yaml').read_text())
-        self.assertEqual(catalog['spec']['source']['targetRevision'], '2867d1b4d47f472c7bb4097d61226e206e32a5a1')
+        self.assertEqual(catalog['spec']['source']['targetRevision'], '14bed077beb3da068454775869f5e5009b5fc21c')
+        self.assertNotIn('automated', catalog['spec']['syncPolicy'])
 
     def test_pinned_ksm_has_bounded_inventory_and_folder_integration(self):
         values = yaml.safe_load((ROOT / "platform/base/grafana/values.yaml").read_text())
