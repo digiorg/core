@@ -156,7 +156,7 @@ class XrdLegacyClusterCompatTest(unittest.TestCase):
 
 
 class CoreCatalogReviewedRevisionPinTest(unittest.TestCase):
-    """Core must pin the exact reviewed Catalog PR #30 merge and keep the
+    """Core must pin the exact reviewed Catalog PR #31 merge and keep the
     Catalog Application immutable and manually gated."""
 
     def setUp(self):
@@ -166,7 +166,7 @@ class CoreCatalogReviewedRevisionPinTest(unittest.TestCase):
         rev = str(self.app["spec"]["source"]["targetRevision"])
         self.assertEqual(
             rev, REVIEWED_CATALOG_REVISION,
-            "core-catalog must pin the exact reviewed Catalog PR #30 merge",
+            "core-catalog must pin the exact reviewed Catalog PR #31 merge",
         )
 
     def test_superseded_revision_not_referenced_anywhere(self):
