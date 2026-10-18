@@ -1,0 +1,96 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-app-health
+  namespace: monitoring
+  labels:
+    grafana_dashboard: '1'
+  annotations:
+    grafana_folder: /tmp/dashboards/DigiOrg Platform
+data:
+  app-health.json: "{\n  \"uid\": \"digiorg-app-health\",\n  \"title\": \"DigiOrg\
+    \ App Health\",\n  \"schemaVersion\": 39,\n  \"version\": 1,\n  \"editable\":\
+    \ false,\n  \"refresh\": \"30s\",\n  \"time\": {\n    \"from\": \"now-1h\",\n\
+    \    \"to\": \"now\"\n  },\n  \"templating\": {\n    \"list\": []\n  },\n  \"\
+    description\": \"Registered dedicated-namespace apps only; current inventory anchors\
+    \ every row, including initial provisioning. Kubernetes readiness is not business\
+    \ health. No logs observed is not ingestion success. Shared operator view, not\
+    \ tenant isolation. Grafana import and continuous API cache freshness require\
+    \ runtime acceptance.\",\n  \"panels\": [\n    {\n      \"id\": 1,\n      \"title\"\
+    : \"Inventory feed\",\n      \"type\": \"stat\",\n      \"datasource\": {\n  \
+    \      \"type\": \"prometheus\",\n        \"uid\": \"prometheus\"\n      },\n\
+    \      \"gridPos\": {\n        \"x\": 0,\n        \"y\": 0,\n        \"w\": 24,\n\
+    \        \"h\": 8\n      },\n      \"targets\": [\n        {\n          \"refId\"\
+    : \"A\",\n          \"expr\": \"digiorg:inventory_feed_healthy\",\n          \"\
+    instant\": true,\n          \"format\": \"time_series\"\n        }\n      ],\n\
+    \      \"fieldConfig\": {\n        \"defaults\": {\n          \"noValue\": \"\
+    Unknown / unavailable\",\n          \"unit\": \"short\"\n        }\n      },\n\
+    \      \"options\": {\n        \"showHeader\": true\n      }\n    },\n    {\n\
+    \      \"id\": 2,\n      \"title\": \"Registered app health\",\n      \"type\"\
+    : \"table\",\n      \"datasource\": {\n        \"type\": \"prometheus\",\n   \
+    \     \"uid\": \"prometheus\"\n      },\n      \"gridPos\": {\n        \"x\":\
+    \ 0,\n        \"y\": 8,\n        \"w\": 24,\n        \"h\": 8\n      },\n    \
+    \  \"targets\": [\n        {\n          \"refId\": \"A\",\n          \"expr\"\
+    : \"digiorg:app_status\",\n          \"instant\": true,\n          \"format\"\
+    : \"table\"\n        }\n      ],\n      \"fieldConfig\": {\n        \"defaults\"\
+    : {\n          \"noValue\": \"Unknown / unavailable\",\n          \"unit\": \"\
+    short\",\n          \"mappings\": [\n            {\n              \"type\": \"\
+    value\",\n              \"options\": {\n                \"0\": {\n           \
+    \       \"text\": \"Unknown\",\n                  \"color\": \"gray\"\n      \
+    \          },\n                \"1\": {\n                  \"text\": \"Provisioning\"\
+    ,\n                  \"color\": \"blue\"\n                },\n               \
+    \ \"2\": {\n                  \"text\": \"No workload requested\",\n         \
+    \         \"color\": \"gray\"\n                },\n                \"3\": {\n\
+    \                  \"text\": \"Scaled to zero\",\n                  \"color\"\
+    : \"blue\"\n                },\n                \"4\": {\n                  \"\
+    text\": \"Degraded / Pod fault\",\n                  \"color\": \"red\"\n    \
+    \            },\n                \"5\": {\n                  \"text\": \"Kubernetes\
+    \ workload ready\",\n                  \"color\": \"green\"\n                }\n\
+    \              }\n            }\n          ]\n        },\n        \"overrides\"\
+    : [\n          {\n            \"matcher\": {\n              \"id\": \"byName\"\
+    ,\n              \"options\": \"Value\"\n            },\n            \"properties\"\
+    : [\n              {\n                \"id\": \"links\",\n                \"value\"\
+    : [\n                  {\n                    \"title\": \"App dashboard (desired;\
+    \ import unverified)\",\n                    \"url\": \"/grafana/d/app-dev-${__data.fields.app_id:percentencode}?from=${__from}&to=${__to}\"\
+    ,\n                    \"targetBlank\": false\n                  }\n         \
+    \       ]\n              }\n            ]\n          }\n        ]\n      },\n\
+    \      \"options\": {\n        \"showHeader\": true\n      }\n    },\n    {\n\
+    \      \"id\": 3,\n      \"title\": \"Missing expected services\",\n      \"type\"\
+    : \"table\",\n      \"datasource\": {\n        \"type\": \"prometheus\",\n   \
+    \     \"uid\": \"prometheus\"\n      },\n      \"gridPos\": {\n        \"x\":\
+    \ 0,\n        \"y\": 16,\n        \"w\": 24,\n        \"h\": 8\n      },\n   \
+    \   \"targets\": [\n        {\n          \"refId\": \"A\",\n          \"expr\"\
+    : \"digiorg:app_expected_service unless on(namespace,service,kind) digiorg:workload_desired\"\
+    ,\n          \"instant\": true,\n          \"format\": \"table\"\n        }\n\
+    \      ],\n      \"fieldConfig\": {\n        \"defaults\": {\n          \"noValue\"\
+    : \"Unknown / unavailable\",\n          \"unit\": \"short\"\n        }\n     \
+    \ },\n      \"options\": {\n        \"showHeader\": true\n      }\n    },\n  \
+    \  {\n      \"id\": 4,\n      \"title\": \"Claim conditions (separate from workload\
+    \ health)\",\n      \"type\": \"table\",\n      \"datasource\": {\n        \"\
+    type\": \"prometheus\",\n        \"uid\": \"prometheus\"\n      },\n      \"gridPos\"\
+    : {\n        \"x\": 0,\n        \"y\": 24,\n        \"w\": 24,\n        \"h\"\
+    : 8\n      },\n      \"targets\": [\n        {\n          \"refId\": \"A\",\n\
+    \          \"expr\": \"digiorg_app_condition\",\n          \"instant\": true,\n\
+    \          \"format\": \"table\"\n        }\n      ],\n      \"fieldConfig\":\
+    \ {\n        \"defaults\": {\n          \"noValue\": \"Unknown / unavailable\"\
+    ,\n          \"unit\": \"short\"\n        }\n      },\n      \"options\": {\n\
+    \        \"showHeader\": true\n      }\n    },\n    {\n      \"id\": 5,\n    \
+    \  \"title\": \"Desired / available service replicas\",\n      \"type\": \"table\"\
+    ,\n      \"datasource\": {\n        \"type\": \"prometheus\",\n        \"uid\"\
+    : \"prometheus\"\n      },\n      \"gridPos\": {\n        \"x\": 0,\n        \"\
+    y\": 32,\n        \"w\": 24,\n        \"h\": 8\n      },\n      \"targets\": [\n\
+    \        {\n          \"refId\": \"A\",\n          \"expr\": \"digiorg:app_desired\
+    \ or digiorg:app_ready\",\n          \"instant\": true,\n          \"format\"\
+    : \"table\"\n        }\n      ],\n      \"fieldConfig\": {\n        \"defaults\"\
+    : {\n          \"noValue\": \"Unknown / unavailable\",\n          \"unit\": \"\
+    short\"\n        }\n      },\n      \"options\": {\n        \"showHeader\": true\n\
+    \      }\n    },\n    {\n      \"id\": 6,\n      \"title\": \"Identity conflicts\
+    \ (never adopt)\",\n      \"type\": \"table\",\n      \"datasource\": {\n    \
+    \    \"type\": \"prometheus\",\n        \"uid\": \"prometheus\"\n      },\n  \
+    \    \"gridPos\": {\n        \"x\": 0,\n        \"y\": 40,\n        \"w\": 24,\n\
+    \        \"h\": 8\n      },\n      \"targets\": [\n        {\n          \"refId\"\
+    : \"A\",\n          \"expr\": \"digiorg:app_identity_conflict\",\n          \"\
+    instant\": true,\n          \"format\": \"table\"\n        }\n      ],\n     \
+    \ \"fieldConfig\": {\n        \"defaults\": {\n          \"noValue\": \"Unknown\
+    \ / unavailable\",\n          \"unit\": \"short\"\n        }\n      },\n     \
+    \ \"options\": {\n        \"showHeader\": true\n      }\n    }\n  ]\n}"

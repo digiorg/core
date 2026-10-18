@@ -1,0 +1,3 @@
+# Issue375 explicit non-Claim registration source. Not a Kubernetes resource.
+# Fields and safe generation procedure: README.md.
+apps: []

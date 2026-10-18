@@ -98,8 +98,12 @@ class KyvernoCleanInstallTest(unittest.TestCase):
                                 policy["metadata"]["name"],
                             )
                 if "validate" in rule:
-                    self.assertTrue(
+                    # Issue375 reserved imports intentionally enforce against existing
+                    # violations (foreign adoption/deletion must fail closed). Preserve
+                    # the default-true assertion for every pre-existing policy.
+                    self.assertEqual(
                         rule["validate"].get("allowExistingViolations"),
+                        policy["metadata"]["name"] != "protect-grafana-import",
                         policy["metadata"]["name"],
                     )
 

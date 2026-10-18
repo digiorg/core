@@ -4,3 +4,5 @@ kind: Kustomization
 resources:
   - block-appclaims-in-system-namespaces.yaml
   - generate-app-namespace-netpol.yaml
+  - grafana-owner-lookup-rbac.yaml
+  - protect-grafana-import.yaml

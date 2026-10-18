@@ -1,0 +1,105 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: digiorg-app-health
+  namespace: monitoring
+  labels:
+    release: prometheus
+spec:
+  groups:
+  - name: digiorg.app-health
+    interval: 30s
+    rules:
+    - record: digiorg:app_inventory
+      expr: max by(app_id,namespace) (digiorg_app_info or digiorg_registered_app_info)
+    - record: digiorg:app_inventory_fresh
+      expr: max by(app_id,namespace) (time() - (timestamp(digiorg_app_info) or timestamp(digiorg_registered_app_info))) < bool 90
+    - record: digiorg:app_identity_conflict
+      expr: count by(app_id,namespace) (max by(app_id,namespace,claim_uid) (digiorg_app_info
+        or digiorg_registered_app_info)) > 1
+    - record: digiorg:app_expected_service
+      expr: max by(app_id,namespace,service,kind) (label_replace(digiorg_app_service_info,
+        "kind", "Deployment", "app_id", ".*") or digiorg_registered_app_service_info)
+    - record: digiorg:inventory_feed_healthy
+      expr: (min(up{job="kube-state-metrics"}) == 1) and on() (max(time() - timestamp(up{job="kube-state-metrics"}))
+        < 90)
+    - record: digiorg:workload_desired
+      expr: label_replace(label_replace(max by(namespace,deployment) (kube_deployment_spec_replicas),
+        "service", "$1", "deployment", "(.*)"), "kind", "Deployment", "service", ".*")
+        or label_replace(label_replace(max by(namespace,statefulset) (kube_statefulset_replicas),
+        "service", "$1", "statefulset", "(.*)"), "kind", "StatefulSet", "service",
+        ".*") or label_replace(label_replace(max by(namespace,daemonset) (kube_daemonset_status_desired_number_scheduled),
+        "service", "$1", "daemonset", "(.*)"), "kind", "DaemonSet", "service", ".*")
+    - record: digiorg:workload_ready
+      expr: label_replace(label_replace(max by(namespace,deployment) (kube_deployment_status_replicas_available),
+        "service", "$1", "deployment", "(.*)"), "kind", "Deployment", "service", ".*")
+        or label_replace(label_replace(max by(namespace,statefulset) (kube_statefulset_status_replicas_ready),
+        "service", "$1", "statefulset", "(.*)"), "kind", "StatefulSet", "service",
+        ".*") or label_replace(label_replace(max by(namespace,daemonset) (kube_daemonset_status_number_ready),
+        "service", "$1", "daemonset", "(.*)"), "kind", "DaemonSet", "service", ".*")
+    - record: digiorg:app_expected_count
+      expr: count by(app_id,namespace) (digiorg:app_expected_service) or (digiorg:app_inventory
+        * 0)
+    - record: digiorg:app_missing_services
+      expr: count by(app_id,namespace) (digiorg:app_expected_service unless on(namespace,service,kind)
+        digiorg:workload_desired) or (digiorg:app_inventory * 0)
+    - record: digiorg:app_desired
+      expr: sum by(app_id,namespace) (digiorg:app_expected_service * on(namespace,service,kind)
+        group_left() digiorg:workload_desired)
+    - record: digiorg:app_ready
+      expr: sum by(app_id,namespace) (digiorg:app_expected_service * on(namespace,service,kind)
+        group_left() digiorg:workload_ready)
+    - record: digiorg:pod_workload
+      expr: >-
+        label_replace(label_replace(max by(namespace,pod,replicaset)
+        (label_replace(kube_pod_owner{owner_kind="ReplicaSet",owner_is_controller="true"}, "replicaset", "$1", "owner_name", "(.*)"))
+        * on(namespace,replicaset) group_left(service)
+        max by(namespace,replicaset,service) (label_replace(kube_replicaset_owner{owner_kind="Deployment",owner_is_controller="true"}, "service", "$1", "owner_name", "(.*)")),
+        "kind", "Deployment", "service", ".*"), "service", "$1", "service", "(.*)")
+        or label_replace(label_replace(max by(namespace,pod,owner_name) (kube_pod_owner{owner_kind="StatefulSet",owner_is_controller="true"}), "service", "$1", "owner_name", "(.*)"), "kind", "StatefulSet", "service", ".*")
+        or label_replace(label_replace(max by(namespace,pod,owner_name) (kube_pod_owner{owner_kind="DaemonSet",owner_is_controller="true"}), "service", "$1", "owner_name", "(.*)"), "kind", "DaemonSet", "service", ".*")
+    - record: digiorg:app_faults
+      expr: >-
+        sum by(namespace) (max by(namespace,pod)
+        ((kube_pod_container_status_waiting_reason{reason=~"CrashLoopBackOff|ImagePullBackOff|ErrImagePull"} == 1)
+        or (kube_pod_status_phase{phase="Pending"} == 1) or (kube_pod_status_unschedulable == 1)
+        or (kube_pod_container_status_last_terminated_reason{reason="OOMKilled"} == 1)
+        or (increase(kube_pod_container_status_restarts_total[15m]) > 0))
+        and on(namespace,pod) (digiorg:pod_workload and on(namespace,service,kind) digiorg:app_expected_service))
+    - record: digiorg:app_telemetry_stale
+      expr: >-
+        max by(namespace) ((time() - timestamp(kube_deployment_spec_replicas) > 90)
+        or (time() - timestamp(kube_deployment_status_replicas_available) > 90)
+        or (time() - timestamp(kube_statefulset_replicas) > 90)
+        or (time() - timestamp(kube_statefulset_status_replicas_ready) > 90)
+        or (time() - timestamp(kube_daemonset_status_desired_number_scheduled) > 90)
+        or (time() - timestamp(kube_daemonset_status_number_ready) > 90)
+        or (time() - timestamp(kube_namespace_status_phase) > 90))
+    - record: digiorg:app_status
+      expr: '(((digiorg:app_inventory * 0 + 0) and on(app_id,namespace) digiorg:app_identity_conflict)
+
+        or ((digiorg:app_inventory * 0) and on(namespace) digiorg:app_telemetry_stale)
+
+        or ((digiorg:app_inventory * 0 + 4) and on(namespace) (digiorg:app_faults
+        > 0))
+
+        or ((digiorg:app_inventory * 0 + 1) and on(app_id,namespace) (digiorg:app_missing_services
+        > 0))
+
+        or ((digiorg:app_inventory * 0 + 1) unless on(namespace) (kube_namespace_status_phase{phase="Active"}
+        == 1))
+
+        or ((digiorg:app_inventory * 0 + 2) and on(app_id,namespace) (digiorg:app_expected_count
+        == 0))
+
+        or ((digiorg:app_inventory * 0 + 3) and on(app_id,namespace) (digiorg:app_desired
+        == 0))
+
+        or ((digiorg:app_inventory * 0 + 4) and on(app_id,namespace) (digiorg:app_ready
+        < digiorg:app_desired))
+
+        or (((digiorg:app_inventory * 0 + 5) and on(app_id,namespace) (digiorg:app_ready
+        >= digiorg:app_desired)) and on() (digiorg:inventory_feed_healthy == 1))
+
+        or (digiorg:app_inventory * 0)) and on() (digiorg:inventory_feed_healthy ==
+        1) and on(app_id,namespace) (digiorg:app_inventory_fresh == 1) or (digiorg:app_inventory * 0)'

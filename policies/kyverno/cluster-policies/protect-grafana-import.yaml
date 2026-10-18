@@ -1,0 +1,352 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: protect-grafana-import
+  annotations:
+    policies.kyverno.io/title: Protect reserved Grafana imports
+    policies.kyverno.io/description: Issue 375 approved S2; admission-only, exact
+      publisher boundary, not tenant isolation. Legacy unannotated imports remain
+      GitOps-owned.
+spec:
+  validationFailureAction: Enforce
+  background: false
+  admission: true
+  emitWarning: false
+  failurePolicy: Fail
+  # Kyverno 1.18.1 generates a separate per-policy webhook for these conditions.
+  # Evaluate BOTH versions before invocation: selectors alone permit stripping.
+  webhookConfiguration:
+    matchConditions:
+    - name: reserved-dashboard-old-or-new
+      expression: >-
+        [object, oldObject].exists(o, o != null &&
+          ((has(o.metadata.labels) && 'grafana_dashboard' in o.metadata.labels &&
+            o.metadata.labels['grafana_dashboard'] == '1') ||
+           (has(o.metadata.annotations) && 'grafana_folder' in o.metadata.annotations &&
+            o.metadata.annotations['grafana_folder'] != '') ||
+           o.metadata.name.matches('^grafana-app-dev-[a-z]([a-z0-9-]{0,30}[a-z0-9])?$')))
+  rules:
+  - name: reserved-import-ownership
+    skipBackgroundRequests: true
+    match:
+      any:
+      - resources:
+          kinds:
+          - v1/ConfigMap
+          operations:
+          - CREATE
+          - UPDATE
+          - DELETE
+    validate:
+      allowExistingViolations: false
+      cel:
+        expressions:
+        - expression: '!(((object != null && has(object.metadata.labels) && ''grafana_dashboard''
+            in object.metadata.labels ? object.metadata.labels[''grafana_dashboard'']
+            : '''') == ''1'' || (object != null && has(object.metadata.annotations)
+            && ''grafana_folder'' in object.metadata.annotations ? object.metadata.annotations[''grafana_folder'']
+            : '''') != '''' || (object != null && object.metadata.name.matches(''^grafana-app-dev-[a-z]([a-z0-9-]{0,30}[a-z0-9])?$'')))
+            || ((oldObject != null && has(oldObject.metadata.labels) && ''grafana_dashboard''
+            in oldObject.metadata.labels ? oldObject.metadata.labels[''grafana_dashboard'']
+            : '''') == ''1'' || (oldObject != null && has(oldObject.metadata.annotations)
+            && ''grafana_folder'' in oldObject.metadata.annotations ? oldObject.metadata.annotations[''grafana_folder'']
+            : '''') != '''' || (oldObject != null && oldObject.metadata.name.matches(''^grafana-app-dev-[a-z]([a-z0-9-]{0,30}[a-z0-9])?$''))))
+            || request.userInfo.username in [''system:serviceaccount:crossplane-system:crossplane-provider-kubernetes'',
+            ''system:serviceaccount:argocd:argocd-application-controller'']'
+          message: Only the exact Crossplane/GitOps publishers may manage reserved
+            Grafana imports.
+        - expression: 'request.operation != ''UPDATE'' || !((object != null && has(object.metadata.labels)
+            && ''grafana_dashboard'' in object.metadata.labels ? object.metadata.labels[''grafana_dashboard'']
+            : '''') == ''1'' || (object != null && has(object.metadata.annotations)
+            && ''grafana_folder'' in object.metadata.annotations ? object.metadata.annotations[''grafana_folder'']
+            : '''') != '''' || (object != null && object.metadata.name.matches(''^grafana-app-dev-[a-z]([a-z0-9-]{0,30}[a-z0-9])?$'')))
+            || ((oldObject != null && has(oldObject.metadata.labels) && ''grafana_dashboard''
+            in oldObject.metadata.labels ? oldObject.metadata.labels[''grafana_dashboard'']
+            : '''') == ''1'' || (oldObject != null && has(oldObject.metadata.annotations)
+            && ''grafana_folder'' in oldObject.metadata.annotations ? oldObject.metadata.annotations[''grafana_folder'']
+            : '''') != '''' || (oldObject != null && oldObject.metadata.name.matches(''^grafana-app-dev-[a-z]([a-z0-9-]{0,30}[a-z0-9])?$'')))'
+          message: Never adopt a pre-existing unreserved/manual ConfigMap as a Grafana
+            import.
+        - expression: 'request.operation != ''UPDATE'' || !(((object != null && has(object.metadata.labels)
+            && ''grafana_dashboard'' in object.metadata.labels ? object.metadata.labels[''grafana_dashboard'']
+            : '''') == ''1'' || (object != null && has(object.metadata.annotations)
+            && ''grafana_folder'' in object.metadata.annotations ? object.metadata.annotations[''grafana_folder'']
+            : '''') != '''' || (object != null && object.metadata.name.matches(''^grafana-app-dev-[a-z]([a-z0-9-]{0,30}[a-z0-9])?$'')))
+            || ((oldObject != null && has(oldObject.metadata.labels) && ''grafana_dashboard''
+            in oldObject.metadata.labels ? oldObject.metadata.labels[''grafana_dashboard'']
+            : '''') == ''1'' || (oldObject != null && has(oldObject.metadata.annotations)
+            && ''grafana_folder'' in oldObject.metadata.annotations ? oldObject.metadata.annotations[''grafana_folder'']
+            : '''') != '''' || (oldObject != null && oldObject.metadata.name.matches(''^grafana-app-dev-[a-z]([a-z0-9-]{0,30}[a-z0-9])?$''))))
+            || ((object != null && has(object.metadata.annotations) && ''grafana_folder''
+            in object.metadata.annotations ? object.metadata.annotations[''grafana_folder'']
+            : '''') == (oldObject != null && has(oldObject.metadata.annotations) &&
+            ''grafana_folder'' in oldObject.metadata.annotations ? oldObject.metadata.annotations[''grafana_folder'']
+            : '''') && (object != null && has(object.metadata.annotations) && ''platform.digiorg.io/app-id''
+            in object.metadata.annotations ? object.metadata.annotations[''platform.digiorg.io/app-id'']
+            : '''') == (oldObject != null && has(oldObject.metadata.annotations) &&
+            ''platform.digiorg.io/app-id'' in oldObject.metadata.annotations ? oldObject.metadata.annotations[''platform.digiorg.io/app-id'']
+            : '''') && (object != null && has(object.metadata.annotations) && ''platform.digiorg.io/dashboard-owner''
+            in object.metadata.annotations ? object.metadata.annotations[''platform.digiorg.io/dashboard-owner'']
+            : '''') == (oldObject != null && has(oldObject.metadata.annotations) &&
+            ''platform.digiorg.io/dashboard-owner'' in oldObject.metadata.annotations
+            ? oldObject.metadata.annotations[''platform.digiorg.io/dashboard-owner'']
+            : '''') && (object != null && has(object.metadata.labels) && ''grafana_dashboard''
+            in object.metadata.labels ? object.metadata.labels[''grafana_dashboard'']
+            : '''') == (oldObject != null && has(oldObject.metadata.labels) && ''grafana_dashboard''
+            in oldObject.metadata.labels ? oldObject.metadata.labels[''grafana_dashboard'']
+            : ''''))'
+          message: Reserved import ownership, identity, folder and label cannot be
+            changed or stripped.
+        - expression: '!(((object != null && has(object.metadata.labels) && ''grafana_dashboard''
+            in object.metadata.labels ? object.metadata.labels[''grafana_dashboard'']
+            : '''') == ''1'' || (object != null && has(object.metadata.annotations)
+            && ''grafana_folder'' in object.metadata.annotations ? object.metadata.annotations[''grafana_folder'']
+            : '''') != '''' || (object != null && object.metadata.name.matches(''^grafana-app-dev-[a-z]([a-z0-9-]{0,30}[a-z0-9])?$'')))
+            || ((oldObject != null && has(oldObject.metadata.labels) && ''grafana_dashboard''
+            in oldObject.metadata.labels ? oldObject.metadata.labels[''grafana_dashboard'']
+            : '''') == ''1'' || (oldObject != null && has(oldObject.metadata.annotations)
+            && ''grafana_folder'' in oldObject.metadata.annotations ? oldObject.metadata.annotations[''grafana_folder'']
+            : '''') != '''' || (oldObject != null && oldObject.metadata.name.matches(''^grafana-app-dev-[a-z]([a-z0-9-]{0,30}[a-z0-9])?$''))))
+            || request.userInfo.username != ''system:serviceaccount:crossplane-system:crossplane-provider-kubernetes''
+            || (request.operation == ''DELETE'' ? (oldObject != null && (oldObject
+            != null && has(oldObject.metadata.annotations) && ''grafana_folder'' in
+            oldObject.metadata.annotations ? oldObject.metadata.annotations[''grafana_folder'']
+            : '''') == ''/tmp/dashboards/DigiOrg Apps'' && (oldObject != null && has(oldObject.metadata.annotations)
+            && ''platform.digiorg.io/app-id'' in oldObject.metadata.annotations ?
+            oldObject.metadata.annotations[''platform.digiorg.io/app-id''] : '''').matches(''^[a-z]([a-z0-9-]{0,30}[a-z0-9])?$'')
+            && size((oldObject != null && has(oldObject.metadata.annotations) && ''platform.digiorg.io/app-id''
+            in oldObject.metadata.annotations ? oldObject.metadata.annotations[''platform.digiorg.io/app-id'']
+            : '''')) <= 32 && oldObject.metadata.namespace == (oldObject != null &&
+            has(oldObject.metadata.annotations) && ''platform.digiorg.io/app-id''
+            in oldObject.metadata.annotations ? oldObject.metadata.annotations[''platform.digiorg.io/app-id'']
+            : '''') && oldObject.metadata.name == ''grafana-app-dev-'' + (oldObject
+            != null && has(oldObject.metadata.annotations) && ''platform.digiorg.io/app-id''
+            in oldObject.metadata.annotations ? oldObject.metadata.annotations[''platform.digiorg.io/app-id'']
+            : '''') && (oldObject != null && has(oldObject.metadata.annotations) &&
+            ''platform.digiorg.io/dashboard-owner'' in oldObject.metadata.annotations
+            ? oldObject.metadata.annotations[''platform.digiorg.io/dashboard-owner'']
+            : '''') != '''' && (oldObject != null && has(oldObject.metadata.labels)
+            && ''grafana_dashboard'' in oldObject.metadata.labels ? oldObject.metadata.labels[''grafana_dashboard'']
+            : '''') == ''1'') : (object != null && (object != null && has(object.metadata.annotations)
+            && ''grafana_folder'' in object.metadata.annotations ? object.metadata.annotations[''grafana_folder'']
+            : '''') == ''/tmp/dashboards/DigiOrg Apps'' && (object != null && has(object.metadata.annotations)
+            && ''platform.digiorg.io/app-id'' in object.metadata.annotations ? object.metadata.annotations[''platform.digiorg.io/app-id'']
+            : '''').matches(''^[a-z]([a-z0-9-]{0,30}[a-z0-9])?$'') && size((object
+            != null && has(object.metadata.annotations) && ''platform.digiorg.io/app-id''
+            in object.metadata.annotations ? object.metadata.annotations[''platform.digiorg.io/app-id'']
+            : '''')) <= 32 && object.metadata.namespace == (object != null && has(object.metadata.annotations)
+            && ''platform.digiorg.io/app-id'' in object.metadata.annotations ? object.metadata.annotations[''platform.digiorg.io/app-id'']
+            : '''') && object.metadata.name == ''grafana-app-dev-'' + (object != null
+            && has(object.metadata.annotations) && ''platform.digiorg.io/app-id''
+            in object.metadata.annotations ? object.metadata.annotations[''platform.digiorg.io/app-id'']
+            : '''') && (object != null && has(object.metadata.annotations) && ''platform.digiorg.io/dashboard-owner''
+            in object.metadata.annotations ? object.metadata.annotations[''platform.digiorg.io/dashboard-owner'']
+            : '''') != '''' && (object != null && has(object.metadata.labels) && ''grafana_dashboard''
+            in object.metadata.labels ? object.metadata.labels[''grafana_dashboard'']
+            : '''') == ''1''))'
+          message: Crossplane may manage only its canonical app-shaped imports.
+        - expression: 'object == null || !((object != null && has(object.metadata.labels)
+            && ''grafana_dashboard'' in object.metadata.labels ? object.metadata.labels[''grafana_dashboard'']
+            : '''') == ''1'' || (object != null && has(object.metadata.annotations)
+            && ''grafana_folder'' in object.metadata.annotations ? object.metadata.annotations[''grafana_folder'']
+            : '''') != '''' || (object != null && object.metadata.name.matches(''^grafana-app-dev-[a-z]([a-z0-9-]{0,30}[a-z0-9])?$'')))
+            || (object != null && has(object.metadata.annotations) && ''grafana_folder''
+            in object.metadata.annotations ? object.metadata.annotations[''grafana_folder'']
+            : '''') in ['''', ''/tmp/dashboards/DigiOrg Apps'', ''/tmp/dashboards/DigiOrg
+            Platform'']'
+          message: Only approved exact folder paths are allowed.
+        - expression: 'object == null || (object != null && has(object.metadata.annotations)
+            && ''grafana_folder'' in object.metadata.annotations ? object.metadata.annotations[''grafana_folder'']
+            : '''') != ''/tmp/dashboards/DigiOrg Apps'' || ((object != null && (object
+            != null && has(object.metadata.annotations) && ''grafana_folder'' in object.metadata.annotations
+            ? object.metadata.annotations[''grafana_folder''] : '''') == ''/tmp/dashboards/DigiOrg
+            Apps'' && (object != null && has(object.metadata.annotations) && ''platform.digiorg.io/app-id''
+            in object.metadata.annotations ? object.metadata.annotations[''platform.digiorg.io/app-id'']
+            : '''').matches(''^[a-z]([a-z0-9-]{0,30}[a-z0-9])?$'') && size((object
+            != null && has(object.metadata.annotations) && ''platform.digiorg.io/app-id''
+            in object.metadata.annotations ? object.metadata.annotations[''platform.digiorg.io/app-id'']
+            : '''')) <= 32 && object.metadata.namespace == (object != null && has(object.metadata.annotations)
+            && ''platform.digiorg.io/app-id'' in object.metadata.annotations ? object.metadata.annotations[''platform.digiorg.io/app-id'']
+            : '''') && object.metadata.name == ''grafana-app-dev-'' + (object != null
+            && has(object.metadata.annotations) && ''platform.digiorg.io/app-id''
+            in object.metadata.annotations ? object.metadata.annotations[''platform.digiorg.io/app-id'']
+            : '''') && (object != null && has(object.metadata.annotations) && ''platform.digiorg.io/dashboard-owner''
+            in object.metadata.annotations ? object.metadata.annotations[''platform.digiorg.io/dashboard-owner'']
+            : '''') != '''' && (object != null && has(object.metadata.labels) && ''grafana_dashboard''
+            in object.metadata.labels ? object.metadata.labels[''grafana_dashboard'']
+            : '''') == ''1'') && (request.userInfo.username == ''system:serviceaccount:crossplane-system:crossplane-provider-kubernetes''
+            || (object != null && has(object.metadata.annotations) && ''platform.digiorg.io/dashboard-owner''
+            in object.metadata.annotations ? object.metadata.annotations[''platform.digiorg.io/dashboard-owner'']
+            : '''') == ''gitops:'' + (object != null && has(object.metadata.annotations)
+            && ''platform.digiorg.io/app-id'' in object.metadata.annotations ? object.metadata.annotations[''platform.digiorg.io/app-id'']
+            : '''')))'
+          message: App imports need canonical namespace identity and immutable explicit
+            ownership.
+        - expression: 'object == null || (object != null && has(object.metadata.annotations)
+            && ''grafana_folder'' in object.metadata.annotations ? object.metadata.annotations[''grafana_folder'']
+            : '''') != ''/tmp/dashboards/DigiOrg Platform'' || (request.userInfo.username
+            == ''system:serviceaccount:argocd:argocd-application-controller'' && object.metadata.namespace
+            == ''monitoring'' && object.metadata.name == ''grafana-app-health'')'
+          message: Platform overview is owned by its exact GitOps publisher.
+        - expression: '!(((object != null && has(object.metadata.labels) && ''grafana_dashboard''
+            in object.metadata.labels ? object.metadata.labels[''grafana_dashboard'']
+            : '''') == ''1'' || (object != null && has(object.metadata.annotations)
+            && ''grafana_folder'' in object.metadata.annotations ? object.metadata.annotations[''grafana_folder'']
+            : '''') != '''' || (object != null && object.metadata.name.matches(''^grafana-app-dev-[a-z]([a-z0-9-]{0,30}[a-z0-9])?$'')))
+            || ((oldObject != null && has(oldObject.metadata.labels) && ''grafana_dashboard''
+            in oldObject.metadata.labels ? oldObject.metadata.labels[''grafana_dashboard'']
+            : '''') == ''1'' || (oldObject != null && has(oldObject.metadata.annotations)
+            && ''grafana_folder'' in oldObject.metadata.annotations ? oldObject.metadata.annotations[''grafana_folder'']
+            : '''') != '''' || (oldObject != null && oldObject.metadata.name.matches(''^grafana-app-dev-[a-z]([a-z0-9-]{0,30}[a-z0-9])?$''))))
+            || !(request.operation == ''DELETE'' ? (oldObject != null && oldObject.metadata.name.matches(''^grafana-app-dev-[a-z]([a-z0-9-]{0,30}[a-z0-9])?$''))
+            : (object != null && object.metadata.name.matches(''^grafana-app-dev-[a-z]([a-z0-9-]{0,30}[a-z0-9])?$'')))
+            || (request.operation == ''DELETE'' ? (oldObject != null && (oldObject
+            != null && has(oldObject.metadata.annotations) && ''grafana_folder'' in
+            oldObject.metadata.annotations ? oldObject.metadata.annotations[''grafana_folder'']
+            : '''') == ''/tmp/dashboards/DigiOrg Apps'' && (oldObject != null && has(oldObject.metadata.annotations)
+            && ''platform.digiorg.io/app-id'' in oldObject.metadata.annotations ?
+            oldObject.metadata.annotations[''platform.digiorg.io/app-id''] : '''').matches(''^[a-z]([a-z0-9-]{0,30}[a-z0-9])?$'')
+            && size((oldObject != null && has(oldObject.metadata.annotations) && ''platform.digiorg.io/app-id''
+            in oldObject.metadata.annotations ? oldObject.metadata.annotations[''platform.digiorg.io/app-id'']
+            : '''')) <= 32 && oldObject.metadata.namespace == (oldObject != null &&
+            has(oldObject.metadata.annotations) && ''platform.digiorg.io/app-id''
+            in oldObject.metadata.annotations ? oldObject.metadata.annotations[''platform.digiorg.io/app-id'']
+            : '''') && oldObject.metadata.name == ''grafana-app-dev-'' + (oldObject
+            != null && has(oldObject.metadata.annotations) && ''platform.digiorg.io/app-id''
+            in oldObject.metadata.annotations ? oldObject.metadata.annotations[''platform.digiorg.io/app-id'']
+            : '''') && (oldObject != null && has(oldObject.metadata.annotations) &&
+            ''platform.digiorg.io/dashboard-owner'' in oldObject.metadata.annotations
+            ? oldObject.metadata.annotations[''platform.digiorg.io/dashboard-owner'']
+            : '''') != '''' && (oldObject != null && has(oldObject.metadata.labels)
+            && ''grafana_dashboard'' in oldObject.metadata.labels ? oldObject.metadata.labels[''grafana_dashboard'']
+            : '''') == ''1'') : (object != null && (object != null && has(object.metadata.annotations)
+            && ''grafana_folder'' in object.metadata.annotations ? object.metadata.annotations[''grafana_folder'']
+            : '''') == ''/tmp/dashboards/DigiOrg Apps'' && (object != null && has(object.metadata.annotations)
+            && ''platform.digiorg.io/app-id'' in object.metadata.annotations ? object.metadata.annotations[''platform.digiorg.io/app-id'']
+            : '''').matches(''^[a-z]([a-z0-9-]{0,30}[a-z0-9])?$'') && size((object
+            != null && has(object.metadata.annotations) && ''platform.digiorg.io/app-id''
+            in object.metadata.annotations ? object.metadata.annotations[''platform.digiorg.io/app-id'']
+            : '''')) <= 32 && object.metadata.namespace == (object != null && has(object.metadata.annotations)
+            && ''platform.digiorg.io/app-id'' in object.metadata.annotations ? object.metadata.annotations[''platform.digiorg.io/app-id'']
+            : '''') && object.metadata.name == ''grafana-app-dev-'' + (object != null
+            && has(object.metadata.annotations) && ''platform.digiorg.io/app-id''
+            in object.metadata.annotations ? object.metadata.annotations[''platform.digiorg.io/app-id'']
+            : '''') && (object != null && has(object.metadata.annotations) && ''platform.digiorg.io/dashboard-owner''
+            in object.metadata.annotations ? object.metadata.annotations[''platform.digiorg.io/dashboard-owner'']
+            : '''') != '''' && (object != null && has(object.metadata.labels) && ''grafana_dashboard''
+            in object.metadata.labels ? object.metadata.labels[''grafana_dashboard'']
+            : '''') == ''1''))'
+          message: Reserved app names require canonical identity and explicit ownership
+            even without import metadata.
+        - expression: '!(((object != null && has(object.metadata.labels) && ''grafana_dashboard''
+            in object.metadata.labels ? object.metadata.labels[''grafana_dashboard'']
+            : '''') == ''1'' || (object != null && has(object.metadata.annotations)
+            && ''grafana_folder'' in object.metadata.annotations ? object.metadata.annotations[''grafana_folder'']
+            : '''') != '''' || (object != null && object.metadata.name.matches(''^grafana-app-dev-[a-z]([a-z0-9-]{0,30}[a-z0-9])?$'')))
+            || ((oldObject != null && has(oldObject.metadata.labels) && ''grafana_dashboard''
+            in oldObject.metadata.labels ? oldObject.metadata.labels[''grafana_dashboard'']
+            : '''') == ''1'' || (oldObject != null && has(oldObject.metadata.annotations)
+            && ''grafana_folder'' in oldObject.metadata.annotations ? oldObject.metadata.annotations[''grafana_folder'']
+            : '''') != '''' || (oldObject != null && oldObject.metadata.name.matches(''^grafana-app-dev-[a-z]([a-z0-9-]{0,30}[a-z0-9])?$''))))
+            || !(request.operation == ''DELETE'' ? (oldObject != null && oldObject.metadata.name.matches(''^grafana-app-dev-[a-z]([a-z0-9-]{0,30}[a-z0-9])?$''))
+            : (object != null && object.metadata.name.matches(''^grafana-app-dev-[a-z]([a-z0-9-]{0,30}[a-z0-9])?$'')))
+            || (request.operation == ''DELETE'' ? ((oldObject != null && has(oldObject.metadata.annotations)
+            && ''platform.digiorg.io/dashboard-owner'' in oldObject.metadata.annotations
+            ? oldObject.metadata.annotations[''platform.digiorg.io/dashboard-owner'']
+            : '''') == ''gitops:'' + (oldObject != null && has(oldObject.metadata.annotations)
+            && ''platform.digiorg.io/app-id'' in oldObject.metadata.annotations ?
+            oldObject.metadata.annotations[''platform.digiorg.io/app-id''] : ''''))
+            : ((object != null && has(object.metadata.annotations) && ''platform.digiorg.io/dashboard-owner''
+            in object.metadata.annotations ? object.metadata.annotations[''platform.digiorg.io/dashboard-owner'']
+            : '''') == ''gitops:'' + (object != null && has(object.metadata.annotations)
+            && ''platform.digiorg.io/app-id'' in object.metadata.annotations ? object.metadata.annotations[''platform.digiorg.io/app-id'']
+            : ''''))) == (request.userInfo.username == ''system:serviceaccount:argocd:argocd-application-controller'')'
+          message: App imports cannot cross publisher ownership, including on deletion.
+  - name: provider-controller-owner
+    skipBackgroundRequests: true
+    match:
+      all:
+      - resources:
+          kinds:
+          - v1/ConfigMap
+          names:
+          - grafana-app-dev-*
+          operations:
+          - CREATE
+          - UPDATE
+          - DELETE
+        subjects:
+        - kind: ServiceAccount
+          name: crossplane-provider-kubernetes
+          namespace: crossplane-system
+    context:
+    - name: target
+      variable:
+        jmesPath: request.object || request.oldObject
+    - name: dashboardObject
+      apiCall:
+        urlPath: /apis/kubernetes.crossplane.io/v1alpha2/objects/{{ request.namespace
+          }}-grafana-dashboard
+    validate:
+      allowExistingViolations: false
+      message: Authoritative canonical Object, Application controller UID and desired
+        dashboard target must agree; missing lookup fails closed.
+      deny:
+        conditions:
+          any:
+          - key: '{{ dashboardObject.apiVersion || '''' }}'
+            operator: NotEquals
+            value: kubernetes.crossplane.io/v1alpha2
+          - key: '{{ dashboardObject.kind || '''' }}'
+            operator: NotEquals
+            value: Object
+          - key: '{{ dashboardObject.metadata.name || '''' }}'
+            operator: NotEquals
+            value: '{{ request.namespace }}-grafana-dashboard'
+          - key: '{{ length(dashboardObject.metadata.ownerReferences[?controller ==
+              `true` && kind == ''Application'' && apiVersion == ''platform.digiorg.io/v1alpha1'']
+              || `[]`) }}'
+            operator: NotEquals
+            value: 1
+          - key: '{{ dashboardObject.metadata.ownerReferences[?controller == `true`
+              && kind == ''Application'' && apiVersion == ''platform.digiorg.io/v1alpha1''].uid
+              | [0] || `""` }}'
+            operator: NotEquals
+            value: '{{ target.metadata.annotations."platform.digiorg.io/dashboard-owner"
+              || '''' }}'
+          - key: '{{ target.metadata.annotations."platform.digiorg.io/dashboard-owner"
+              || '''' }}'
+            operator: Equals
+            value: ''
+          - key: '{{ dashboardObject.spec.forProvider.manifest.apiVersion || ''''
+              }}'
+            operator: NotEquals
+            value: v1
+          - key: '{{ dashboardObject.spec.forProvider.manifest.kind || '''' }}'
+            operator: NotEquals
+            value: ConfigMap
+          - key: '{{ dashboardObject.spec.forProvider.manifest.metadata.namespace
+              || '''' }}'
+            operator: NotEquals
+            value: '{{ request.namespace }}'
+          - key: '{{ dashboardObject.spec.forProvider.manifest.metadata.name || ''''
+              }}'
+            operator: NotEquals
+            value: grafana-app-dev-{{ request.namespace }}
+          - key: '{{ dashboardObject.spec.forProvider.manifest.metadata.annotations."platform.digiorg.io/app-id"
+              || '''' }}'
+            operator: NotEquals
+            value: '{{ request.namespace }}'
+          - key: '{{ dashboardObject.spec.forProvider.manifest.metadata.annotations."platform.digiorg.io/dashboard-owner"
+              || '''' }}'
+            operator: NotEquals
+            value: '{{ target.metadata.annotations."platform.digiorg.io/dashboard-owner"
+              || '''' }}'
+          - key: '{{ dashboardObject.spec.forProvider.manifest.metadata.annotations.grafana_folder
+              || '''' }}'
+            operator: NotEquals
+            value: /tmp/dashboards/DigiOrg Apps
+          - key: '{{ dashboardObject.spec.forProvider.manifest.metadata.labels.grafana_dashboard
+              || '''' }}'
+            operator: NotEquals
+            value: '1'
