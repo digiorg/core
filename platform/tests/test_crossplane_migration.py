@@ -43,10 +43,11 @@ FUNCTION = os.path.join(PKG_DIR, "function-patch-and-transform.yaml")
 PROVIDER_KUSTOMIZATION = os.path.join(PKG_DIR, "kustomization.yaml")
 VERSIONS_DOC = os.path.join(REPO_ROOT, "docs", "guides", "platform-versions.md")
 
-# core-catalog PR #30's exact independently reviewed SonarQube canonical merge
+# core-catalog PR #31's exact independently reviewed app-dashboard canonical merge
 # commit. Keep the Core pin, manifest documentation, and this constant aligned.
-REVIEWED_CATALOG_REVISION = "2867d1b4d47f472c7bb4097d61226e206e32a5a1"
+REVIEWED_CATALOG_REVISION = "14bed077beb3da068454775869f5e5009b5fc21c"
 SUPERSEDED_CATALOG_REVISIONS = (
+    "2867d1b4d47f472c7bb4097d61226e206e32a5a1",
     "d531180b322dc0128477ecb9bb0fc9071b41d631",
     "e68870a5400b3c97ec2826d0c8838aab02144a1a",
     "1e6d4271192c30826022742dc4de7ddc2a4e3815",
@@ -155,17 +156,17 @@ class XrdLegacyClusterCompatTest(unittest.TestCase):
 
 
 class CoreCatalogReviewedRevisionPinTest(unittest.TestCase):
-    """Core must pin the exact reviewed Catalog PR #30 merge and keep the
+    """Core must pin the exact reviewed Catalog PR #31 merge and keep the
     Catalog Application immutable and manually gated."""
 
     def setUp(self):
         self.app = _docs(CATALOG_APP)[0]
 
-    def test_pins_reviewed_catalog_pr_30_merge(self):
+    def test_pins_reviewed_catalog_pr_31_merge(self):
         rev = str(self.app["spec"]["source"]["targetRevision"])
         self.assertEqual(
             rev, REVIEWED_CATALOG_REVISION,
-            "core-catalog must pin the exact reviewed Catalog PR #30 merge",
+            "core-catalog must pin the exact reviewed Catalog PR #31 merge",
         )
 
     def test_superseded_revision_not_referenced_anywhere(self):
