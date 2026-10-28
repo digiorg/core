@@ -9,6 +9,9 @@ grafana:
   service:
     type: ClusterIP  # Accessed via Ingress, not NodePort
 
+  serviceMonitor:
+    path: /grafana/metrics
+
   # Grafana served under /grafana path
   grafana.ini:
     server:
