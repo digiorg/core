@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: opensearch-metrics-exporter
+  namespace: platform-db
+  labels:
+    app.kubernetes.io/name: opensearch-metrics-exporter
+spec:
+  selector:
+    app.kubernetes.io/name: opensearch-metrics-exporter
+  ports:
+    - name: metrics
+      port: 9114
+      targetPort: metrics

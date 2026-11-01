@@ -1,0 +1,46 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: opensearch-metrics-exporter
+  namespace: platform-db
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: opensearch-metrics-exporter
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+          podSelector:
+            matchLabels:
+              operator.prometheus.io/name: prometheus-kube-prometheus-prometheus
+      ports:
+        - protocol: TCP
+          port: 9114
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: platform-db
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: opensearch
+              app.kubernetes.io/instance: opensearch
+              app.kubernetes.io/component: opensearch-cluster-master
+      ports:
+        - protocol: TCP
+          port: 9200
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

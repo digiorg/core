@@ -11,8 +11,8 @@ spec:
       - platform-db
   selector:
     matchLabels:
-      app.kubernetes.io/name: opensearch
+      app.kubernetes.io/name: opensearch-metrics-exporter
   endpoints:
-    - port: http            # OpenSearch HTTP port (9200) — exposes /_prometheus/metrics
-      path: /_prometheus/metrics
+    - port: metrics
+      path: /metrics
       interval: 30s

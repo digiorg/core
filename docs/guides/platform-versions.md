@@ -80,6 +80,7 @@ Third-party images record a human-readable tag **plus** an immutable digest:
 | `nats` | 2.14.2-alpine | NATS server (chart fullImageName override) |
 | `natsio/nats-server-config-reloader` | 0.23.0 | NATS config reloader |
 | `opensearchproject/opensearch` | 3.7.0 | OpenSearch chart primary image |
+| `quay.io/prometheuscommunity/elasticsearch-exporter` | v1.11.0 | OpenSearch cluster metrics; OCI index digest pinned in `platform/base/opensearch/exporter-deployment.yaml` |
 | `docker.gitea.com/gitea` | 1.26.1 | Gitea chart primary/init image |
 | `sonarqube` | 26.5.0.122743-community | SonarQube Community Build |
 | `ghcr.io/kyverno/readiness-checker` | v1.18.1 | Kyverno chart test/cleanup hooks |

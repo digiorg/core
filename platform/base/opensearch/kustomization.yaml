@@ -5,6 +5,9 @@ namespace: platform-db
 
 resources:
   - ism-retention-job.yaml
+  - exporter-service.yaml
+  - exporter-deployment.yaml
+  - exporter-network-policy.yaml
 
 # ServiceMonitor moved to platform/base/monitoring-extras/ (deployed in Wave 5)
 # OpenSearch itself is deployed via Helm by apps/platform/opensearch.yaml

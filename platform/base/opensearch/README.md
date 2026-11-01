@@ -256,43 +256,27 @@ OpenSearch is deployed in **Wave 0** — same wave as PostgreSQL — to ensure i
 
 ### Prometheus Monitoring
 
-A Prometheus Operator **ServiceMonitor** (`opensearch`, namespace `platform-db`) is deployed alongside OpenSearch to expose cluster metrics to Prometheus.
+A singleton dedicated exporter provides the metrics endpoint. The `opensearch` ServiceMonitor in `platform-db` selects its dedicated Service; it is deployed via monitoring-extras after the CRD is available.
 
 | Property | Value |
 |----------|-------|
 | ServiceMonitor name | `opensearch` |
 | Namespace | `platform-db` |
-| Scrape endpoint | `/_prometheus/metrics` on port `9200` (HTTP) |
+| Scrape endpoint | `/metrics` on exporter Service `opensearch-metrics-exporter:9114` (HTTP) |
 | Scrape interval | `30s` |
 | Required label | `release: prometheus` |
 
-The `release: prometheus` label on the ServiceMonitor must match the kube-prometheus-stack Helm release name for the Prometheus Operator to discover it — this follows the same pattern used by all other ServiceMonitors in the platform.
+The `release: prometheus` label matches the kube-prometheus-stack Helm release. The exporter targets the existing security-disabled development OpenSearch HTTP Service; a secured backend needs separately approved TLS, trust, and least-privilege credentials. The exporter exposes `/probe` as well as `/metrics`; its workload NetworkPolicy is intended to contain access, not disable the route. Actual CNI enforcement, DNS, node probes, additive policies and scrape behavior require separately authorized runtime verification. See `specs/380-opensearch-metrics-exporter/spec.md` for exact limits.
 
-**Verify the ServiceMonitor is deployed:**
-
-```bash
-kubectl get servicemonitor -n platform-db
-```
-
-**Verify Prometheus has picked up the target** (port-forward Prometheus and open in browser):
+To inspect the configured ServiceMonitor and, when separately authorized, check Prometheus targets:
 
 ```bash
+kubectl get servicemonitor -n platform-db opensearch
 kubectl port-forward -n monitoring svc/prometheus-kube-prometheus-prometheus 9090:9090
-# Then open http://localhost:9090/targets and search for opensearch
+# Open http://localhost:9090/targets and search for opensearch.
 ```
 
-**Quick scrape test from within the cluster:**
-
-```bash
-kubectl exec -n platform-db opensearch-cluster-master-0 -- \
-  curl -s http://localhost:9200/_prometheus/metrics | head -20
-```
-
-**Example PromQL query to confirm scraping is active:**
-
-```
-opensearch_fs_total_total_in_bytes
-```
+For example, query `elasticsearch_clusterinfo_up` and `elasticsearch_scrape_success{collector="cluster-info"}`. These describe the cluster-info collector, not generic Prometheus target `up` and not overall OpenSearch health.
 
 ## Production Considerations
 
