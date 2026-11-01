@@ -15,6 +15,24 @@ def rendered(path):
     return [obj for obj in yaml.safe_load_all(result.stdout) if obj]
 
 
+def chart_render(app_file, templates=()):
+    app = yaml.safe_load((ROOT / app_file).read_text())
+    source = next(s for s in app["spec"]["sources"] if "chart" in s)
+    helm = source.get("helm", {})
+    unsupported = set(helm) - {"releaseName", "valueFiles"}
+    if unsupported:
+        raise ValueError(f"unsupported Helm inputs in {app_file}: {sorted(unsupported)}")
+    command = ["helm", "template", helm.get("releaseName", app["metadata"]["name"]),
+               source["chart"], "--repo", source["repoURL"], "--version", str(source["targetRevision"]),
+               "--namespace", app["spec"]["destination"]["namespace"]]
+    for value_file in helm.get("valueFiles", []):
+        command += ["-f", str(ROOT / value_file.removeprefix("$values/"))]
+    for template in templates:
+        command += ["--show-only", template]
+    result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, check=True)
+    return [obj for obj in yaml.safe_load_all(result.stdout) if isinstance(obj, dict)]
+
+
 def peer(namespace, labels):
     return {"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": namespace}},
             "podSelector": {"matchLabels": labels}}
@@ -69,14 +87,41 @@ class NetworkPolicyContract(unittest.TestCase):
 
 
 class DiscoveryContract(unittest.TestCase):
-    def test_shared_component_label_is_not_unique(self):
-        services = [
-            {"app.kubernetes.io/name": "opensearch", "app.kubernetes.io/component": "opensearch-cluster-master"},
-            {"app.kubernetes.io/name": "opensearch", "app.kubernetes.io/component": "opensearch-cluster-master"},
-        ]
-        selector = {"app.kubernetes.io/name": "opensearch", "app.kubernetes.io/component": "opensearch-cluster-master"}
-        selected = [s for s in services if all(s.get(k) == v for k, v in selector.items())]
-        self.assertEqual(len(selected), 2, "shared component label must not be mistaken for unique discovery")
+    def test_chart_policy_and_discovery_selectors(self):
+        backend = chart_render("apps/platform/opensearch.yaml")
+        monitoring = chart_render("apps/platform/grafana.yaml", (
+            "templates/prometheus/prometheus.yaml", "templates/prometheus-operator/deployment.yaml"))
+        resources = rendered("platform/base/opensearch")
+        extras = rendered("platform/base/monitoring-extras")
+        def get(objects, kind, name):
+            matches = [o for o in objects if o.get("kind") == kind and o["metadata"]["name"] == name]
+            self.assertEqual(len(matches), 1, (kind, name))
+            return matches[0]
+        policy = get(resources, "NetworkPolicy", "opensearch-metrics-exporter")["spec"]
+        stateful = get(backend, "StatefulSet", "opensearch-cluster-master")
+        labels = stateful["spec"]["template"]["metadata"]["labels"]
+        selector = policy["egress"][0]["to"][0]["podSelector"]["matchLabels"]
+        self.assertTrue(all(labels.get(k) == v for k, v in selector.items()), (labels, selector))
+        prometheus = [o for o in monitoring if o.get("kind") == "Prometheus"]
+        self.assertEqual(len(prometheus), 1)
+        self.assertEqual(prometheus[0]["metadata"]["namespace"], "monitoring")
+        self.assertEqual(policy["ingress"][0]["from"][0]["podSelector"]["matchLabels"],
+                         {"operator.prometheus.io/name": prometheus[0]["metadata"]["name"]})
+        operator = next(o for o in monitoring if o.get("kind") == "Deployment")
+        images = [c["image"] for c in operator["spec"]["template"]["spec"]["containers"]]
+        self.assertTrue(any(image.endswith(":v0.92.1") for image in images), images)
+        # Operator v0.92.1 reserves operator.prometheus.io/name and sets it to
+        # the Prometheus resource name (source commit 5d9ff4a3fe45a51b7fead3c6ad1c3093176a10e5).
+        monitor = get(extras, "ServiceMonitor", "opensearch")
+        service_selector = monitor["spec"]["selector"]["matchLabels"]
+        services = [o for o in backend + resources if o.get("kind") == "Service"]
+        selected = [s["metadata"]["name"] for s in services if all(
+            s["metadata"].get("labels", {}).get(k) == v for k, v in service_selector.items())]
+        self.assertEqual(selected, ["opensearch-metrics-exporter"])
+        search_selector = get(backend, "Service", "opensearch-cluster-master")["spec"]["selector"]
+        self.assertTrue(all(labels.get(k) == v for k, v in search_selector.items()))
+        shared = {"app.kubernetes.io/name": "opensearch", "app.kubernetes.io/component": "opensearch-cluster-master"}
+        self.assertGreaterEqual(sum(all(s["metadata"].get("labels", {}).get(k) == v for k, v in shared.items()) for s in services), 2)
 
     def test_single_exporter_collects_all_nodes(self):
         objects = rendered("platform/base/opensearch")
@@ -88,6 +133,10 @@ class DiscoveryContract(unittest.TestCase):
         pod = spec["template"]["spec"]
         self.assertFalse(pod["automountServiceAccountToken"])
         container = pod["containers"][0]
+        self.assertTrue(pod["securityContext"]["runAsNonRoot"])
+        self.assertEqual(pod["securityContext"]["seccompProfile"]["type"], "RuntimeDefault")
+        self.assertTrue(container["securityContext"]["readOnlyRootFilesystem"])
+        self.assertEqual(container["resources"]["limits"], {"cpu": "100m", "memory": "128Mi"})
         self.assertIn("--es.all", container["args"])
         self.assertIn("--es.uri=http://opensearch-cluster-master.platform-db.svc.cluster.local:9200", container["args"])
         self.assertEqual(container["image"], "quay.io/prometheuscommunity/elasticsearch-exporter:v1.11.0@sha256:a056739b095df4baaa076f0b31321394233da9a240eeada2623d1b028b7ee7a6")
@@ -111,12 +160,8 @@ class DiscoveryContract(unittest.TestCase):
         monitor = next(o for o in objects if o["kind"] == "ServiceMonitor"
                        and o["metadata"]["name"] == "opensearch")
         selector = monitor["spec"]["selector"]["matchLabels"]
-        services = [
-            {"name": "ordinary", "labels": {"app.kubernetes.io/name": "opensearch", "app.kubernetes.io/component": "opensearch-cluster-master"}},
-            {"name": "headless", "labels": {"app.kubernetes.io/name": "opensearch", "app.kubernetes.io/component": "opensearch-cluster-master"}},
-        ]
-        services += [{"name": o["metadata"]["name"], "labels": o["metadata"].get("labels", {})}
-                     for o in rendered("platform/base/opensearch") if o["kind"] == "Service"]
+        services = [{"name": o["metadata"]["name"], "labels": o["metadata"].get("labels", {})}
+                    for o in rendered("platform/base/opensearch") if o["kind"] == "Service"]
         selected = [s["name"] for s in services if all(s["labels"].get(k) == v for k, v in selector.items())]
         self.assertEqual(selected, ["opensearch-metrics-exporter"])
         self.assertEqual(monitor["spec"]["endpoints"], [{"port": "metrics", "path": "/metrics", "interval": "30s"}])
